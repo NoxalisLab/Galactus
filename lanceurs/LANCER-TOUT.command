@@ -8,7 +8,8 @@
 set -u
 export LC_ALL=C
 export LANG=C
-ROOT="/Volumes/NoxalisExtended/Noxalis Lab/NoxalisAi/galactus"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+[ -f "${ROOT}/galactus.env" ] && . "${ROOT}/galactus.env"
 JOURNAL="${ROOT}/artifacts/h4/LANCER-TOUT.log"
 mkdir -p "${ROOT}/artifacts/h4" 2>/dev/null
 exec >>"${JOURNAL}" 2>&1

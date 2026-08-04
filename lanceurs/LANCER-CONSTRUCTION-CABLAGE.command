@@ -5,7 +5,8 @@
 set -u
 export LC_ALL=C
 export LANG=C
-ROOT="/Volumes/NoxalisExtended/Noxalis Lab/NoxalisAi/galactus"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+[ -f "${ROOT}/galactus.env" ] && . "${ROOT}/galactus.env"
 cd "${ROOT}/third_party/llama.cpp" || exit 1
 OUT="${ROOT}/artifacts/h4/integration"
 mkdir -p "${OUT}"

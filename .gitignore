@@ -25,3 +25,4 @@ scripts/archive/
 config/
 tests/
 PROJECT.md
+galactus.env

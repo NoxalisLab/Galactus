@@ -6,11 +6,12 @@
 set -u
 export LC_ALL=C
 export LANG=C
-ROOT="/Volumes/NoxalisExtended/Noxalis Lab/NoxalisAi/galactus"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+[ -f "${ROOT}/galactus.env" ] && . "${ROOT}/galactus.env"
 cd "${ROOT}" || exit 1
 OUT="${ROOT}/artifacts/h4/integration"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-MODEL="${ROOT}/models/glm-5.2-ud-iq1-s/UD-IQ1_S/GLM-5.2-UD-IQ1_S-00001-of-00006.gguf"
+MODEL="${GALACTUS_MODEL:-${ROOT}/models/glm-5.2-ud-iq1-s/UD-IQ1_S/GLM-5.2-UD-IQ1_S-00001-of-00006.gguf}"
 PPLTEXT="${ROOT}/corpus/materialized/stage1/coding-repobench-p-e-0048.txt"
 unset GALACTUS_H4
 export GALACTUS_GUARD_MAX_SWAP_DELTA_BYTES=1073741824

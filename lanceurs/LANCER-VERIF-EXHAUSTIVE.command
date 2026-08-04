@@ -7,13 +7,14 @@
 set -u
 export LC_ALL=C
 export LANG=C
-ROOT="/Volumes/NoxalisExtended/Noxalis Lab/NoxalisAi/galactus"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+[ -f "${ROOT}/galactus.env" ] && . "${ROOT}/galactus.env"
 cd "${ROOT}" || exit 1
 OUT="${ROOT}/artifacts/h4/integration"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 COUCHE="${GALACTUS_COUCHE:-6}"
-INTERNAL="$(find "${HOME}/GalactusH4" -maxdepth 3 -name '*p0v2-internal.pack' -type f 2>/dev/null | head -1)"
-EXTERNAL="${ROOT}/artifacts/h4/packs/tour83-p0v2/external/h4-p0v2-external.pack"
+INTERNAL="${GALACTUS_INTERNAL_PACK:?definir GALACTUS_INTERNAL_PACK (voir galactus.env.example)}"
+EXTERNAL="${GALACTUS_EXTERNAL_PACK:?definir GALACTUS_EXTERNAL_PACK (voir galactus.env.example)}"
 ln -sfn "${ROOT}/models/glm-5.2-ud-iq1-s/UD-IQ1_S" /tmp/galactus-shards
 CONTROLE="${OUT}/controle-exhaustif-${COUCHE}.txt"
 {
