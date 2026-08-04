@@ -1,0 +1,196 @@
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 9b399d60..b1cb0bd1 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -119,6 +119,7 @@ llama_context::llama_context(
+     cparams.offload_kqv             = params.offload_kqv;
+     cparams.no_perf                 = params.no_perf;
+     cparams.warmup                  = false;
++    cparams.moe_route_trace         = getenv("LLAMA_MOE_ROUTE_TRACE") != nullptr;
+ 
+     cparams.embeddings_layer_inp.resize(hparams.n_layer(), false);
+     embd_layer_inp.resize(hparams.n_layer());
+@@ -2354,6 +2355,10 @@ llm_graph_result * llama_context::get_gf_res_reserve() const {
+     return static_cast<llm_graph_result *>(gf_res_reserve.get());
+ }
+ 
++llm_graph_result * llama_context::get_gf_res_prev() const {
++    return static_cast<llm_graph_result *>(gf_res_prev.get());
++}
++
+ ggml_cgraph * llama_context::graph_reserve(
+         uint32_t n_tokens, uint32_t n_seqs, uint32_t n_outputs, const llama_memory_context_i * mctx, bool split_only, size_t * sizes) {
+     LLAMA_LOG_DEBUG("%s: reserving a graph for ubatch with n_tokens = %4u, n_seqs = %2u, n_outputs = %4u\n", __func__, n_tokens, n_seqs, n_outputs);
+diff --git a/src/llama-context.h b/src/llama-context.h
+index bf91daa8..6d4ad09a 100644
+--- a/src/llama-context.h
++++ b/src/llama-context.h
+@@ -244,6 +244,9 @@ public:
+     // can reuse the llm_graph_result instance of the context (for example to update a memory module)
+     llm_graph_result * get_gf_res_reserve() const;
+ 
++    // last graph result, used by the deferred MoE route tracer
++    llm_graph_result * get_gf_res_prev() const;
++
+     // returns the result of ggml_backend_sched_graph_compute_async execution
+     ggml_status graph_compute(ggml_cgraph * gf, bool batched);
+ 
+diff --git a/src/llama-cparams.h b/src/llama-cparams.h
+index 5018170e..542552b5 100644
+--- a/src/llama-cparams.h
++++ b/src/llama-cparams.h
+@@ -52,6 +52,7 @@ struct llama_cparams {
+     bool op_offload;
+     bool kv_unified;
+     bool pipeline_parallel;
++    bool moe_route_trace;
+ 
+     std::vector<bool> embeddings_layer_inp; // [n_layer()] extract input embeddings for layer
+ 
+diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
+index 6d1c8f4e..31b052a4 100644
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -1194,6 +1194,7 @@ void llm_graph_result::reset() {
+     t_embd        = nullptr;
+     t_embd_pooled = nullptr;
+     t_h_nextn     = nullptr;
++    t_moe_route_trace = nullptr;
+ 
+     t_layer_inp.resize(LLAMA_MAX_LAYERS);
+     std::fill(t_layer_inp.begin(), t_layer_inp.end(), nullptr);
+@@ -1207,6 +1208,7 @@ void llm_graph_result::reset() {
+ 
+     inputs.clear();
+     fused_nodes.clear();
++    moe_routes.clear();
+ 
+     buf_compute_meta.resize(ggml_tensor_overhead()*max_nodes + ggml_graph_overhead_custom(max_nodes, false));
+ 
+@@ -1269,6 +1271,50 @@ void llm_graph_result::set_outputs(const llm_graph_params & params) {
+             ggml_set_output(t);
+         }
+     }
++    if (params.cparams.moe_route_trace) {
++        std::vector<ggml_tensor *> packed_routes;
++        packed_routes.reserve(moe_routes.size());
++        for (const auto & route : moe_routes) {
++            ggml_tensor * experts_f16 = ggml_cast(ctx_compute.get(),
++                ggml_cast(ctx_compute.get(), route.experts, GGML_TYPE_F32), GGML_TYPE_F16);
++            experts_f16 = ggml_reshape_2d(ctx_compute.get(), experts_f16,
++                route.experts->ne[0], route.experts->ne[1]);
++
++            ggml_tensor * weights_f16 = ggml_cast(ctx_compute.get(), route.weights, GGML_TYPE_F16);
++            weights_f16 = ggml_reshape_2d(ctx_compute.get(), weights_f16,
++                route.experts->ne[0], route.experts->ne[1]);
++
++            ggml_tensor * packed = ggml_concat(ctx_compute.get(), experts_f16, weights_f16, 0);
++            packed = ggml_reshape_3d(ctx_compute.get(), packed,
++                2*route.experts->ne[0], route.experts->ne[1], 1);
++            packed_routes.push_back(packed);
++        }
++
++        // A linear concat chain creates a dependency depth proportional to the
++        // number of MoE layers. Reduce as a balanced tree so the unique output
++        // retains O(log n_layers) graph depth.
++        while (packed_routes.size() > 1) {
++            std::vector<ggml_tensor *> next;
++            next.reserve((packed_routes.size() + 1)/2);
++            for (size_t i = 0; i < packed_routes.size(); i += 2) {
++                if (i + 1 == packed_routes.size()) {
++                    next.push_back(packed_routes[i]);
++                } else {
++                    GGML_ASSERT(packed_routes[i]->ne[0] == packed_routes[i + 1]->ne[0]);
++                    GGML_ASSERT(packed_routes[i]->ne[1] == packed_routes[i + 1]->ne[1]);
++                    next.push_back(ggml_concat(ctx_compute.get(),
++                        packed_routes[i], packed_routes[i + 1], 2));
++                }
++            }
++            packed_routes = std::move(next);
++        }
++        t_moe_route_trace = packed_routes.empty() ? nullptr : packed_routes.front();
++        if (t_moe_route_trace != nullptr) {
++            ggml_set_name(t_moe_route_trace, "moe_route_trace");
++            ggml_set_output(t_moe_route_trace);
++            ggml_build_forward_expand(gf, t_moe_route_trace);
++        }
++    }
+ }
+ 
+ bool llm_graph_result::can_reuse(const llm_graph_params & params) {
+@@ -1312,6 +1358,10 @@ void llm_graph_result::add_fused_node(llm_graph_fused_node result) {
+     fused_nodes.push_back(result);
+ }
+ 
++void llm_graph_result::add_moe_route(llm_graph_moe_route route) {
++    moe_routes.push_back(route);
++}
++
+ void llm_graph_result::set_params(const llm_graph_params & params) {
+     this->params = params;
+ }
+@@ -1927,7 +1977,6 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+         cb(selected_experts->src[0], "ffn_moe_argsort", il);
+     }
+     cb(selected_experts, "ffn_moe_topk", il);
+-
+     if (arch == LLM_ARCH_GROVEMOE && n_expert != hparams.n_expert) {
+         // TODO: Use scalar div instead when/if implemented
+         ggml_tensor * f_sel = ggml_cast(ctx0, selected_experts, GGML_TYPE_F32);
+@@ -1968,6 +2017,10 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+         cb(weights, "ffn_moe_weights_scaled", il);
+     }
+ 
++    if (cparams.moe_route_trace) {
++        res->add_moe_route({selected_experts, weights, il});
++    }
++
+     //call early so that topk-moe can be used
+     ggml_build_forward_expand(gf, weights);
+ 
+diff --git a/src/llama-graph.h b/src/llama-graph.h
+index 7ed490ce..bb231844 100644
+--- a/src/llama-graph.h
++++ b/src/llama-graph.h
+@@ -791,6 +791,12 @@ struct llm_graph_fused_node {
+     int il;
+ };
+ 
++struct llm_graph_moe_route {
++    ggml_tensor * experts;
++    ggml_tensor * weights;
++    int il;
++};
++
+ class llm_graph_result {
+ public:
+     llm_graph_result(int64_t max_nodes);
+@@ -828,6 +834,12 @@ public:
+ 
+     const std::vector<llm_graph_fused_node> & get_fused_nodes() const { return fused_nodes; }
+ 
++    void add_moe_route(llm_graph_moe_route route);
++
++    const std::vector<llm_graph_moe_route> & get_moe_routes() const { return moe_routes; }
++
++    ggml_tensor * get_moe_route_trace() const { return t_moe_route_trace; }
++
+     void set_params(const llm_graph_params & params);
+ 
+     // important graph nodes
+@@ -837,6 +849,7 @@ public:
+     ggml_tensor * t_embd        = nullptr;
+     ggml_tensor * t_embd_pooled = nullptr;
+     ggml_tensor * t_h_nextn     = nullptr; // [n_embd, n_outputs] hidden state before final output norm
++    ggml_tensor * t_moe_route_trace = nullptr; // [2*n_expert_used, n_tokens, n_moe_layers]
+ 
+     std::vector<ggml_tensor *> t_layer_inp;
+ 
+@@ -847,6 +860,7 @@ public:
+ 
+     std::vector<llm_graph_input_ptr> inputs;
+     std::vector<llm_graph_fused_node> fused_nodes;
++    std::vector<llm_graph_moe_route> moe_routes;
+ 
+     ggml_context_ptr ctx_compute;
+ 

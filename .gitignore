@@ -1,0 +1,27 @@
+# donnees lourdes — jamais versionnees
+models/
+artifacts/
+corpus/
+trace-cache/
+build/
+third_party/
+_to_delete/
+.tmp-*/
+
+# bruit
+.DS_Store
+__pycache__/
+*.pyc
+.venv/
+*.log
+*.out
+*.csv
+
+# archives de developpement — hors depot
+docs/archive/
+docs/specs/
+lanceurs/archive/
+scripts/archive/
+config/
+tests/
+PROJECT.md

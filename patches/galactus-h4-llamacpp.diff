@@ -1,0 +1,871 @@
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 320784c3..c50a6d65 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -19,6 +19,11 @@ add_library(llama
+             llama-cparams.cpp
+             llama-grammar.cpp
+             llama-graph.cpp
++            llama-galactus-h4.cpp
++            ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/h4/h4-core.cpp
++            ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/h4/h4-expert-cache.cpp
++            ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/h4/h4-expert-store.cpp
++            ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/h4/h4-reader.cpp
+             llama-hparams.cpp
+             llama-impl.cpp
+             llama-io.cpp
+@@ -52,6 +57,7 @@ set_target_properties(llama PROPERTIES
+ target_include_directories(llama PRIVATE .)
+ target_include_directories(llama PUBLIC ../include)
+ target_compile_features   (llama PRIVATE cxx_std_17) # don't bump
++target_include_directories(llama PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/h4) # galactus h4
+ 
+ target_link_libraries(llama PUBLIC ggml)
+ 
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 9b399d60..cff6fe41 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -1,4 +1,5 @@
+ #include "llama-context.h"
++#include "llama-galactus-h4.h"
+ 
+ #include "ggml.h"
+ #include "llama-arch.h"
+@@ -119,6 +120,7 @@ llama_context::llama_context(
+     cparams.offload_kqv             = params.offload_kqv;
+     cparams.no_perf                 = params.no_perf;
+     cparams.warmup                  = false;
++    cparams.moe_route_trace         = getenv("LLAMA_MOE_ROUTE_TRACE") != nullptr;
+ 
+     cparams.embeddings_layer_inp.resize(hparams.n_layer(), false);
+     embd_layer_inp.resize(hparams.n_layer());
+@@ -137,6 +139,11 @@ llama_context::llama_context(
+     cparams.cb_eval           = params.cb_eval;
+     cparams.cb_eval_user_data = params.cb_eval_user_data;
+ 
++    // Galactus : sonde differentielle par variable d'environnement
++    if (cparams.cb_eval == nullptr && galactus_h4::dump_requested()) {
++        cparams.cb_eval = galactus_h4::dump_callback;
++    }
++
+     cparams.ctx_other = nullptr;
+ 
+     // TODO: more generic
+@@ -2354,6 +2361,10 @@ llm_graph_result * llama_context::get_gf_res_reserve() const {
+     return static_cast<llm_graph_result *>(gf_res_reserve.get());
+ }
+ 
++llm_graph_result * llama_context::get_gf_res_prev() const {
++    return static_cast<llm_graph_result *>(gf_res_prev.get());
++}
++
+ ggml_cgraph * llama_context::graph_reserve(
+         uint32_t n_tokens, uint32_t n_seqs, uint32_t n_outputs, const llama_memory_context_i * mctx, bool split_only, size_t * sizes) {
+     LLAMA_LOG_DEBUG("%s: reserving a graph for ubatch with n_tokens = %4u, n_seqs = %2u, n_outputs = %4u\n", __func__, n_tokens, n_seqs, n_outputs);
+diff --git a/src/llama-context.h b/src/llama-context.h
+index bf91daa8..6d4ad09a 100644
+--- a/src/llama-context.h
++++ b/src/llama-context.h
+@@ -244,6 +244,9 @@ public:
+     // can reuse the llm_graph_result instance of the context (for example to update a memory module)
+     llm_graph_result * get_gf_res_reserve() const;
+ 
++    // last graph result, used by the deferred MoE route tracer
++    llm_graph_result * get_gf_res_prev() const;
++
+     // returns the result of ggml_backend_sched_graph_compute_async execution
+     ggml_status graph_compute(ggml_cgraph * gf, bool batched);
+ 
+diff --git a/src/llama-cparams.h b/src/llama-cparams.h
+index 5018170e..542552b5 100644
+--- a/src/llama-cparams.h
++++ b/src/llama-cparams.h
+@@ -52,6 +52,7 @@ struct llama_cparams {
+     bool op_offload;
+     bool kv_unified;
+     bool pipeline_parallel;
++    bool moe_route_trace;
+ 
+     std::vector<bool> embeddings_layer_inp; // [n_layer()] extract input embeddings for layer
+ 
+diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
+index 6d1c8f4e..4b313303 100644
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -1,4 +1,5 @@
+ #include "llama-graph.h"
++#include "llama-galactus-h4.h"
+ 
+ #include "llama-impl.h"
+ #include "llama-model.h"
+@@ -1194,6 +1195,7 @@ void llm_graph_result::reset() {
+     t_embd        = nullptr;
+     t_embd_pooled = nullptr;
+     t_h_nextn     = nullptr;
++    t_moe_route_trace = nullptr;
+ 
+     t_layer_inp.resize(LLAMA_MAX_LAYERS);
+     std::fill(t_layer_inp.begin(), t_layer_inp.end(), nullptr);
+@@ -1207,6 +1209,7 @@ void llm_graph_result::reset() {
+ 
+     inputs.clear();
+     fused_nodes.clear();
++    moe_routes.clear();
+ 
+     buf_compute_meta.resize(ggml_tensor_overhead()*max_nodes + ggml_graph_overhead_custom(max_nodes, false));
+ 
+@@ -1269,6 +1272,50 @@ void llm_graph_result::set_outputs(const llm_graph_params & params) {
+             ggml_set_output(t);
+         }
+     }
++    if (params.cparams.moe_route_trace) {
++        std::vector<ggml_tensor *> packed_routes;
++        packed_routes.reserve(moe_routes.size());
++        for (const auto & route : moe_routes) {
++            ggml_tensor * experts_f16 = ggml_cast(ctx_compute.get(),
++                ggml_cast(ctx_compute.get(), route.experts, GGML_TYPE_F32), GGML_TYPE_F16);
++            experts_f16 = ggml_reshape_2d(ctx_compute.get(), experts_f16,
++                route.experts->ne[0], route.experts->ne[1]);
++
++            ggml_tensor * weights_f16 = ggml_cast(ctx_compute.get(), route.weights, GGML_TYPE_F16);
++            weights_f16 = ggml_reshape_2d(ctx_compute.get(), weights_f16,
++                route.experts->ne[0], route.experts->ne[1]);
++
++            ggml_tensor * packed = ggml_concat(ctx_compute.get(), experts_f16, weights_f16, 0);
++            packed = ggml_reshape_3d(ctx_compute.get(), packed,
++                2*route.experts->ne[0], route.experts->ne[1], 1);
++            packed_routes.push_back(packed);
++        }
++
++        // A linear concat chain creates a dependency depth proportional to the
++        // number of MoE layers. Reduce as a balanced tree so the unique output
++        // retains O(log n_layers) graph depth.
++        while (packed_routes.size() > 1) {
++            std::vector<ggml_tensor *> next;
++            next.reserve((packed_routes.size() + 1)/2);
++            for (size_t i = 0; i < packed_routes.size(); i += 2) {
++                if (i + 1 == packed_routes.size()) {
++                    next.push_back(packed_routes[i]);
++                } else {
++                    GGML_ASSERT(packed_routes[i]->ne[0] == packed_routes[i + 1]->ne[0]);
++                    GGML_ASSERT(packed_routes[i]->ne[1] == packed_routes[i + 1]->ne[1]);
++                    next.push_back(ggml_concat(ctx_compute.get(),
++                        packed_routes[i], packed_routes[i + 1], 2));
++                }
++            }
++            packed_routes = std::move(next);
++        }
++        t_moe_route_trace = packed_routes.empty() ? nullptr : packed_routes.front();
++        if (t_moe_route_trace != nullptr) {
++            ggml_set_name(t_moe_route_trace, "moe_route_trace");
++            ggml_set_output(t_moe_route_trace);
++            ggml_build_forward_expand(gf, t_moe_route_trace);
++        }
++    }
+ }
+ 
+ bool llm_graph_result::can_reuse(const llm_graph_params & params) {
+@@ -1312,6 +1359,10 @@ void llm_graph_result::add_fused_node(llm_graph_fused_node result) {
+     fused_nodes.push_back(result);
+ }
+ 
++void llm_graph_result::add_moe_route(llm_graph_moe_route route) {
++    moe_routes.push_back(route);
++}
++
+ void llm_graph_result::set_params(const llm_graph_params & params) {
+     this->params = params;
+ }
+@@ -1927,7 +1978,6 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+         cb(selected_experts->src[0], "ffn_moe_argsort", il);
+     }
+     cb(selected_experts, "ffn_moe_topk", il);
+-
+     if (arch == LLM_ARCH_GROVEMOE && n_expert != hparams.n_expert) {
+         // TODO: Use scalar div instead when/if implemented
+         ggml_tensor * f_sel = ggml_cast(ctx0, selected_experts, GGML_TYPE_F32);
+@@ -1968,9 +2018,23 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
+         cb(weights, "ffn_moe_weights_scaled", il);
+     }
+ 
++    if (cparams.moe_route_trace) {
++        res->add_moe_route({selected_experts, weights, il});
++    }
++
+     //call early so that topk-moe can be used
+     ggml_build_forward_expand(gf, weights);
+ 
++    // Galactus H4 : a partir d'ici les identifiants d'experts deviennent des
++    // numeros d'emplacement dans l'arene residente. Les poids du routeur et
++    // la trace de routes, au-dessus, ont deja ete pris sur les identifiants
++    // d'origine. Le noeud CPU sert la couche (cache + lectures) au passage.
++    if (galactus_h4::active() && galactus_h4::wants_layer(il)) {
++        galactus_h4::debug_probe(gate_exps, up_exps, down_exps, il);
++        selected_experts = galactus_h4::remap_ids(ctx0, selected_experts, il);
++        cb(selected_experts, "ffn_moe_topk_galactus", il);
++    }
++
+     cur = ggml_reshape_3d(ctx0, cur, n_embd, 1, n_tokens);
+ 
+     if (weight_before_ffn) {
+diff --git a/src/llama-graph.h b/src/llama-graph.h
+index 7ed490ce..bb231844 100644
+--- a/src/llama-graph.h
++++ b/src/llama-graph.h
+@@ -791,6 +791,12 @@ struct llm_graph_fused_node {
+     int il;
+ };
+ 
++struct llm_graph_moe_route {
++    ggml_tensor * experts;
++    ggml_tensor * weights;
++    int il;
++};
++
+ class llm_graph_result {
+ public:
+     llm_graph_result(int64_t max_nodes);
+@@ -828,6 +834,12 @@ public:
+ 
+     const std::vector<llm_graph_fused_node> & get_fused_nodes() const { return fused_nodes; }
+ 
++    void add_moe_route(llm_graph_moe_route route);
++
++    const std::vector<llm_graph_moe_route> & get_moe_routes() const { return moe_routes; }
++
++    ggml_tensor * get_moe_route_trace() const { return t_moe_route_trace; }
++
+     void set_params(const llm_graph_params & params);
+ 
+     // important graph nodes
+@@ -837,6 +849,7 @@ public:
+     ggml_tensor * t_embd        = nullptr;
+     ggml_tensor * t_embd_pooled = nullptr;
+     ggml_tensor * t_h_nextn     = nullptr; // [n_embd, n_outputs] hidden state before final output norm
++    ggml_tensor * t_moe_route_trace = nullptr; // [2*n_expert_used, n_tokens, n_moe_layers]
+ 
+     std::vector<ggml_tensor *> t_layer_inp;
+ 
+@@ -847,6 +860,7 @@ public:
+ 
+     std::vector<llm_graph_input_ptr> inputs;
+     std::vector<llm_graph_fused_node> fused_nodes;
++    std::vector<llm_graph_moe_route> moe_routes;
+ 
+     ggml_context_ptr ctx_compute;
+ 
+diff --git a/src/llama-model.cpp b/src/llama-model.cpp
+index be0a0df5..2801b927 100644
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -1,4 +1,5 @@
+ #include "llama-model.h"
++#include "llama-galactus-h4.h"
+ 
+ #include "llama-arch.h"
+ #include "llama-ext.h"
+@@ -1660,6 +1661,12 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
+         }
+     }
+ 
++    // Galactus H4 : les tenseurs d'experts crees a quota d'emplacements sont
++    // maintenant adosses a l'arene, enveloppee en tampon Metal sans copie.
++    if (galactus_h4::active() && arch == LLM_ARCH_GLM_DSA) {
++        galactus_h4::init();
++    }
++
+     return true;
+ }
+ 
+diff --git a/src/models/glm-dsa.cpp b/src/models/glm-dsa.cpp
+index df190e1f..bc3cb552 100644
+--- a/src/models/glm-dsa.cpp
++++ b/src/models/glm-dsa.cpp
+@@ -1,4 +1,5 @@
+ #include "models.h"
++#include "llama-galactus-h4.h"
+ 
+ #include "llama-kv-cache-dsa.h"
+ 
+@@ -157,9 +158,28 @@ void llama_model_glm_dsa::load_arch_tensors(llama_model_loader &) {
+             }
+ 
+             // MoE branch
++            if (galactus_h4::active() && galactus_h4::wants_layer(i) && !ml->files.empty()) {
++                // (files vide = passe d'estimation memoire de llama_params_fit ;
++                //  le cablage n'y participe pas, seule la vraie passe compte)
++                // Galactus H4 : tenseurs a quota d'emplacements, adosses a
++                // l'arene apres chargement. TENSOR_SKIP tient la comptabilite
++                // du chargeur ; le GGUF n'est pas lu pour ces tenseurs.
++                // Ordre de creation = ordre gele de l'enregistrement du pack :
++                // down, gate, up.
++                const ggml_type type_gate = ml->require_tensor_meta(tn(LLM_TENSOR_FFN_GATE_EXPS, "weight", i).str())->type;
++                const ggml_type type_down = ml->require_tensor_meta(tn(LLM_TENSOR_FFN_DOWN_EXPS, "weight", i).str())->type;
++                const ggml_type type_up   = ml->require_tensor_meta(tn(LLM_TENSOR_FFN_UP_EXPS,   "weight", i).str())->type;
++                create_tensor(tn(LLM_TENSOR_FFN_GATE_EXPS, "weight", i), {  n_embd, n_ff_exp, n_expert}, flags | TENSOR_SKIP);
++                create_tensor(tn(LLM_TENSOR_FFN_DOWN_EXPS, "weight", i), {n_ff_exp,   n_embd, n_expert}, flags | TENSOR_SKIP);
++                create_tensor(tn(LLM_TENSOR_FFN_UP_EXPS,   "weight", i), {  n_embd, n_ff_exp, n_expert}, flags | TENSOR_SKIP);
++                layer.ffn_down_exps = galactus_h4::create_exps(i, "down", type_down, n_ff_exp, n_embd);
++                layer.ffn_gate_exps = galactus_h4::create_exps(i, "gate", type_gate, n_embd, n_ff_exp);
++                layer.ffn_up_exps   = galactus_h4::create_exps(i, "up",   type_up,   n_embd, n_ff_exp);
++            } else {
+             layer.ffn_gate_exps = create_tensor(tn(LLM_TENSOR_FFN_GATE_EXPS, "weight", i), {  n_embd, n_ff_exp, n_expert}, flags);
+             layer.ffn_down_exps = create_tensor(tn(LLM_TENSOR_FFN_DOWN_EXPS, "weight", i), {n_ff_exp,   n_embd, n_expert}, flags);
+             layer.ffn_up_exps   = create_tensor(tn(LLM_TENSOR_FFN_UP_EXPS,   "weight", i), {  n_embd, n_ff_exp, n_expert}, flags);
++            }
+ 
+             // Shared expert branch
+             layer.ffn_gate_shexp = create_tensor(tn(LLM_TENSOR_FFN_GATE_SHEXP, "weight", i), {n_embd, n_ff_exp * n_expert_shared}, flags);
+diff --git a/src/llama-galactus-h4.h b/src/llama-galactus-h4.h
+new file mode 100644
+index 00000000..678a1db1
+--- /dev/null
++++ b/src/llama-galactus-h4.h
+@@ -0,0 +1,62 @@
++// Cablage Galactus H4 : le magasin d'experts resident branche dans llama.cpp.
++//
++// Inactif par defaut : sans GALACTUS_H4=1 dans l'environnement, chaque
++// fonction repond « non » et le binaire est strictement identique a l'amont.
++//
++// Variables d'environnement :
++//   GALACTUS_H4=1                  activer
++//   GALACTUS_H4_INTERNAL=<chemin>  pack interne  (h4-p0v2-internal.pack)
++//   GALACTUS_H4_EXTERNAL=<chemin>  pack externe  (h4-p0v2-external.pack)
++//   GALACTUS_H4_CACHE_BYTES=N      budget d'arene (defaut 99868171264)
++//   GALACTUS_H4_QD=N               profondeur de file du lecteur (defaut 32)
++
++#pragma once
++
++#include "ggml.h"
++#include "ggml-backend.h"
++
++#include <cstdint>
++
++namespace galactus_h4 {
++
++// GALACTUS_H4=1 present dans l'environnement.
++bool active();
++
++// La couche est-elle sur le chemin MoE decode (3..77) ?
++bool wants_layer(int layer);
++
++// Cote chargeur : cree le tenseur d'experts d'une matrice (« down », « gate »,
++// « up ») pour une couche, a ne[2] = quota, au pas de l'enregistrement du
++// pack, dans le contexte prive du cablage. L'adossement a l'arene se fait
++// dans init(). Lance si la geometrie contredit les constantes gelees.
++ggml_tensor * create_exps(int layer, const char * role, ggml_type type,
++                          int64_t ne0, int64_t ne1);
++
++// Apres le chargement : allouer l'arene (via le magasin), l'envelopper en
++// tampon Metal sans copie, adosser tous les tenseurs crees, construire le
++// lecteur double-volume. Lance en cas d'echec — jamais de demi-etat.
++void init();
++
++// Cote graphe : insere le noeud CPU qui sert la couche (cache + lectures)
++// et reecrit les identifiants d'experts en numeros d'emplacement.
++ggml_tensor * remap_ids(ggml_context * ctx, ggml_tensor * selected_experts, int layer);
++
++// Sonde de diagnostic : imprime une fois ce que le graphe voit vraiment.
++void debug_probe(const ggml_tensor * gate, const ggml_tensor * up,
++                 const ggml_tensor * down, int layer);
++
++// Sonde differentielle (GALACTUS_H4_DUMP=1) : rappel d'evaluation qui imprime
++// les tenseurs intermediaires du MoE de la couche 3. Active aussi sans cablage.
++bool dump_requested();
++bool dump_callback(ggml_tensor * t, bool ask, void * user_data);
++
++// Statistiques cumulees, pour le rapport de fin de generation.
++struct Stats {
++    std::uint64_t served_layers;
++    std::uint64_t hits;
++    std::uint64_t misses;
++    std::uint64_t bytes_read;
++};
++Stats stats();
++
++}  // namespace galactus_h4
+diff --git a/src/llama-galactus-h4.cpp b/src/llama-galactus-h4.cpp
+new file mode 100644
+index 00000000..d0a156bf
+--- /dev/null
++++ b/src/llama-galactus-h4.cpp
+@@ -0,0 +1,478 @@
++#include "llama-galactus-h4.h"
++
++#include "h4-expert-cache.hpp"
++#include "h4-expert-store.hpp"
++#include "h4-reader.hpp"
++
++#include "ggml-alloc.h"
++
++#include <algorithm>
++#include <atomic>
++#include <cmath>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <memory>
++#include <mutex>
++#include <stdexcept>
++#include <string>
++#include <vector>
++
++namespace galactus_h4 {
++
++namespace {
++
++using namespace galactus::h4;
++
++const char * environment(const char * name, const char * fallback) {
++    const char * value = std::getenv(name);
++    return value != nullptr && value[0] != '\0' ? value : fallback;
++}
++
++// Un tenseur cree au chargement, en attente d'adossement a l'arene.
++struct PendingTensor {
++    ggml_tensor * tensor;
++    int layer;                 // 3..77
++    std::uint64_t role_offset; // offset de la matrice dans l'enregistrement
++};
++
++struct State {
++    bool activated = false;
++
++    ggml_context * context = nullptr;                 // possede les tenseurs exps
++    std::vector<PendingTensor> pending;
++
++    std::unique_ptr<DualVolumeReader> reader;
++    std::unique_ptr<P0Layout> layout;
++    std::unique_ptr<ExpertStore> store;
++    ggml_backend_buffer_t arena_buffer = nullptr;
++
++    std::atomic<std::uint64_t> served_layers{0};
++    std::atomic<std::uint64_t> hits{0};
++    std::atomic<std::uint64_t> misses{0};
++    std::atomic<std::uint64_t> bytes_read{0};
++
++    std::mutex serve_mutex;
++};
++
++State & state() {
++    // Fuite volontaire : un destructeur statique joindrait les threads du
++    // lecteur pendant que dyld demonte le processus. L'OS recupere tout.
++    static State * instance = new State();
++    return *instance;
++}
++
++// L'ordre des roles dans un enregistrement du pack est GELE : down, gate, up.
++// (scripts/h4-pack-write.py, EXPECTED_ROLE_ORDER)
++int role_rank(const char * role) {
++    if (std::strcmp(role, "down") == 0) return 0;
++    if (std::strcmp(role, "gate") == 0) return 1;
++    if (std::strcmp(role, "up") == 0) return 2;
++    throw std::runtime_error(std::string("galactus_h4: role inconnu ") + role);
++}
++
++// userdata du rappel : l'indice de couche, encode en pointeur stable.
++struct LayerTag { int layer; };
++LayerTag layer_tags[80];
++
++std::uint64_t fnv1a64(const unsigned char * data, std::size_t length) {
++    std::uint64_t hash = 1469598103934665603ULL;
++    for (std::size_t i = 0; i < length; ++i) {
++        hash ^= data[i];
++        hash *= 1099511628211ULL;
++    }
++    return hash;
++}
++
++void remap_callback(ggml_tensor * dst, const ggml_tensor * source, int ith, int nth, void * userdata) {
++    (void) nth;
++    if (ith != 0) return;
++    auto & s = state();
++    const int layer = static_cast<const LayerTag *>(userdata)->layer;
++    const auto count = ggml_nelements(source);
++    // LE BUG DE PERPLEXITE (tour 238) : selected_experts est une VUE non
++    // contigue (ggml_top_k : ne=[8, n_tokens], nb[1] = rangee argsort
++    // complete de n_expert). La lecture lineaire etait juste pour le premier
++    // token du micro-lot et lisait, pour les suivants, les rangs 9+ du
++    // PREMIER token : tout token au-dela du premier partait sur les mauvais
++    // experts. Lecture par strides, rien d'autre ne change.
++    const auto * source_bytes = static_cast<const unsigned char *>(source->data);
++    auto * dst_bytes = static_cast<unsigned char *>(dst->data);
++    std::vector<std::int32_t> expert_ids(static_cast<std::size_t>(count));
++    {
++        std::size_t flat = 0;
++        for (int64_t i2 = 0; i2 < source->ne[2]; ++i2)
++        for (int64_t i1 = 0; i1 < source->ne[1]; ++i1)
++        for (int64_t i0 = 0; i0 < source->ne[0]; ++i0, ++flat) {
++            expert_ids[flat] = *reinterpret_cast<const std::int32_t *>(
++                source_bytes + i2 * source->nb[2] + i1 * source->nb[1] + i0 * source->nb[0]);
++        }
++    }
++
++    std::vector<std::uint32_t> keys(static_cast<std::size_t>(count));
++    for (int64_t i = 0; i < count; ++i) {
++        keys[static_cast<std::size_t>(i)] = (static_cast<std::uint32_t>(layer) << 8)
++                | (static_cast<std::uint32_t>(expert_ids[static_cast<std::size_t>(i)]) & 0xFFu);
++    }
++
++    // Le lot entier alimente UN mul_mat_id : tous ses experts distincts
++    // doivent etre residents SIMULTANEMENT. Deux bornes, fail-closed :
++    //   - le quota d'emplacements de la couche ;
++    //   - le segment probation du SLRU (un lot froid n'insere qu'en
++    //     probation ; au-dela, il evincerait ses propres membres).
++    // La parade operationnelle est un micro-lot plus petit (-ub).
++    {
++        std::vector<std::uint32_t> distinct(keys);
++        std::sort(distinct.begin(), distinct.end());
++        distinct.erase(std::unique(distinct.begin(), distinct.end()), distinct.end());
++        const auto quota = s.store->slots_per_layer();
++        const auto probation = quota - static_cast<std::uint32_t>(static_cast<double>(quota) * 0.75);
++        if (distinct.size() > probation) {
++            throw std::runtime_error(
++                "galactus_h4: couche " + std::to_string(layer) + " : "
++                + std::to_string(distinct.size()) + " experts distincts dans le lot, "
++                + "borne sure " + std::to_string(probation)
++                + " (segment probation). Reduire le micro-lot : -ub "
++                + std::to_string(probation / 8));
++        }
++    }
++
++    std::lock_guard<std::mutex> lock(s.serve_mutex);
++    std::uint32_t before_hits = 0;
++    for (int64_t i = 0; i < count; ++i) {
++        before_hits += s.store->cache().resident(keys[i]) ? 1u : 0u;
++    }
++    const auto bytes = s.store->serve_layer(keys.data(), static_cast<std::uint32_t>(count));
++    s.bytes_read.fetch_add(bytes, std::memory_order_relaxed);
++    s.served_layers.fetch_add(1, std::memory_order_relaxed);
++    s.hits.fetch_add(before_hits, std::memory_order_relaxed);
++    s.misses.fetch_add(static_cast<std::uint64_t>(count) - before_hits, std::memory_order_relaxed);
++
++    {
++        std::size_t flat = 0;
++        for (int64_t i2 = 0; i2 < dst->ne[2]; ++i2)
++        for (int64_t i1 = 0; i1 < dst->ne[1]; ++i1)
++        for (int64_t i0 = 0; i0 < dst->ne[0]; ++i0, ++flat) {
++            const std::int16_t slot = s.store->slot_of(keys[flat]);
++            if (slot < 0) throw std::runtime_error("galactus_h4: cle servie sans emplacement");
++            *reinterpret_cast<std::int32_t *>(
++                dst_bytes + i2 * dst->nb[2] + i1 * dst->nb[1] + i0 * dst->nb[0]) = slot;
++        }
++    }
++
++    // Mode paranoia : GALACTUS_H4_TRACE=<fichier> capture (couche, expert,
++    // emplacement, empreinte des octets REELLEMENT dans l'arene au moment du
++    // remappage) pour les premiers rappels. La comparaison hors-ligne contre
++    // le pack juge le systeme VIVANT, pas ses pieces isolees.
++    static FILE * trace = [] () -> FILE * {
++        const char * path = std::getenv("GALACTUS_H4_TRACE");
++        return path != nullptr ? std::fopen(path, "w") : nullptr;
++    }();
++    static std::atomic<std::uint64_t> traced{0};
++    if (trace != nullptr && traced.fetch_add(1) < 600) {
++        for (int64_t i = 0; i < count; ++i) {
++            const auto * bytes = static_cast<const unsigned char *>(s.store->data(keys[i]));
++            const std::uint32_t layer_index = (keys[i] >> 8) - ExpertCache::first_layer;
++            const std::uint64_t record = frozen_layer_record_bytes()[layer_index];
++            std::fprintf(trace, "%u %u %d %016llx\n",
++                         keys[i] >> 8, keys[i] & 0xFFu,
++                         (int) s.store->slot_of(keys[i]),
++                         (unsigned long long) fnv1a64(bytes, static_cast<std::size_t>(record)));
++        }
++        std::fflush(trace);
++    }
++}
++
++}  // namespace
++
++bool active() {
++    static const bool value = [] {
++        const char * flag = std::getenv("GALACTUS_H4");
++        return flag != nullptr && std::strcmp(flag, "1") == 0;
++    }();
++    return value;
++}
++
++bool wants_layer(int layer) {
++    if (layer < static_cast<int>(ExpertCache::first_layer)
++        || layer > static_cast<int>(ExpertCache::last_layer)) {
++        return false;
++    }
++    // GALACTUS_H4_ONLY_LAYERS=A-B : bissection — le cablage ne s'applique
++    // qu'aux couches [A..B], les autres passent par la voie stock (-ncmoe).
++    static const auto range = [] () -> std::pair<int, int> {
++        const char * spec = std::getenv("GALACTUS_H4_ONLY_LAYERS");
++        if (spec == nullptr) return {3, 77};
++        int low = 0, high = 0;
++        if (std::sscanf(spec, "%d-%d", &low, &high) != 2) return {3, 77};
++        return {low, high};
++    }();
++    return layer >= range.first && layer <= range.second;
++}
++
++ggml_tensor * create_exps(int layer, const char * role, ggml_type type,
++                          int64_t ne0, int64_t ne1) {
++    auto & s = state();
++    if (s.context == nullptr) {
++        ggml_init_params params{};
++        params.mem_size = 4 * 1024 * 1024;
++        params.no_alloc = true;
++        s.context = ggml_init(params);
++        if (s.context == nullptr) throw std::runtime_error("galactus_h4: ggml_init");
++    }
++    if (s.store == nullptr) {
++        // Le magasin est construit ici (et pas dans init) parce que le quota
++        // decide de ne[2] des maintenant. Le lecteur vient plus tard.
++        const std::uint64_t capacity = std::strtoull(
++            environment("GALACTUS_H4_CACHE_BYTES", "99868171264"), nullptr, 10);
++        const std::uint32_t queue_depth = static_cast<std::uint32_t>(std::strtoul(
++            environment("GALACTUS_H4_QD", "32"), nullptr, 10));
++        const char * internal_path = std::getenv("GALACTUS_H4_INTERNAL");
++        const char * external_path = std::getenv("GALACTUS_H4_EXTERNAL");
++        if (internal_path == nullptr || external_path == nullptr) {
++            throw std::runtime_error(
++                "galactus_h4: GALACTUS_H4_INTERNAL et GALACTUS_H4_EXTERNAL sont requis");
++        }
++        s.reader = std::make_unique<DualVolumeReader>(
++            internal_path, external_path, queue_depth, 32ULL << 20, 2ULL << 30, true);
++        s.layout = std::make_unique<P0Layout>(frozen_layer_record_bytes(), P0Profile::v2_7157_2843);
++        s.store = std::make_unique<ExpertStore>(capacity, 0.75, *s.reader, *s.layout);
++        std::fprintf(stderr,
++                     "galactus_h4: magasin construit, %u experts par couche, arene %llu octets\n",
++                     s.store->slots_per_layer(),
++                     static_cast<unsigned long long>(s.store->slot_bytes()));
++    }
++
++    const std::uint32_t layer_index = static_cast<std::uint32_t>(layer) - ExpertCache::first_layer;
++    const std::uint64_t record = frozen_layer_record_bytes()[layer_index];
++    const std::uint64_t matrix_bytes = ggml_row_size(type, ne0) * static_cast<std::uint64_t>(ne1);
++
++    // Offset du role dans l'enregistrement : ordre gele down, gate, up.
++    // Les tailles des DEUX autres matrices se deduisent du reste.
++    // On les calcule au premier passage de la couche et on verifie la somme
++    // au troisieme (fail-closed) via un cumul par couche.
++    static std::uint64_t seen_bytes[80][3];
++    static ggml_type seen_type[80][3];
++    const int rank = role_rank(role);
++    seen_bytes[layer][rank] = matrix_bytes;
++    seen_type[layer][rank] = type;
++    if (seen_bytes[layer][0] && seen_bytes[layer][1] && seen_bytes[layer][2]) {
++        const std::uint64_t total = seen_bytes[layer][0] + seen_bytes[layer][1] + seen_bytes[layer][2];
++        if (total != record) {
++            throw std::runtime_error(
++                "galactus_h4: couche " + std::to_string(layer) + " : somme des matrices "
++                + std::to_string(total) + " != enregistrement gele " + std::to_string(record));
++        }
++    }
++    std::uint64_t role_offset = 0;
++    for (int r = 0; r < rank; ++r) {
++        if (seen_bytes[layer][r] == 0) {
++            throw std::runtime_error(
++                "galactus_h4: couche " + std::to_string(layer)
++                + " : les roles doivent etre crees dans l'ordre down, gate, up");
++        }
++        role_offset += seen_bytes[layer][r];
++    }
++
++    auto * tensor = ggml_new_tensor_3d(s.context, type, ne0, ne1,
++                                       static_cast<int64_t>(s.store->slots_per_layer()));
++    tensor->nb[2] = record;   // pas inter-expert = l'enregistrement du pack
++    ggml_format_name(tensor, "galactus.blk.%d.%s_exps", layer, role);
++    s.pending.push_back({tensor, layer, role_offset});
++    return tensor;
++}
++
++void init() {
++    auto & s = state();
++    if (s.store == nullptr || s.pending.empty()) {
++        throw std::runtime_error("galactus_h4: init() sans tenseurs crees");
++    }
++    if (s.pending.size() % 3 != 0) {
++        throw std::runtime_error("galactus_h4: " + std::to_string(s.pending.size())
++                                 + " tenseurs crees, multiple de 3 attendu");
++    }
++    std::fprintf(stderr, "galactus_h4: %zu tenseurs a adosser (%zu couches sous cablage)\n",
++                 s.pending.size(), s.pending.size() / 3);
++
++    ggml_backend_dev_t device = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
++    if (device == nullptr) throw std::runtime_error("galactus_h4: pas de device GPU");
++
++    // GALACTUS_H4_CPU_MOE=1 : l'arene devient un tampon CPU — le planificateur
++    // place alors les mul_mat_id d'experts sur le CPU (accumulation f32).
++    // Mesure sonde v4 : les noyaux Metal mv_id des quants iq divergent de la
++    // verite CPU de 1-2 % relatif par couche ; a 1,58 bpw cette imprecision,
++    // injectee 75 fois par token dans le flux residuel, est la meilleure
++    // explication restante de la perplexite 8,89 contre 2,67.
++    const char * cpu_moe = std::getenv("GALACTUS_H4_CPU_MOE");
++    const bool use_cpu = cpu_moe != nullptr && std::strcmp(cpu_moe, "1") == 0;
++
++    auto * arena = const_cast<unsigned char *>(s.store->arena_base());
++    if (use_cpu) {
++        s.arena_buffer = ggml_backend_cpu_buffer_from_ptr(arena, s.store->slot_bytes());
++        if (s.arena_buffer == nullptr) throw std::runtime_error("galactus_h4: tampon CPU refuse");
++        for (const auto & entry : s.pending) {
++            const std::uint32_t li = static_cast<std::uint32_t>(entry.layer) - ExpertCache::first_layer;
++            unsigned char * address = arena + s.store->layer_base(li) + entry.role_offset;
++            if (ggml_backend_tensor_alloc(s.arena_buffer, entry.tensor, address) != GGML_STATUS_SUCCESS) {
++                throw std::runtime_error("galactus_h4: tensor_alloc CPU a echoue");
++            }
++            if (entry.tensor->buffer == nullptr) throw std::runtime_error("galactus_h4: tampon nul");
++        }
++        s.activated = true;
++        std::atexit([] {
++            auto & st = state();
++            if (st.arena_buffer != nullptr) { ggml_backend_buffer_free(st.arena_buffer); st.arena_buffer = nullptr; }
++        });
++        std::fprintf(stderr, "galactus_h4: %zu tenseurs adosses a l'arene ('%s'), experts sur CPU\n",
++                     s.pending.size(), ggml_backend_buffer_name(s.arena_buffer));
++        s.pending.clear();
++        return;
++    }
++    // L'arene depasse maxBufferLength (86,6 Go sur M5 Max) : ggml la decoupe
++    // en plusieurs MTLBuffers qui se CHEVAUCHENT de max_tensor_size. Nos
++    // tenseurs a pas d'arene s'etendent sur toute la plaque d'une couche
++    // (quota x enregistrement, ~1,5 Go) : c'est CETTE taille qui doit etre
++    // le chevauchement, sinon la plaque qui tombe sur une frontiere devient
++    // introuvable (mesure : couche 74, 'buffer is nil', a ~86 Go).
++    std::uint64_t max_record = 0;
++    for (const auto record : frozen_layer_record_bytes()) {
++        max_record = std::max(max_record, record);
++    }
++    const std::uint64_t max_slab =
++        max_record * static_cast<std::uint64_t>(s.store->slots_per_layer());
++    s.arena_buffer = ggml_backend_dev_buffer_from_host_ptr(
++        device, arena, s.store->slot_bytes(), max_slab);
++    if (s.arena_buffer == nullptr) {
++        throw std::runtime_error("galactus_h4: buffer_from_host_ptr refuse");
++    }
++
++    for (const auto & entry : s.pending) {
++        const std::uint32_t layer_index =
++            static_cast<std::uint32_t>(entry.layer) - ExpertCache::first_layer;
++        unsigned char * address = arena + s.store->layer_base(layer_index) + entry.role_offset;
++        const auto status = ggml_backend_tensor_alloc(s.arena_buffer, entry.tensor, address);
++        if (status != GGML_STATUS_SUCCESS) {
++            throw std::runtime_error("galactus_h4: tensor_alloc a echoue (couche "
++                                     + std::to_string(entry.layer) + ")");
++        }
++    }
++    for (const auto & entry : s.pending) {
++        if (entry.tensor->buffer == nullptr || entry.tensor->data == nullptr) {
++            throw std::runtime_error(std::string("galactus_h4: tenseur sans tampon apres adossement: ")
++                                     + entry.tensor->name);
++        }
++    }
++    s.activated = true;
++    // Le tampon Metal doit etre libere AVANT le demontage du device ggml,
++    // sinon son residency set n'est pas vide et l'assert de ggml-metal-device
++    // tue le processus apres Exiting... atexit s'enregistre ici, donc APRES
++    // la construction du device : il s'executera avant sa destruction.
++    std::atexit([] {
++        auto & st = state();
++        if (st.arena_buffer != nullptr) {
++            ggml_backend_buffer_free(st.arena_buffer);
++            st.arena_buffer = nullptr;
++        }
++    });
++    std::fprintf(stderr,
++                 "galactus_h4: %zu tenseurs adosses a l'arene ('%s'), cablage actif\n",
++                 s.pending.size(), ggml_backend_buffer_name(s.arena_buffer));
++    s.pending.clear();
++}
++
++ggml_tensor * remap_ids(ggml_context * ctx, ggml_tensor * selected_experts, int layer) {
++    layer_tags[layer].layer = layer;
++    return ggml_map_custom1(ctx, selected_experts, remap_callback, 1, &layer_tags[layer]);
++}
++
++void debug_probe(const ggml_tensor * gate, const ggml_tensor * up,
++                 const ggml_tensor * down, int layer) {
++    static std::atomic<bool> done{false};
++    bool expected = false;
++    if (!done.compare_exchange_strong(expected, true)) return;
++    for (const auto * t : {gate, up, down}) {
++        std::fprintf(stderr,
++            "galactus_h4: graphe couche %d voit '%s' type=%s ne2=%lld nb2=%zu data=%p tampon=%s\n",
++            layer, t->name, ggml_type_name(t->type),
++            (long long) t->ne[2], t->nb[2], t->data,
++            t->buffer != nullptr ? ggml_backend_buffer_name(t->buffer) : "NUL");
++    }
++}
++
++// Sonde differentielle : GALACTUS_H4_DUMP=1 imprime, pour la couche 3, les
++// tenseurs intermediaires du MoE (absmax + 4 premieres valeurs + empreinte).
++// Deux runs — stock et cablage — et la premiere ligne qui diverge nomme
++// l'operation coupable. Fonctionne AUSSI sans cablage (GALACTUS_H4 absent).
++bool dump_callback(ggml_tensor * t, bool ask, void * user_data) {
++    (void) user_data;
++    static const std::vector<std::string> wanted = [] {
++        const char * layer = std::getenv("GALACTUS_H4_DUMP_LAYER");
++        const std::string suffix = std::string("-") + (layer != nullptr && layer[0] != '\0' ? layer : "3");
++        const char * stems[] = {
++            "ffn_moe_logits", "ffn_moe_probs", "ffn_moe_argsort",
++            "ffn_moe_topk", "ffn_moe_topk_galactus", "ffn_moe_weights",
++            "ffn_moe_weights_norm", "ffn_moe_gate", "ffn_moe_up",
++            "ffn_moe_down", "ffn_moe_out", "ffn_out", "l_out",
++        };
++        std::vector<std::string> names;
++        for (const char * stem : stems) names.push_back(stem + suffix);
++        return names;
++    }();
++    bool match = false;
++    for (const auto & name : wanted) {
++        if (name == t->name) { match = true; break; }
++    }
++    if (!match) return false;      // ask: pas interesse ; observe: rien
++    if (ask) return true;
++    static const int cap = [] {
++        const char * value = std::getenv("GALACTUS_H4_DUMP_CAP");
++        return value != nullptr && value[0] != '\0' ? std::atoi(value) : 26;
++    }();
++    static std::atomic<int> printed{0};
++    if (printed.fetch_add(1) >= cap) return true;
++    const auto count = ggml_nelements(t);
++    // Lecture INTEGRALE : l'ancienne borne 4096 laissait le token 2 des
++    // micro-lots (l_out = 6144 x 2 = 12288 elements) hors comparaison.
++    std::vector<float> values(static_cast<std::size_t>(count));
++    std::uint64_t digest = 0;
++    if (t->type == GGML_TYPE_F32) {
++        ggml_backend_tensor_get(t, values.data(), 0, values.size() * sizeof(float));
++        digest = fnv1a64(reinterpret_cast<const unsigned char *>(values.data()),
++                         values.size() * sizeof(float));
++    } else if (t->type == GGML_TYPE_I32) {
++        std::vector<std::int32_t> raw(values.size());
++        ggml_backend_tensor_get(t, raw.data(), 0, raw.size() * sizeof(std::int32_t));
++        digest = fnv1a64(reinterpret_cast<const unsigned char *>(raw.data()),
++                         raw.size() * sizeof(std::int32_t));
++        for (std::size_t i = 0; i < raw.size(); ++i) values[i] = static_cast<float>(raw[i]);
++    } else {
++        std::fprintf(stderr, "galactus_dump: %s type=%s (non lu)\n", t->name, ggml_type_name(t->type));
++        return true;
++    }
++    double absmax = 0.0, sum = 0.0;
++    for (const float v : values) { absmax = std::max(absmax, (double) std::fabs(v)); sum += v; }
++    std::fprintf(stderr,
++        "galactus_dump: %-26s ne=[%lld,%lld,%lld] empreinte=%016llx absmax=%.9g somme=%.9g v0..3=[%.9g %.9g %.9g %.9g]\n",
++        t->name, (long long) t->ne[0], (long long) t->ne[1], (long long) t->ne[2],
++        (unsigned long long) digest,
++        absmax, sum, values.size() > 0 ? values[0] : 0.0f, values.size() > 1 ? values[1] : 0.0f,
++        values.size() > 2 ? values[2] : 0.0f, values.size() > 3 ? values[3] : 0.0f);
++    return true;
++}
++
++bool dump_requested() {
++    const char * flag = std::getenv("GALACTUS_H4_DUMP");
++    return flag != nullptr && std::strcmp(flag, "1") == 0;
++}
++
++Stats stats() {
++    auto & s = state();
++    return {
++        s.served_layers.load(std::memory_order_relaxed),
++        s.hits.load(std::memory_order_relaxed),
++        s.misses.load(std::memory_order_relaxed),
++        s.bytes_read.load(std::memory_order_relaxed),
++    };
++}
++
++}  // namespace galactus_h4
