@@ -21,6 +21,7 @@ export type PermissionKind =
   | "shell"
   | "obsidian"
   | "memory"
+  | "web"
   | "mcp";
 
 export interface PermissionRequest {
@@ -268,6 +269,22 @@ function builtinTools(hasVault: boolean, role: AgentRole = "main"): ToolDef[] {
     {
       type: "function",
       function: {
+        name: "fetch_url",
+        description:
+          "Fetch a web page or API endpoint over http(s). Prefer light API endpoints over heavy HTML pages; oversized responses spill to a scratch file you can re-read by sections.",
+        parameters: {
+          type: "object",
+          properties: {
+            url: { type: "string", description: "Full http(s) URL" },
+            max_bytes: { type: "number", description: "Response cap in bytes (default 200000)" },
+          },
+          required: ["url"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
         name: "run_command",
         description:
           "Run a shell command (zsh) on the user's machine. Output truncated to 200 KB.",
@@ -386,6 +403,7 @@ function activityModeFor(tool: string): import("./pixel").PixelMode {
     case "obsidian_read":
     case "obsidian_search":
     case "use_skill":
+    case "fetch_url":
       return "reading";
     case "write_file":
     case "obsidian_append":
@@ -475,6 +493,9 @@ export class Agent {
 
   private systemPrompt(): string {
     const lang = getLang() === "fr" ? "French" : "English";
+    const today = new Date().toLocaleDateString(getLang() === "fr" ? "fr-FR" : "en-US", {
+      weekday: "long", year: "numeric", month: "long", day: "numeric",
+    });
     const identity =
       this.taskSystem ??
       "You are Galactus, a local AI assistant by Noxalis Lab, running fully on the user's Mac.";
@@ -483,7 +504,8 @@ export class Agent {
       "You can read and write files, list folders and run shell commands through tools; every action " +
       "is gated by the user's explicit permission, so ask for what you need and use tools freely when helpful. " +
       "You can remember lasting facts with the remember tool. " +
-      "Be concise and warm. Answer in " + lang + " unless the user writes in another language.";
+      "Be concise and warm. Answer in " + lang + " unless the user writes in another language. " +
+      "Today is " + today + "; treat anything after your training data as unknown and verify time-sensitive facts with tools.";
     if (this.hasVault) {
       p += " The user has an Obsidian vault you can search, read and append to with the obsidian_* tools.";
     }
@@ -534,6 +556,25 @@ export class Agent {
 
   async send(userText: string): Promise<void> {
     this.messages.push({ role: "user", content: userText });
+    await this.turn(0);
+  }
+
+  /**
+   * Slash-command entry: load the named skill's instructions and run the
+   * user's request under them. The visible thread shows only what the user
+   * typed; the enriched content lives in the model history.
+   */
+  async sendSkill(name: string, userText: string): Promise<void> {
+    let body = "";
+    try {
+      body = await api.skillRead(name);
+    } catch {
+      /* unknown skill: fall through to the plain text */
+    }
+    const content = body
+      ? `[Skill « ${name} » activated — follow these instructions for this task]\n${body}\n\n[User request]\n${userText.trim() || "(start)"}`
+      : userText;
+    this.messages.push({ role: "user", content });
     await this.turn(0);
   }
 
@@ -894,6 +935,15 @@ export class Agent {
       if (req.kind === "fs_read" || req.kind === "fs_list") {
         const i = req.detail.lastIndexOf("/");
         prefix = i > 0 ? req.detail.slice(0, i + 1) : req.detail;
+      } else if (req.kind === "web") {
+        // "Always" on a URL grants its ORIGIN (scheme + host + "/"), not the
+        // whole web: one rule per site the user trusts.
+        try {
+          const u = new URL(req.detail);
+          prefix = `${u.protocol}//${u.host}/`;
+        } catch {
+          prefix = req.detail;
+        }
       } else if (req.kind === "mcp") {
         // Keep the trailing slash: "github" must not also grant "githubfoo".
         prefix = (req.detail.split("/")[0] ?? req.detail) + "/";
@@ -961,6 +1011,11 @@ export class Agent {
         const p = String(args.path ?? "");
         const ok = await this.gate({ kind: "fs_list", detail: p, elevated: false });
         result = ok ? await api.fsList(p) : "denied by user";
+      } else if (name === "fetch_url") {
+        const url = String(args.url ?? "");
+        const ok = await this.gate({ kind: "web", detail: url, elevated: false });
+        const cap = Math.min(Math.max(Math.floor(Number(args.max_bytes)) || 200_000, 1_000), 200_000);
+        result = ok ? await api.webFetch(url, cap) : "denied by user";
       } else if (name === "run_command") {
         const cmd = String(args.command ?? "");
         const ok = await this.gate({ kind: "shell", detail: cmd, elevated: isElevatedCommand(cmd) });

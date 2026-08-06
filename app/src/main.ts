@@ -45,6 +45,8 @@ let taskId: TaskId = currentTask();
 let taskOffer: { modelId: string; modelName: string } | null = null;
 let dropUnsub: (() => void) | null = null; // drag&drop unsubscribe, per chat view
 let convQuery = "";
+/** Skills cache for the slash-command autocomplete. */
+let slashSkills: SkillInfo[] = [];
 /** Honest generation stats: streamed chars / elapsed time (~4 chars per token). */
 let genStats: { convId: string; chars: number; startMs: number; endMs: number | null } | null = null;
 
@@ -355,6 +357,7 @@ function askPermission(req: PermissionRequest): Promise<PermissionDecision> {
       : req.kind === "shell" ? t("perm.runCommand")
       : req.kind === "obsidian" ? t("perm.obsidian")
       : req.kind === "memory" ? t("perm.memory")
+      : req.kind === "web" ? t("perm.web")
       : t("perm.mcpTool");
     const m = el(`<div class="modal-bd"><div class="modal ${req.elevated ? "elev" : ""} ${req.diff ? "wide" : ""}">
       <h3>${esc(t("perm.title"))}</h3>
@@ -471,11 +474,57 @@ function chatView(): HTMLElement {
   if (!ready && !generating) input.disabled = true;
   const sendBtn = wrap.querySelector<HTMLElement>("#send")!;
   sendBtn.addEventListener("click", submitChat);
+
+  // ---- slash-command autocomplete (/skill) ----
+  const slashBox = el(`<div class="slash-menu" id="slashmenu" style="display:none"></div>`);
+  wrap.querySelector<HTMLElement>(".comp-box")!.prepend(slashBox);
+  let slashSel = 0;
+  const slashMatches = (): SkillInfo[] => {
+    const m = input.value.match(/^\/([\w-]*)$/);
+    if (!m) return [];
+    const q = m[1].toLowerCase();
+    return slashSkills.filter((s) => s.name.toLowerCase().startsWith(q)).slice(0, 6);
+  };
+  const paintSlash = () => {
+    const list = slashMatches();
+    if (!list.length) { slashBox.style.display = "none"; return; }
+    slashSel = Math.min(slashSel, list.length - 1);
+    slashBox.style.display = "block";
+    slashBox.innerHTML = list
+      .map(
+        (s, i) =>
+          `<div class="slash-item ${i === slashSel ? "on" : ""}" data-slash="${esc(s.name)}"><b>/${esc(s.name)}</b><span>${esc(s.description || "")}</span></div>`
+      )
+      .join("");
+  };
+  const pickSlash = (name: string) => {
+    input.value = `/${name} `;
+    slashBox.style.display = "none";
+    input.focus();
+  };
+  slashBox.addEventListener("mousedown", (e) => {
+    e.preventDefault(); // keep the textarea focused
+    const it = (e.target as HTMLElement).closest("[data-slash]") as HTMLElement | null;
+    if (it) pickSlash(it.dataset.slash!);
+  });
+
   input.addEventListener("keydown", (e) => {
+    const list = slashMatches();
+    if (list.length && slashBox.style.display !== "none") {
+      if (e.key === "ArrowDown") { e.preventDefault(); slashSel = (slashSel + 1) % list.length; paintSlash(); return; }
+      if (e.key === "ArrowUp") { e.preventDefault(); slashSel = (slashSel - 1 + list.length) % list.length; paintSlash(); return; }
+      if (e.key === "Tab" || e.key === "Enter") { e.preventDefault(); pickSlash(list[slashSel].name); return; }
+      if (e.key === "Escape") { slashBox.style.display = "none"; return; }
+    }
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (!generating) submitChat(); }
     if (e.key === "Escape" && generating) { agent?.stop(); }
   });
-  input.addEventListener("input", () => { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 200) + "px"; });
+  input.addEventListener("input", () => {
+    input.style.height = "auto";
+    input.style.height = Math.min(input.scrollHeight, 200) + "px";
+    slashSel = 0;
+    paintSlash();
+  });
   setTimeout(() => { if (!input.disabled) input.focus(); }, 40);
   return wrap;
 }
@@ -838,7 +887,14 @@ async function submitChat(): Promise<void> {
   scrollChatDown();
   await ensureAgent();
   const inst = agent;
-  if (inst) await inst.send(text);
+  if (!inst) return;
+  // "/skill rest…" routes through the named skill's instructions.
+  const slash = text.match(/^\/([\w-]+)\s*([\s\S]*)$/);
+  if (slash && slashSkills.some((s) => s.name === slash[1])) {
+    await inst.sendSkill(slash[1], slash[2]);
+  } else {
+    await inst.send(text);
+  }
 }
 
 function argPreview(detail: string): string {
@@ -849,7 +905,7 @@ function prettyTool(name: string): string {
   const map: Record<string, string> = {
     read_file: t("tool.read"), write_file: t("tool.write"), list_directory: t("tool.list"),
     run_command: t("tool.run"), remember: t("tool.remember"), use_skill: t("tool.skill"),
-    read_document: t("tool.doc"), run_workflow: t("tool.workflow"),
+    read_document: t("tool.doc"), run_workflow: t("tool.workflow"), fetch_url: t("tool.web"),
     obsidian_search: t("tool.osearch"), obsidian_read: t("tool.oread"), obsidian_append: t("tool.owrite"),
   };
   if (map[name]) return map[name];
@@ -1119,6 +1175,7 @@ function agentView(): HTMLElement {
         await api.settingsSet("skills_off", JSON.stringify([...skillsOff]));
         const fresh = (await api.skillsList()).filter((s) => !skillsOff.has(s.name));
         agent?.setSkills(fresh);
+        slashSkills = fresh;
         render();
       });
       skBox.appendChild(c);
@@ -1384,6 +1441,7 @@ async function boot() {
   enabled = await loadEnabled().catch(() => []);
   await loadTaskDefs();
   await store.refreshList().catch(() => {});
+  try { slashSkills = (await api.skillsList()).filter((k) => !skillsOff.has(k.name)); } catch {}
   try { mcpCount = (await api.mcpTools()).length; } catch {}
   await refreshServer();
   render();

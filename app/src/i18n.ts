@@ -134,6 +134,8 @@ const dict: Record<string, { en: string; fr: string }> = {
   "perm.obsidian": { en: "Access your vault", fr: "Accéder à ton coffre" },
   "perm.mcpTool": { en: "Use a connector", fr: "Utiliser un connecteur" },
   "perm.memory": { en: "Save to persistent memory", fr: "Écrire dans la mémoire persistante" },
+  "perm.web": { en: "Fetch a web page", fr: "Consulter une page web" },
+  "tool.web": { en: "Fetch URL", fr: "Consulter l'URL" },
   "perm.allowOnce": { en: "Allow once", fr: "Autoriser une fois" },
   "perm.allowAlways": { en: "Always", fr: "Toujours" },
   "perm.deny": { en: "Deny", fr: "Refuser" },

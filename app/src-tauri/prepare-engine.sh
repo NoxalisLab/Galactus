@@ -77,3 +77,10 @@ for f in models-registry.json moe-profile.py galactus-pack-plan.py galactus-pack
   cp "$ROOT/scripts/$f" "$HERE/packaged/scripts/$f"
 done
 echo "Scripts embarques dans $HERE/packaged/scripts"
+
+# Skills livrees avec l'app (semees dans Application Support au premier lancement).
+if [ -d "$ROOT/app/skills" ]; then
+  rm -rf "$HERE/packaged/skills"
+  cp -R "$ROOT/app/skills" "$HERE/packaged/skills"
+  echo "Skills embarquees : $(ls "$HERE/packaged/skills" | tr '\n' ' ')"
+fi

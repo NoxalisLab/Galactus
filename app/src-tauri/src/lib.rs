@@ -465,6 +465,27 @@ fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -> Resu
         .spawn()
         .map_err(|e| format!("spawn llama-server: {e}"))?;
 
+    // Watchdog: the engine must die WITH the app in every death mode (crash,
+    // force quit, kill -9), not only on the clean RunEvent::Exit path. A tiny
+    // detached shell outlives us, watches our PID, and kills the server when
+    // we are gone. It verifies the command name first so PID reuse can never
+    // make it kill an unrelated process.
+    {
+        let app_pid = std::process::id();
+        let srv_pid = child.id();
+        let _ = Command::new("/bin/zsh")
+            .arg("-c")
+            .arg(format!(
+                "while kill -0 {app_pid} 2>/dev/null; do sleep 3; done; \
+                 if ps -p {srv_pid} -o comm= 2>/dev/null | grep -q llama-server; then \
+                   kill {srv_pid} 2>/dev/null; sleep 2; kill -9 {srv_pid} 2>/dev/null; fi"
+            ))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+    }
+
     let generation = SERVER_GEN.fetch_add(1, Ordering::SeqCst) + 1;
     {
         let mut s = server_state().lock().unwrap_or_else(|e| e.into_inner());
@@ -910,6 +931,46 @@ fn tool_fs_read(path: String, max_bytes: usize, offset: Option<u64>) -> Result<S
             "\n…(truncated at byte {end} of {} — read further with offset={end})",
             data.len()
         ));
+    }
+    Ok(text)
+}
+
+/// Fetch a URL for the agent (curl under the hood: TLS and redirects handled
+/// by the system tool, nothing new to bundle). Output is capped like every
+/// tool; the permission gate on the frontend shows the exact URL.
+#[tauri::command]
+fn tool_web_fetch(url: String, max_bytes: Option<usize>) -> Result<String, String> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err("only http(s) URLs are allowed".into());
+    }
+    let child = Command::new("curl")
+        .args([
+            "-sL",
+            "--max-time",
+            "45",
+            "--max-filesize",
+            "5000000",
+            "-A",
+            "Galactus/0.1 (macOS; local assistant)",
+        ])
+        .arg(&url)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    let out = run_with_deadline(child, Instant::now() + Duration::from_secs(50))?;
+    let Some(status) = out.status else {
+        return Err("fetch timed out".into());
+    };
+    if !status.success() {
+        let err = out.stderr.trim().to_string();
+        return Err(if err.is_empty() { format!("fetch failed (curl exit {})", status.code().unwrap_or(-1)) } else { err });
+    }
+    let cap = max_bytes.unwrap_or(TOOL_MAX_OUTPUT).min(TOOL_MAX_OUTPUT);
+    let mut text = out.stdout;
+    if text.len() > cap {
+        text.truncate(floor_char_boundary(&text, cap));
+        text.push_str("\n…(truncated)");
     }
     Ok(text)
 }
@@ -1383,6 +1444,33 @@ struct SkillInfo {
     description: String,
     path: String,
     scope: String, // "global" | "workspace"
+}
+
+/// Copy the skills shipped in the bundle into the global skills folder, so a
+/// fresh install starts with a curated set. User-modified or user-deleted
+/// skills are left alone (copy only when the skill folder does not exist).
+fn seed_bundled_skills() {
+    let Some(res) = resource_dir() else { return };
+    let src = res.join("packaged/skills");
+    let Ok(rd) = std::fs::read_dir(&src) else { return };
+    let dest_base = app_support().join("skills");
+    for e in rd.flatten() {
+        let p = e.path();
+        if !p.is_dir() {
+            continue;
+        }
+        let name = e.file_name();
+        let dest = dest_base.join(&name);
+        if dest.exists() {
+            continue;
+        }
+        let _ = std::fs::create_dir_all(&dest);
+        if let Ok(files) = std::fs::read_dir(&p) {
+            for f in files.flatten() {
+                let _ = std::fs::copy(f.path(), dest.join(f.file_name()));
+            }
+        }
+    }
 }
 
 fn skill_search_dirs() -> Vec<(PathBuf, String)> {
@@ -1908,7 +1996,17 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             let _ = app.get_webview_window("main");
+            seed_bundled_skills();
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            // macOS convention: the red button hides the window, the app
+            // lives on in the Dock; ⌘Q is the one that really quits (and
+            // takes the engine down through RunEvent::Exit below).
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let _ = window.hide();
+                api.prevent_close();
+            }
         })
         .invoke_handler(tauri::generate_handler![
             hw_info,
@@ -1919,6 +2017,7 @@ pub fn run() {
             install_model,
             cancel_install,
             tool_fs_read,
+            tool_web_fetch,
             scratch_write,
             tool_fs_write,
             tool_fs_preview,
@@ -1951,7 +2050,15 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while running Galactus")
-        .run(|_app, event| {
+        .run(|app, event| {
+            // Dock click with the window closed must bring it back (macOS
+            // keeps the process alive after the red button).
+            if let tauri::RunEvent::Reopen { .. } = event {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+            }
             // The window closing must take the engine with it: an abandoned
             // llama-server keeps tens of GB of RAM pinned, and every MCP
             // server would linger as an orphan.

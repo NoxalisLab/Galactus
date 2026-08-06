@@ -71,6 +71,8 @@ export const api = {
     invoke<string>("tool_fs_read", { path, maxBytes, offset }),
   scratchWrite: (name: string, content: string) =>
     invoke<string>("scratch_write", { name, content }),
+  webFetch: (url: string, maxBytes?: number) =>
+    invoke<string>("tool_web_fetch", { url, maxBytes }),
   fsWrite: (path: string, content: string) =>
     invoke<string>("tool_fs_write", { path, content }),
   fsPreview: (path: string, content: string) =>
