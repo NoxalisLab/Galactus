@@ -1,5 +1,5 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { api, HwInfo, ModelEntry, onEvent, ServerStatus, SkillInfo } from "./api";
+import { api, benchOnce, HwInfo, ModelEntry, onEvent, ServerStatus, SkillInfo } from "./api";
 import {
   Agent,
   clearStandingPermissions,
@@ -37,6 +37,8 @@ let autonomy: Autonomy = "assisted";
 let skillsOff: Set<string> = new Set();
 let serverFail: { kind: "failed" | "timeout"; code?: number; log: string } | null = null;
 const installProgress = new Map<string, { pct: number; label: string }>();
+/** Real measured throughput per model id (persisted in settings as bench_<id>). */
+const benchResults: Record<string, number> = {};
 
 // ---------- new-feature state ----------
 let previewPanel: PreviewPanel | null = null; // chat-side preview (destroyed on every render)
@@ -47,6 +49,13 @@ let dropUnsub: (() => void) | null = null; // drag&drop unsubscribe, per chat vi
 let convQuery = "";
 /** Skills cache for the slash-command autocomplete. */
 let slashSkills: SkillInfo[] = [];
+/** One-shot: the next message goes through the sourced-research workflow. */
+let deepResearch = false;
+/** Dictation state: text present in the input before dictation started. */
+let dictating = false;
+let dictBase = "";
+/** Read-aloud state, global on purpose: the DOM is rebuilt on every repaint. */
+let ttsPlaying = false;
 /** Honest generation stats: streamed chars / elapsed time (~4 chars per token). */
 let genStats: { convId: string; chars: number; startMs: number; endMs: number | null } | null = null;
 
@@ -86,6 +95,8 @@ const I = {
   term: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m4 17 6-6-6-6"/><path d="M12 19h8"/></svg>`,
   folder: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8a7cff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`,
   chip: `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="7" y="7" width="10" height="10" rx="2"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/></svg>`,
+  scope: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.35-4.35"/><path d="M11 8v6M8 11h6"/></svg>`,
+  mic: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2.5" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3.5"/></svg>`,
 };
 
 // ---------- toast (alert() is unreliable inside WKWebView) ----------
@@ -419,12 +430,14 @@ function chatView(): HTMLElement {
       <textarea id="ci" rows="2" placeholder="${esc(t("chat.placeholder"))}"></textarea>
       <div class="comp-bar">
         <div class="tool-btn" id="gotoconn">${I.conn}<span>${mcpCount}</span></div>
+        ${slashSkills.some((s) => s.name === "recherche-sourcee") ? `<div class="tool-btn deep ${deepResearch ? "on" : ""}" id="deepbtn" title="${esc(t("chat.deepHint"))}">${I.scope}<span>${esc(t("chat.deep"))}</span></div>` : ""}
         <div class="seg-mode" id="modeseg">
           <button data-a="manual" class="${autonomy === "manual" ? "on" : ""}">${esc(t("mode.manual"))}</button>
           <button data-a="assisted" class="${autonomy === "assisted" ? "on" : ""}">${esc(t("mode.assisted"))}</button>
           <button data-a="autonomous" class="${autonomy === "autonomous" ? "on" : ""}">${esc(t("mode.autonomous"))}</button>
         </div>
         <span class="grow"></span>
+        <div class="tool-btn ${dictating ? "rec" : ""}" id="micbtn" title="${esc(t(dictating ? "chat.micStop" : "chat.mic"))}">${I.mic}</div>
         <span class="hint" id="drophint">${esc(t("chat.localHint"))}</span>
         <div class="send ${generating ? "stop" : ""} ${!ready && !generating ? "off" : ""}" id="send">${generating ? STOP_ICON : I.up}</div>
       </div>
@@ -434,6 +447,27 @@ function chatView(): HTMLElement {
   const input = wrap.querySelector<HTMLTextAreaElement>("#ci")!;
   wrap.querySelector("#newchat")!.addEventListener("click", newChat);
   wrap.querySelector("#gotoconn")!.addEventListener("click", () => { view = "connectors"; render(); });
+  wrap.querySelector("#deepbtn")?.addEventListener("click", (e) => {
+    deepResearch = !deepResearch;
+    (e.currentTarget as HTMLElement).classList.toggle("on", deepResearch);
+  });
+  wrap.querySelector("#micbtn")?.addEventListener("click", async () => {
+    if (dictating) {
+      api.voiceStop().catch(() => {});
+      return;
+    }
+    const inp = document.getElementById("ci") as HTMLTextAreaElement | null;
+    dictBase = inp ? (inp.value.trim() ? inp.value.trimEnd() + " " : "") : "";
+    dictating = true;
+    document.getElementById("micbtn")?.classList.add("rec");
+    try {
+      await api.voiceStart(getLang() === "fr" ? "fr-FR" : "en-US");
+    } catch (e: any) {
+      dictating = false;
+      document.getElementById("micbtn")?.classList.remove("rec");
+      toast(t("voice.error").replace("%s", String(e?.message ?? e)));
+    }
+  });
   wrap.querySelector("#modeseg")!.addEventListener("click", async (e) => {
     const b = (e.target as HTMLElement).closest("[data-a]") as HTMLElement | null;
     if (!b) return;
@@ -619,6 +653,27 @@ function paintChat(): void {
     }
   }
 
+  // Read-aloud: a discreet control on every finished assistant group.
+  if (!generating) {
+    for (const row of Array.from(log.querySelectorAll<HTMLElement>(".row-a"))) {
+      const b = row.querySelector<HTMLElement>(".body");
+      if (!b || b.querySelector(".sayrow")) continue;
+      const text = Array.from(b.querySelectorAll<HTMLElement>(".msg-a"))
+        .map((mEl) => mEl.textContent ?? "")
+        .join("\n")
+        .trim();
+      if (!text) continue;
+      const say = el(`<div class="sayrow"><span class="link">${I.mic} ${esc(t("chat.speak"))}</span></div>`);
+      say.querySelector(".link")!.addEventListener("click", () => {
+        // Global toggle: closures die on repaint, the flag must not.
+        if (ttsPlaying) { api.ttsStop().catch(() => {}); ttsPlaying = false; return; }
+        ttsPlaying = true;
+        api.ttsSpeak(text).catch(() => { ttsPlaying = false; });
+      });
+      b.appendChild(say);
+    }
+  }
+
   // Live generation stats under the last answer: streamed chars / elapsed
   // time. An ESTIMATE (≈4 chars per token), and labelled as such.
   const last = conv.items[conv.items.length - 1];
@@ -778,14 +833,16 @@ async function ensureAgent(): Promise<void> {
   const conv = store.current();
   if (conv.history.length) inst.loadHistory(conv.history);
   try {
-    const [mem, s, tools, skills] = await Promise.all([
+    const [mem, s, tools, skills, kbFolders] = await Promise.all([
       api.memoryRead(), api.settingsGet(), api.mcpTools(), api.skillsList(),
+      api.kbFolders().catch(() => [] as string[]),
     ]);
     if (agent !== inst) return;
     const memOn = s["memory_on"] !== "0";
     inst.setMemory(memOn ? mem : "", !!(s["obsidian_vault"] && s["obsidian_vault"].length));
     inst.setMcpTools(tools);
     inst.setSkills(skills.filter((k) => !skillsOff.has(k.name)));
+    inst.setKnowledge(kbFolders.length > 0);
   } catch {
     /* the agent still works without memory/MCP/skills */
   }
@@ -888,10 +945,16 @@ async function submitChat(): Promise<void> {
   await ensureAgent();
   const inst = agent;
   if (!inst) return;
+  // One-shot: whatever branch wins, the deep-research arm is consumed.
+  const wantDeep = deepResearch;
+  deepResearch = false;
+  document.getElementById("deepbtn")?.classList.remove("on");
   // "/skill rest…" routes through the named skill's instructions.
   const slash = text.match(/^\/([\w-]+)\s*([\s\S]*)$/);
   if (slash && slashSkills.some((s) => s.name === slash[1])) {
     await inst.sendSkill(slash[1], slash[2]);
+  } else if (wantDeep && slashSkills.some((s) => s.name === "recherche-sourcee")) {
+    await inst.sendSkill("recherche-sourcee", text);
   } else {
     await inst.send(text);
   }
@@ -906,6 +969,7 @@ function prettyTool(name: string): string {
     read_file: t("tool.read"), write_file: t("tool.write"), list_directory: t("tool.list"),
     run_command: t("tool.run"), remember: t("tool.remember"), use_skill: t("tool.skill"),
     read_document: t("tool.doc"), run_workflow: t("tool.workflow"), fetch_url: t("tool.web"),
+    search_knowledge: t("tool.kb"),
     obsidian_search: t("tool.osearch"), obsidian_read: t("tool.oread"), obsidian_append: t("tool.owrite"),
   };
   if (map[name]) return map[name];
@@ -944,13 +1008,18 @@ function modelsView(): HTMLElement {
     grid.replaceWith(el(`<div class="empty-block"><span class="big">◇</span><b>${esc(t("models.empty"))}</b><span>${esc(t("models.emptyHint"))}</span></div>`));
     return wrap;
   }
-  const maxTps = Math.max(...registry.map((m) => expectedTps(m) ?? 0), 1);
+  const maxTps = Math.max(
+    ...registry.map((m) => Math.max(expectedTps(m) ?? 0, benchResults[m.id] ?? 0)),
+    1
+  );
   for (const m of registry) {
     const v = verdict(m);
-    const tps = expectedTps(m);
+    const estimate = expectedTps(m);
+    const measured = benchResults[m.id];
+    const tps = measured ?? estimate; // a real measurement beats the interpolation
     const runningHere = server.running && server.model_id === m.id;
     const prog = installProgress.get(m.id);
-    const bar = tps ? Math.max(6, (tps / maxTps) * 100) : 0;
+    const bar = tps ? Math.min(100, Math.max(6, (tps / maxTps) * 100)) : 0;
     const speedColor = !v.ok ? "var(--dim)" : "var(--acc-tx)";
     const card = el(`<div class="mcard">
       <div class="top">
@@ -958,7 +1027,7 @@ function modelsView(): HTMLElement {
           <div class="nm"><b>${esc(m.name)}</b><span class="chip-cert">✓ ${esc(t("models.certified"))}</span></div>
           <span class="meta">${esc(m.arch)} · ${fmtGb(m.gguf_bytes)} · ${m.experts_used ?? "?"}/${m.experts ?? "?"}</span>
         </div>
-        <div class="spd"><b style="color:${speedColor}">${tps && v.ok ? "~" + tps.toFixed(0) : "—"}</b><small>${esc(v.ok ? t("models.onThisMac") : "—")}</small></div>
+        <div class="spd"><b style="color:${speedColor}">${tps && v.ok ? (measured ? "" : "~") + tps.toFixed(0) : "—"}</b><small>${esc(v.ok ? t(measured ? "models.measured" : "models.onThisMac") : "—")}</small></div>
       </div>
       <div class="bar"><div style="width:${bar}%"></div></div>
       <div class="foot"><span class="n">${prog ? `<b style="color:var(--acc-tx)">${Math.round(prog.pct)}%</b> · ${esc(installLabel(prog.label))}` : esc(v.note || (m.installed ? t("models.installed") : (m.arch + " · " + (m.experts_used ?? "?") + " active")))}</span><span data-a></span></div>
@@ -982,9 +1051,26 @@ function modelsView(): HTMLElement {
       });
       slot.replaceWith(b);
     } else if (runningHere) {
+      const box = el(`<span style="display:flex;gap:8px"></span>`);
+      const bench = el(`<button class="bs">${esc(t("models.bench"))}</button>`) as HTMLButtonElement;
+      bench.addEventListener("click", async () => {
+        if (server.phase !== "ready") return;
+        bench.disabled = true;
+        bench.textContent = t("models.benchRunning");
+        try {
+          const r = await benchOnce(server.port);
+          benchResults[m.id] = r.tps;
+          await api.settingsSet("bench_" + m.id, JSON.stringify({ tps: r.tps, at: Date.now() }));
+          toast(t("models.benchDone").replace("%s", r.tps.toFixed(1)), "ok");
+        } catch (e: any) {
+          toast(String(e?.message ?? e));
+        }
+        render();
+      });
       const b = el(`<button class="bd">${esc(t("models.stop"))}</button>`);
       b.addEventListener("click", async () => { await api.serverStop(); agent = null; await refreshServer(); render(); });
-      slot.replaceWith(b);
+      box.append(bench, b);
+      slot.replaceWith(box);
     } else {
       const b = el(`<button class="bp">${esc(t("models.start"))}</button>`);
       b.addEventListener("click", async () => { try { serverFail = null; await api.serverStart(m.id, null); agent = null; await refreshServer(); render(); } catch (e: any) { toast(String(e?.message ?? e)); } });
@@ -1084,6 +1170,13 @@ function memoryView(): HTMLElement {
         </div>
       </div>
       <div class="card">
+        <div class="hd"><div class="cico">⌘</div><div class="grow"><b>${esc(t("kb.title"))}</b><span class="d" id="kbstats">${esc(t("kb.hint"))}</span></div>
+          <button class="bs" id="kbadd">${esc(t("kb.add"))}</button>
+          <button class="bp" id="kbreindex">${esc(t("kb.reindex"))}</button>
+        </div>
+        <div id="kbfolders" style="display:flex;flex-direction:column;gap:6px"></div>
+      </div>
+      <div class="card">
         <div class="hd"><div class="cico">◈</div><div class="grow"><b>Obsidian</b><span class="d" id="vaultline">${esc(t("mem.vaultNone"))}</span></div><button class="bs" id="vpick">${esc(t("mem.chooseVault"))}</button></div>
       </div>
     </div></div></div>`);
@@ -1123,6 +1216,57 @@ function memoryView(): HTMLElement {
     });
   }
   wrap.querySelector("#vpick")!.addEventListener("click", async () => { const p = await api.pickFolder(); if (p) { vaultline.textContent = p; await api.settingsSet("obsidian_vault", p); } });
+
+  // ---- knowledge folders ----
+  {
+    const foldersBox = wrap.querySelector<HTMLElement>("#kbfolders")!;
+    const statsLine = wrap.querySelector<HTMLElement>("#kbstats")!;
+    let kbList: string[] = [];
+    const paintKb = () => {
+      foldersBox.innerHTML = "";
+      if (!kbList.length) {
+        foldersBox.appendChild(el(`<span style="font-size:11.5px;color:var(--dim3)">${esc(t("kb.empty"))}</span>`));
+        return;
+      }
+      for (const f of kbList) {
+        const row = el(`<div class="kbrow"><span class="mono">${esc(f)}</span><span class="cx" data-del title="✕">×</span></div>`);
+        row.querySelector("[data-del]")!.addEventListener("click", async () => {
+          kbList = kbList.filter((x) => x !== f);
+          await api.kbSetFolders(kbList);
+          agent?.setKnowledge(kbList.length > 0);
+          paintKb();
+        });
+        foldersBox.appendChild(row);
+      }
+    };
+    api.kbFolders().then((f) => { kbList = f; paintKb(); }).catch(() => paintKb());
+    api.kbStats().then((s) => {
+      if (s) statsLine.textContent = t("kb.stats").replace("%f", String(s.files)).replace("%c", String(s.chunks));
+    }).catch(() => {});
+    wrap.querySelector("#kbadd")!.addEventListener("click", async () => {
+      const p = await api.pickFolder();
+      if (!p || kbList.includes(p)) return;
+      kbList.push(p);
+      await api.kbSetFolders(kbList);
+      agent?.setKnowledge(true);
+      paintKb();
+    });
+    const reBtn = wrap.querySelector<HTMLButtonElement>("#kbreindex")!;
+    reBtn.addEventListener("click", async () => {
+      reBtn.disabled = true;
+      const prev = reBtn.textContent;
+      reBtn.textContent = t("kb.reindexing");
+      try {
+        const s = await api.kbReindex();
+        statsLine.textContent = t("kb.stats").replace("%f", String(s.files)).replace("%c", String(s.chunks));
+        toast(t("kb.done").replace("%f", String(s.files)).replace("%c", String(s.chunks)), "ok");
+      } catch (e: any) {
+        toast(String(e?.message ?? e));
+      }
+      reBtn.disabled = false;
+      reBtn.textContent = prev;
+    });
+  }
   return wrap;
 }
 
@@ -1203,6 +1347,9 @@ function settingsView(): HTMLElement {
           <button data-am="auto">${esc(t("auto.auto"))}</button>
         </div>
       </div>
+      <div class="set-row"><div class="grow"><b>${esc(t("settings.api"))}</b><span>${esc(t("settings.apiHint"))}</span><span class="mono api-url">${server.running && server.phase === "ready" ? esc(`http://127.0.0.1:${server.port}/v1`) : esc(t("settings.apiOff"))}</span></div>
+        ${server.running && server.phase === "ready" ? `<button class="bs" id="apicopy">${esc(t("settings.apiCopy"))}</button>` : ""}
+      </div>
       <div class="set-row"><div class="grow"><b>${esc(t("settings.permissions"))}</b><span>${esc(t("settings.permissionsHint"))}</span></div><button class="bs" id="pclear">${esc(t("settings.permissionsClear"))}</button></div>
     </div></div></div>`);
   wrap.querySelector("#lang")!.addEventListener("click", async (e) => { const b = (e.target as HTMLElement).closest("[data-l]") as HTMLElement | null; if (!b) return; setLang(b.dataset.l as Lang); await loadTaskDefs(); render(); });
@@ -1224,6 +1371,15 @@ function settingsView(): HTMLElement {
       });
     }
   }
+  wrap.querySelector<HTMLButtonElement>("#apicopy")?.addEventListener("click", async (e) => {
+    const b = e.currentTarget as HTMLButtonElement;
+    try {
+      await navigator.clipboard.writeText(`http://127.0.0.1:${server.port}/v1`);
+      const prev = b.textContent;
+      b.textContent = t("settings.apiCopied");
+      setTimeout(() => { b.textContent = prev; }, 1400);
+    } catch {}
+  });
   {
     const b = wrap.querySelector<HTMLButtonElement>("#pclear")!;
     b.addEventListener("click", async () => {
@@ -1437,6 +1593,13 @@ async function boot() {
   if (s["root"]) { root = s["root"]; try { registry = await api.registry(); if (!registry.length) root = null; } catch { root = null; } }
   if (s["autonomy"]) autonomy = s["autonomy"] as Autonomy;
   try { skillsOff = new Set(JSON.parse(s["skills_off"] ?? "[]")); } catch {}
+  for (const [k, val] of Object.entries(s)) {
+    if (!k.startsWith("bench_")) continue;
+    try {
+      const parsed = JSON.parse(val);
+      if (Number.isFinite(parsed?.tps)) benchResults[k.slice(6)] = Number(parsed.tps);
+    } catch {}
+  }
   try { hw = await api.hwInfo(); } catch {}
   enabled = await loadEnabled().catch(() => []);
   await loadTaskDefs();
@@ -1451,6 +1614,29 @@ async function boot() {
       if (p.phase === "error") toast(t("install.failed").replace("%s", String(p.label ?? "")));
       api.registry().then((r) => { registry = r; render(); }).catch(() => render());
     } else { installProgress.set(p.model_id, { pct: p.pct, label: p.label }); if (view === "models") render(); }
+  });
+  await onEvent("galactus://voice", (p: any) => {
+    const inp = document.getElementById("ci") as HTMLTextAreaElement | null;
+    if (p.kind === "partial") {
+      if (inp) { inp.value = dictBase + String(p.text ?? ""); inp.dispatchEvent(new Event("input")); }
+      return;
+    }
+    dictating = false;
+    document.getElementById("micbtn")?.classList.remove("rec");
+    if (p.kind === "final") {
+      const spoken = String(p.text ?? "");
+      if (inp) {
+        inp.value = (dictBase + spoken).trimEnd() + (spoken.trim() ? " " : "");
+        inp.dispatchEvent(new Event("input"));
+        inp.focus();
+      } else if (spoken.trim()) {
+        // The user left the chat view mid-dictation: never lose the words.
+        toast(spoken, "ok");
+      }
+    } else if (p.kind === "error") {
+      const msg = String(p.text ?? "");
+      toast(msg === "permission_denied" ? t("voice.denied") : t("voice.error").replace("%s", msg));
+    }
   });
   await onEvent("galactus://server", async (p: any) => {
     if (p && (p.phase === "failed" || p.phase === "timeout")) {

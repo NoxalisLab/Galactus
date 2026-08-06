@@ -113,6 +113,18 @@ export const api = {
   convDelete: (id: string) => invoke<void>("conv_delete", { id }),
   docRead: (path: string, mode?: string) => invoke<string>("doc_read", { path, mode }),
   docCapabilities: () => invoke<{ swiftc: boolean; helper: boolean }>("doc_capabilities"),
+  voiceStart: (locale?: string) => invoke<void>("voice_start", { locale }),
+  voiceStop: () => invoke<void>("voice_stop"),
+  ttsSpeak: (text: string) => invoke<void>("tts_speak", { text }),
+  ttsStop: () => invoke<void>("tts_stop"),
+  kbFolders: () => invoke<string[]>("kb_folders"),
+  kbSetFolders: (folders: string[]) => invoke<void>("kb_set_folders", { folders }),
+  kbReindex: () =>
+    invoke<{ files: number; chunks: number; folders: string[]; indexed_at: number }>("kb_reindex"),
+  kbStats: () =>
+    invoke<{ files: number; chunks: number; folders: string[]; indexed_at: number } | null>("kb_stats"),
+  kbSearch: (query: string, k?: number) =>
+    invoke<{ path: string; snippet: string; score: number; line: number }[]>("kb_search", { query, k }),
 };
 
 export function onEvent(
@@ -131,6 +143,35 @@ export async function fetchCtxSize(port: number): Promise<number> {
   const j: any = await r.json();
   const n = Number(j?.default_generation_settings?.n_ctx ?? j?.n_ctx);
   return Number.isFinite(n) && n > 0 ? n : 32768;
+}
+
+/**
+ * Quick throughput measurement against the running server: one fixed-length
+ * generation, tokens counted by the server itself (usage), wall-clock here.
+ */
+export async function benchOnce(port: number): Promise<{ tps: number; tokens: number; ms: number }> {
+  const t0 = Date.now();
+  const r = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "galactus-local",
+      messages: [{ role: "user", content: "Write a vivid two-paragraph description of a nebula." }],
+      temperature: 0.7,
+      max_tokens: 160,
+      stream: false,
+    }),
+  });
+  if (!r.ok) throw new Error(`server ${r.status}`);
+  const j: any = await r.json();
+  const ms = Date.now() - t0;
+  const tokens = Number(j?.usage?.completion_tokens ?? 0);
+  if (!tokens) throw new Error("no usage in response");
+  // llama-server reports its own generation speed (prompt eval and network
+  // excluded) — far more honest than wall-clock; fall back to wall-clock.
+  const serverTps = Number(j?.timings?.predicted_per_second);
+  const tps = Number.isFinite(serverTps) && serverTps > 0 ? serverTps : tokens / (ms / 1000);
+  return { tps, tokens, ms };
 }
 
 /** One non-streamed completion (no tools). Used for history summarization. */

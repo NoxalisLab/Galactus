@@ -5,6 +5,8 @@
 // download/profile/plan/pack install pipeline, the file/shell tools that sit
 // behind the permission gate, the settings store and the MCP stdio clients.
 
+mod knowledge;
+
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -2011,6 +2013,168 @@ fn doc_capabilities() -> Value {
     json!({ "swiftc": swiftc, "helper": helper })
 }
 
+// ---------------------------------------------------------------- voice
+
+struct VoiceState {
+    child: Option<Child>,
+}
+
+static VOICE: OnceLock<Mutex<VoiceState>> = OnceLock::new();
+
+fn voice_state() -> &'static Mutex<VoiceState> {
+    VOICE.get_or_init(|| Mutex::new(VoiceState { child: None }))
+}
+
+/// The on-device speech helper (Apple SFSpeechRecognizer): precompiled in the
+/// bundle, compiled from source as a dev fallback.
+fn voice_helper() -> Result<PathBuf, String> {
+    if let Some(res) = resource_dir() {
+        let prebuilt = res.join("packaged/galactus-voice");
+        if prebuilt.is_file() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Ok(meta) = std::fs::metadata(&prebuilt) {
+                    let mut perm = meta.permissions();
+                    if perm.mode() & 0o111 == 0 {
+                        perm.set_mode(0o755);
+                        let _ = std::fs::set_permissions(&prebuilt, perm);
+                    }
+                }
+            }
+            return Ok(prebuilt);
+        }
+    }
+    let bin = app_support().join("galactus-voice");
+    let src = std::env::current_dir()
+        .unwrap_or_default()
+        .join("src-tauri/helpers/galactus-voice.swift");
+    if !src.is_file() {
+        return Err("voice helper not available".into());
+    }
+    if !bin.is_file() {
+        std::fs::create_dir_all(app_support()).map_err(|e| e.to_string())?;
+        let out = Command::new("swiftc")
+            .args(["-O", "-o"])
+            .arg(&bin)
+            .arg(&src)
+            .output()
+            .map_err(|e| format!("swiftc unavailable ({e})"))?;
+        if !out.status.success() {
+            return Err("voice helper failed to build".into());
+        }
+    }
+    Ok(bin)
+}
+
+/// Start on-device dictation. Streams `galactus://voice` events:
+/// {kind: "partial"|"final"|"error", text}.
+#[tauri::command]
+fn voice_start(app: AppHandle, locale: Option<String>) -> Result<(), String> {
+    let bin = voice_helper()?;
+    {
+        // One dictation at a time.
+        let mut v = voice_state().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(mut old) = v.child.take() {
+            let _ = old.kill();
+            let _ = old.wait();
+        }
+    }
+    let mut child = Command::new(&bin)
+        .arg("listen")
+        .arg("--locale")
+        .arg(locale.unwrap_or_else(|| "fr-FR".into()))
+        .args(["--max-seconds", "90"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    let stdout = child.stdout.take().ok_or("no stdout")?;
+    let my_pid = child.id();
+    voice_state().lock().unwrap_or_else(|e| e.into_inner()).child = Some(child);
+
+    std::thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+        let mut terminal_sent = false;
+        for line in reader.lines().flatten() {
+            let (kind, text) = if let Some(t) = line.strip_prefix("PARTIAL ") {
+                ("partial", t.to_string())
+            } else if let Some(t) = line.strip_prefix("FINAL ") {
+                ("final", t.to_string())
+            } else if let Some(t) = line.strip_prefix("ERROR ") {
+                ("error", t.to_string())
+            } else {
+                continue;
+            };
+            let _ = app.emit("galactus://voice", json!({"kind": kind, "text": text}));
+            if kind != "partial" {
+                terminal_sent = true;
+                break;
+            }
+        }
+        // The helper can die without a terminal line (killed hard, crash):
+        // the UI must still get unstuck.
+        if !terminal_sent {
+            let _ = app.emit("galactus://voice", json!({"kind": "final", "text": ""}));
+        }
+        // Reap OUR child only — a fresh dictation may already have replaced
+        // it; and never hold the lock across wait().
+        let mine = {
+            let mut v = voice_state().lock().unwrap_or_else(|e| e.into_inner());
+            if v.child.as_ref().map(|c| c.id()) == Some(my_pid) {
+                v.child.take()
+            } else {
+                None
+            }
+        };
+        if let Some(mut c) = mine {
+            let _ = c.wait();
+        }
+    });
+    Ok(())
+}
+
+/// Graceful stop: SIGTERM lets the helper flush its FINAL line first.
+#[tauri::command]
+fn voice_stop() {
+    let v = voice_state().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(c) = v.child.as_ref() {
+        let _ = Command::new("kill").args(["-TERM", &c.id().to_string()]).output();
+    }
+}
+
+// ---------------------------------------------------------------- text-to-speech
+
+static TTS: OnceLock<Mutex<Option<Child>>> = OnceLock::new();
+
+/// Read text aloud with the system voice (`say`, fully offline). A new call
+/// replaces the previous one.
+#[tauri::command]
+fn tts_speak(text: String) -> Result<(), String> {
+    let mut slot = TTS.get_or_init(|| Mutex::new(None)).lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(mut old) = slot.take() {
+        let _ = old.kill();
+        let _ = old.wait();
+    }
+    let clipped: String = text.chars().take(4000).collect();
+    let child = Command::new("say")
+        .arg("--")
+        .arg(clipped)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    *slot = Some(child);
+    Ok(())
+}
+
+#[tauri::command]
+fn tts_stop() {
+    let mut slot = TTS.get_or_init(|| Mutex::new(None)).lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(mut old) = slot.take() {
+        let _ = old.kill();
+        let _ = old.wait();
+    }
+}
+
 // ---------------------------------------------------------------- notifications
 
 /// Native macOS notification. Used when a long task finishes while the window
@@ -2099,7 +2263,16 @@ pub fn run() {
             conv_save,
             conv_delete,
             doc_read,
-            doc_capabilities
+            doc_capabilities,
+            voice_start,
+            voice_stop,
+            tts_speak,
+            tts_stop,
+            knowledge::kb_folders,
+            knowledge::kb_set_folders,
+            knowledge::kb_reindex,
+            knowledge::kb_stats,
+            knowledge::kb_search
         ])
         .build(tauri::generate_context!())
         .expect("error while running Galactus")
@@ -2128,6 +2301,21 @@ pub fn run() {
                     for (_, mut p) in servers.drain() {
                         let _ = p.child.kill();
                         let _ = p.child.wait();
+                    }
+                }
+                // Voice capture and speech must not outlive the app either.
+                if let Ok(mut v) = voice_state().lock() {
+                    if let Some(mut c) = v.child.take() {
+                        let _ = c.kill();
+                        let _ = c.wait();
+                    }
+                }
+                if let Some(t) = TTS.get() {
+                    if let Ok(mut slot) = t.lock() {
+                        if let Some(mut c) = slot.take() {
+                            let _ = c.kill();
+                            let _ = c.wait();
+                        }
                     }
                 }
             }

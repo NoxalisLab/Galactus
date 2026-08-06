@@ -195,7 +195,24 @@ const WORKFLOW_TOOL: ToolDef = {
   },
 };
 
-function builtinTools(hasVault: boolean, role: AgentRole = "main"): ToolDef[] {
+const KNOWLEDGE_TOOL: ToolDef = {
+  type: "function",
+  function: {
+    name: "search_knowledge",
+    description:
+      "Search the user's indexed local knowledge folders (full-text, offline). Returns the most relevant snippets with their file paths and lines; open the file with read_file when you need more than the snippet.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Search terms" },
+        k: { type: "number", description: "Number of results (default 6)" },
+      },
+      required: ["query"],
+    },
+  },
+};
+
+function builtinTools(hasVault: boolean, role: AgentRole = "main", hasKb = false): ToolDef[] {
   const tools: ToolDef[] = [
     {
       type: "function",
@@ -384,6 +401,7 @@ function builtinTools(hasVault: boolean, role: AgentRole = "main"): ToolDef[] {
   }
   // Sub-agents never delegate further: one level of fan-out, no recursion.
   if (role === "main") tools.push(WORKFLOW_TOOL);
+  if (hasKb) tools.push(KNOWLEDGE_TOOL);
   return tools;
 }
 
@@ -404,6 +422,7 @@ function activityModeFor(tool: string): import("./pixel").PixelMode {
     case "obsidian_search":
     case "use_skill":
     case "fetch_url":
+    case "search_knowledge":
       return "reading";
     case "write_file":
     case "obsidian_append":
@@ -434,6 +453,7 @@ export class Agent {
   private hasVault = false;
   private skills: SkillInfo[] = [];
   private mode: AgentMode = "chat";
+  private hasKb = false;
   private autoApprove = false;
   private abort: AbortController | null = null;
   private taskSystem: string | null = null;
@@ -467,6 +487,12 @@ export class Agent {
 
   setAutoApprove(on: boolean) {
     this.autoApprove = on;
+  }
+
+  /** Whether the user has configured local knowledge folders. */
+  setKnowledge(on: boolean) {
+    this.hasKb = on;
+    if (this.messages[0]?.role === "system") this.messages[0].content = this.systemPrompt();
   }
 
   getMode(): AgentMode {
@@ -508,6 +534,10 @@ export class Agent {
       "Today is " + today + "; treat anything after your training data as unknown and verify time-sensitive facts with tools.";
     if (this.hasVault) {
       p += " The user has an Obsidian vault you can search, read and append to with the obsidian_* tools.";
+    }
+    if (this.hasKb) {
+      p +=
+        " The user has indexed local knowledge folders: search them FIRST with search_knowledge whenever the question may touch their own documents, notes or code.";
     }
     if (this.mode === "agent") {
       p +=
@@ -711,7 +741,7 @@ export class Agent {
       },
     };
 
-    const tools = [...builtinTools(this.hasVault, this.role), ...mcpToolDefs(this.mcp)];
+    const tools = [...builtinTools(this.hasVault, this.role, this.hasKb), ...mcpToolDefs(this.mcp)];
     const ok = await streamChat(
       this.port,
       this.messages,
@@ -1036,6 +1066,15 @@ export class Agent {
         result = ok ? await api.docRead(p, args.mode ? String(args.mode) : undefined) : "denied by user";
       } else if (name === "run_workflow" && this.role === "main") {
         result = await this.runWorkflow(args.tasks);
+      } else if (name === "search_knowledge") {
+        // The user opted in by configuring the folders: no dialog, but the
+        // call stays visible as a tool card.
+        const hits = await api.kbSearch(String(args.query ?? ""), Number(args.k) > 0 ? Math.floor(Number(args.k)) : undefined);
+        result = hits.length
+          ? hits
+              .map((h) => `${h.path}:${h.line} (score ${h.score.toFixed(2)})\n${h.snippet}`)
+              .join("\n\n---\n\n")
+          : "(no match in the knowledge folders)";
       } else if (name === "use_skill") {
         result = await api.skillRead(String(args.name ?? ""));
       } else if (name === "obsidian_search") {

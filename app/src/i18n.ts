@@ -136,6 +136,20 @@ const dict: Record<string, { en: string; fr: string }> = {
   "perm.memory": { en: "Save to persistent memory", fr: "Écrire dans la mémoire persistante" },
   "perm.web": { en: "Fetch a web page", fr: "Consulter une page web" },
   "tool.web": { en: "Fetch URL", fr: "Consulter l'URL" },
+  "tool.kb": { en: "Search knowledge", fr: "Chercher dans les connaissances" },
+
+  // knowledge folders
+  "kb.title": { en: "Knowledge", fr: "Connaissances" },
+  "kb.hint": {
+    en: "Local folders indexed for search. The model looks things up there before answering.",
+    fr: "Dossiers locaux indexés pour la recherche. Le modèle y puise avant de répondre.",
+  },
+  "kb.add": { en: "Add a folder", fr: "Ajouter un dossier" },
+  "kb.reindex": { en: "Reindex", fr: "Réindexer" },
+  "kb.reindexing": { en: "Indexing…", fr: "Indexation…" },
+  "kb.stats": { en: "%f files · %c chunks", fr: "%f fichiers · %c fragments" },
+  "kb.empty": { en: "No folder yet.", fr: "Aucun dossier pour l'instant." },
+  "kb.done": { en: "Indexed: %f files, %c chunks", fr: "Indexé : %f fichiers, %c fragments" },
   "perm.allowOnce": { en: "Allow once", fr: "Autoriser une fois" },
   "perm.allowAlways": { en: "Always", fr: "Toujours" },
   "perm.deny": { en: "Deny", fr: "Refuser" },
@@ -148,6 +162,14 @@ const dict: Record<string, { en: string; fr: string }> = {
   "settings.cache": { en: "Expert cache", fr: "Cache experts" },
   "settings.cacheHint": { en: "Sized automatically for this Mac", fr: "Dimensionné automatiquement pour ce Mac" },
   "settings.auto": { en: "Auto", fr: "Auto" },
+  "settings.api": { en: "Local API (OpenAI-compatible)", fr: "API locale (compatible OpenAI)" },
+  "settings.apiHint": {
+    en: "The running model serves this endpoint on your Mac only. Point Cursor, Claude Code, aider or any OpenAI client at it.",
+    fr: "Le modèle en cours sert ce point d'accès sur ton Mac uniquement. Branche Cursor, Claude Code, aider ou tout client OpenAI dessus.",
+  },
+  "settings.apiCopy": { en: "Copy URL", fr: "Copier l'URL" },
+  "settings.apiCopied": { en: "Copied ✓", fr: "Copiée ✓" },
+  "settings.apiOff": { en: "Start a model to activate it", fr: "Démarre un modèle pour l'activer" },
   "settings.permissions": { en: "Standing permissions", fr: "Permissions permanentes" },
   "settings.permissionsHint": { en: "Rules you chose to always allow", fr: "Règles que tu as choisi d'autoriser toujours" },
   "settings.permissionsClear": { en: "Revoke all", fr: "Tout révoquer" },
@@ -218,6 +240,29 @@ const dict: Record<string, { en: string; fr: string }> = {
 
   // code-block preview
   "chat.preview": { en: "Preview", fr: "Aperçu" },
+
+  // voice
+  "chat.mic": { en: "Dictate (on-device)", fr: "Dicter (sur l'appareil)" },
+  "chat.micStop": { en: "Stop dictation", fr: "Arrêter la dictée" },
+  "chat.speak": { en: "Read aloud", fr: "Lire à voix haute" },
+  "voice.error": { en: "Dictation failed: %s", fr: "Échec de la dictée : %s" },
+  "voice.denied": {
+    en: "Microphone or speech recognition not authorized (System Settings > Privacy).",
+    fr: "Micro ou reconnaissance vocale non autorisés (Réglages Système > Confidentialité).",
+  },
+
+  // bench
+  "models.bench": { en: "Measure", fr: "Mesurer" },
+  "models.benchRunning": { en: "Measuring…", fr: "Mesure…" },
+  "models.benchDone": { en: "Measured on this Mac: %s tok/s", fr: "Mesuré sur ce Mac : %s tok/s" },
+  "models.measured": { en: "measured, tok/s", fr: "mesuré, tok/s" },
+
+  // deep research
+  "chat.deep": { en: "Deep research", fr: "Recherche approfondie" },
+  "chat.deepHint": {
+    en: "The next message runs a sourced multi-agent research workflow.",
+    fr: "Le prochain message lance une recherche multi-agents sourcée.",
+  },
 
   // drag & drop
   "chat.dropHint": {

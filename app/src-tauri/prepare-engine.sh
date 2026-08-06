@@ -114,6 +114,9 @@ if command -v swiftc >/dev/null 2>&1; then
   swiftc -O -o "$HERE/packaged/galactus-doc" "$HERE/helpers/galactus-doc.swift"
   codesign -f -s - "$HERE/packaged/galactus-doc" >/dev/null 2>&1 || true
   echo "Helper documents precompile"
+  swiftc -O -o "$HERE/packaged/galactus-voice" "$HERE/helpers/galactus-voice.swift"
+  codesign -f -s - "$HERE/packaged/galactus-voice" >/dev/null 2>&1 || true
+  echo "Helper voix precompile"
 else
-  echo "AVERTISSEMENT: swiftc absent, helper documents non precompile"
+  echo "AVERTISSEMENT: swiftc absent, helpers non precompiles"
 fi
