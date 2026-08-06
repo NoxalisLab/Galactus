@@ -219,6 +219,17 @@ svg { display: block; }
 .actbar { flex: none; padding: 0 26px 10px; animation: gx-fade 0.18s ease both; }
 .actbar .pxhost { max-width: 720px; margin: 0 auto; height: 38px; border: 1px solid rgba(138, 124, 255, 0.22); border-radius: 11px; background: linear-gradient(180deg, rgba(138, 124, 255, 0.07), rgba(138, 124, 255, 0.02)); overflow: hidden; display: flex; align-items: center; padding: 0 12px; }
 
+/* model loading card */
+@keyframes gx-spin { to { transform: rotate(360deg); } }
+@keyframes gx-dots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
+.loadcard { border: 1px solid rgba(138, 124, 255, 0.28); border-radius: 12px; background: linear-gradient(180deg, rgba(138, 124, 255, 0.08), rgba(138, 124, 255, 0.02)); padding: 16px 18px; display: flex; align-items: center; gap: 15px; animation: gx-fade 0.2s ease both; }
+.loadcard .spin { width: 34px; height: 34px; flex: none; animation: gx-spin 2.4s linear infinite; }
+.loadcard .lt { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.loadcard .lt b { font-size: 13.5px; font-weight: 600; }
+.loadcard .lt b .dots::after { content: ""; animation: gx-dots 1.6s steps(1) infinite; }
+.loadcard .el { font-family: var(--mono); font-size: 11.5px; color: var(--acc-tx); font-variant-numeric: tabular-nums; }
+.loadcard .hint { font-size: 11.5px; color: var(--dim2); }
+
 /* server failure card */
 .errcard { border: 1px solid rgba(209, 107, 111, 0.35); border-radius: 12px; background: linear-gradient(180deg, rgba(209, 107, 111, 0.08), rgba(209, 107, 111, 0.02)); padding: 14px 15px; display: flex; flex-direction: column; gap: 10px; animation: gx-fade 0.2s ease both; }
 .errcard .eh { display: flex; align-items: center; gap: 9px; }
@@ -574,6 +585,18 @@ textarea.mem:focus { border-color: rgba(138, 124, 255, 0.4); }
 .slash-item span { font-size: 11.5px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .slash-item.on, .slash-item:hover { background: rgba(138, 124, 255, 0.1); }
 .slash-item.on span { color: var(--dim2); }
+
+/* Obsidian constellation */
+.cosmos { position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column; background: radial-gradient(1400px 900px at 50% 30%, #14101f 0%, #08080b 65%); animation: gx-fade 0.2s ease both; }
+.cosmos-head { height: 52px; flex: none; display: flex; align-items: center; gap: 11px; padding: 0 18px; border-bottom: 1px solid var(--bd); }
+.cosmos-head .mark { width: 22px; height: 22px; }
+.cosmos-head b { font-size: 14px; font-weight: 600; }
+.cosmos-head .sub { font-size: 12px; color: var(--dim); }
+.cosmos-head .hint { font-size: 11px; color: var(--dim3); }
+.cosmos-head .grow { flex: 1; }
+.cosmos-body { flex: 1; min-height: 0; position: relative; }
+.cosmos-canvas { position: absolute; inset: 0; cursor: grab; }
+.cosmos-canvas:active { cursor: grabbing; }
 
 /* toasts */
 .toasts { position: fixed; bottom: 18px; right: 18px; z-index: 80; display: flex; flex-direction: column; gap: 8px; max-width: 360px; }

@@ -107,6 +107,8 @@ export const api = {
   obsidianRead: (note: string) => invoke<string>("obsidian_read", { note }),
   obsidianAppend: (note: string, text: string) =>
     invoke<string>("obsidian_append", { note, text }),
+  obsidianGraph: () =>
+    invoke<{ nodes: { n: string; d: number }[]; edges: [number, number][] }>("obsidian_graph"),
   skillsList: () => invoke<SkillInfo[]>("skills_list"),
   skillRead: (name: string) => invoke<string>("skill_read", { name }),
   convList: () => invoke<unknown[]>("conv_list"),

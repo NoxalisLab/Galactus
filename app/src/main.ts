@@ -11,6 +11,7 @@ import { CATALOG, ConnectorPreset, EnabledConnector, loadEnabled, saveEnabled } 
 import { getLang, Lang, setLang, t } from "./i18n";
 import { PixelMode, PixelViz } from "./pixel";
 import { renderMarkdown, wireCodeCopy } from "./markdown";
+import { Cosmos } from "./cosmos";
 import { detectPreviewable, PreviewKind, PreviewPanel } from "./preview";
 import { currentTask, loadTasks, pickModelFor, setCurrentTask, TaskDef, TaskId } from "./tasks";
 import { detectTask, getAutoMode, mayAutoSwap, planSwap, setAutoMode, type AutoMode } from "./autotask";
@@ -62,6 +63,27 @@ let genStats: { convId: string; chars: number; startMs: number; endMs: number | 
 /** Live header metrics: engine RSS + generation speed. */
 let liveRss = 0;
 let liveTps: number | null = null;
+/** When the current model load started (null when not loading). */
+let loadStartMs: number | null = null;
+
+function loadElapsedText(): string {
+  if (!loadStartMs) return "";
+  const s = Math.floor((Date.now() - loadStartMs) / 1000);
+  const txt = s >= 60 ? `${Math.floor(s / 60)} min ${String(s % 60).padStart(2, "0")} s` : `${s} s`;
+  return t("load.elapsed").replace("%s", txt);
+}
+
+function loadingCard(): HTMLElement {
+  const m = registry.find((r) => r.id === server.model_id);
+  return el(`<div class="loadcard">
+    <img class="spin" src="${LOGO}" alt=""/>
+    <div class="lt">
+      <b>${esc(t("load.title").replace("%m", m?.name ?? "…"))}<span class="dots"></span></b>
+      <span class="el" id="loadelapsed">${esc(loadElapsedText())}</span>
+      <span class="hint">${esc(t("load.hint"))}</span>
+    </div>
+  </div>`);
+}
 
 function paintLive(): void {
   const box = document.getElementById("livebar");
@@ -680,11 +702,15 @@ function paintChat(): void {
   log.innerHTML = "";
 
   if (serverFail) log.appendChild(serverFailCard());
+  const loading = server.running && server.phase === "starting";
+  if (loading) log.appendChild(loadingCard());
 
   const conv = store.current();
   if (conv.items.length === 0) {
     const ready = server.running && server.phase === "ready";
-    log.appendChild(el(`<div class="empty"><img class="big-mark" src="${LOGO}" alt=""/>${esc(ready ? t("chat.empty") : t("chat.noserver"))}</div>`));
+    if (!loading) {
+      log.appendChild(el(`<div class="empty"><img class="big-mark" src="${LOGO}" alt=""/>${esc(ready ? t("chat.empty") : t("chat.noserver"))}</div>`));
+    }
     paintPlan();
     return;
   }
@@ -1245,7 +1271,7 @@ function memoryView(): HTMLElement {
         <div id="kbfolders" style="display:flex;flex-direction:column;gap:6px"></div>
       </div>
       <div class="card">
-        <div class="hd"><div class="cico">◈</div><div class="grow"><b>Obsidian</b><span class="d" id="vaultline">${esc(t("mem.vaultNone"))}</span></div><button class="bs" id="vpick">${esc(t("mem.chooseVault"))}</button></div>
+        <div class="hd"><div class="cico">◈</div><div class="grow"><b>Obsidian</b><span class="d" id="vaultline">${esc(t("mem.vaultNone"))}</span></div><button class="bs" id="vcosmos">${esc(t("mem.cosmos"))}</button><button class="bs" id="vpick">${esc(t("mem.chooseVault"))}</button></div>
       </div>
     </div></div></div>`);
 
@@ -1284,6 +1310,7 @@ function memoryView(): HTMLElement {
     });
   }
   wrap.querySelector("#vpick")!.addEventListener("click", async () => { const p = await api.pickFolder(); if (p) { vaultline.textContent = p; await api.settingsSet("obsidian_vault", p); } });
+  wrap.querySelector("#vcosmos")!.addEventListener("click", () => { openCosmos(); });
 
   // ---- knowledge folders ----
   {
@@ -1336,6 +1363,50 @@ function memoryView(): HTMLElement {
     });
   }
   return wrap;
+}
+
+// ---------- Obsidian constellation (cosmos.ts) ----------
+async function openCosmos(): Promise<void> {
+  let data;
+  try {
+    data = await api.obsidianGraph();
+  } catch (e: any) {
+    toast(String(e?.message ?? e));
+    return;
+  }
+  if (!data.nodes.length) {
+    toast(t("cosmos.empty"));
+    return;
+  }
+  const overlay = el(`<div class="cosmos">
+    <div class="cosmos-head" data-tauri-drag-region>
+      <img class="mark" src="${LOGO}" alt=""/>
+      <b>${esc(t("cosmos.title"))}</b>
+      <span class="sub">${esc(t("cosmos.sub").replace("%n", String(data.nodes.length)).replace("%e", String(data.edges.length)))}</span>
+      <span class="grow"></span>
+      <span class="hint">${esc(t("cosmos.hint"))}</span>
+      <button class="bs" data-close>${esc(t("common.close"))}</button>
+    </div>
+    <div class="cosmos-body"></div>
+  </div>`);
+  document.body.appendChild(overlay);
+  const body = overlay.querySelector<HTMLElement>(".cosmos-body")!;
+  let viz: Cosmos | null = null;
+  try {
+    viz = new Cosmos(body, data);
+  } catch (e: any) {
+    overlay.remove();
+    toast(String(e?.message ?? e));
+    return;
+  }
+  const close = () => {
+    viz?.destroy();
+    overlay.remove();
+    window.removeEventListener("keydown", onKey);
+  };
+  const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") close(); };
+  window.addEventListener("keydown", onKey);
+  overlay.querySelector("[data-close]")!.addEventListener("click", close);
 }
 
 // ---------- agent (workspace + autonomy + skills) ----------
@@ -1715,6 +1786,7 @@ async function boot() {
   try { slashSkills = (await api.skillsList()).filter((k) => !skillsOff.has(k.name)); } catch {}
   try { mcpCount = (await api.mcpTools()).length; } catch {}
   await refreshServer();
+  if (server.running && server.phase === "starting") loadStartMs = Date.now();
   render();
   await onEvent("galactus://install-progress", (p: any) => {
     if (p.done) {
@@ -1757,8 +1829,19 @@ async function boot() {
       serverFail = null;
     }
     await refreshServer();
+    if (server.running && server.phase === "starting") {
+      if (loadStartMs === null) loadStartMs = Date.now();
+    } else {
+      loadStartMs = null;
+    }
     render();
   });
+
+  // Loading elapsed ticker: refresh the counter without repainting the view.
+  setInterval(() => {
+    const e = document.getElementById("loadelapsed");
+    if (e && loadStartMs) e.textContent = loadElapsedText();
+  }, 1000);
 
   // Window dragging: WKWebView ignores `-webkit-app-region` (Electron-only),
   // so the hidden-titlebar window has NO native grab area. Drive it manually:

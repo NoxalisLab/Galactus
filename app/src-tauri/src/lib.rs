@@ -1640,6 +1640,97 @@ fn parse_frontmatter(md: &str) -> (String, String) {
     (name, desc)
 }
 
+/// Graph of the Obsidian vault for the 3D constellation view: notes as
+/// nodes, wikilinks as edges. Bounded walk, resilient to weird files.
+#[tauri::command]
+fn obsidian_graph() -> Result<Value, String> {
+    let vault = settings_load()
+        .get("obsidian_vault")
+        .cloned()
+        .filter(|s| !s.is_empty())
+        .ok_or("no Obsidian vault configured")?;
+    let root = PathBuf::from(&vault);
+
+    // Collect notes (bounded).
+    let mut files: Vec<PathBuf> = Vec::new();
+    let mut stack = vec![(root.clone(), 0u32)];
+    while let Some((dir, depth)) = stack.pop() {
+        if depth > 8 || files.len() >= 2500 {
+            break;
+        }
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        for e in rd.flatten() {
+            let p = e.path();
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                continue;
+            }
+            if p.is_dir() {
+                stack.push((p, depth + 1));
+            } else if p.extension().map(|x| x == "md").unwrap_or(false) {
+                files.push(p);
+                if files.len() >= 2500 {
+                    break;
+                }
+            }
+        }
+    }
+
+    // Index by stem (lowercased), first occurrence wins like Obsidian.
+    let mut index: HashMap<String, usize> = HashMap::new();
+    let mut names: Vec<String> = Vec::new();
+    for f in &files {
+        let stem = f.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let key = stem.to_lowercase();
+        if !index.contains_key(&key) {
+            index.insert(key, names.len());
+            names.push(stem);
+        }
+    }
+
+    // Extract [[wikilinks]] and keep edges between existing notes.
+    let mut degree = vec![0u32; names.len()];
+    let mut edges: Vec<(u32, u32)> = Vec::new();
+    let mut seen: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
+    for f in &files {
+        let stem_key = f
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        let Some(&src) = index.get(&stem_key) else { continue };
+        let Ok(text) = std::fs::read_to_string(f) else { continue };
+        let capped = &text[..floor_char_boundary(&text, 200_000)];
+        for part in capped.split("[[").skip(1) {
+            let Some(end) = part.find("]]") else { continue };
+            let raw = &part[..end];
+            let target = raw.split(['|', '#']).next().unwrap_or("").trim();
+            if target.is_empty() {
+                continue;
+            }
+            // "dossier/Note" links resolve on the last segment.
+            let leaf = target.rsplit('/').next().unwrap_or(target).to_lowercase();
+            let Some(&dst) = index.get(&leaf) else { continue };
+            if dst == src {
+                continue;
+            }
+            let key = (src.min(dst) as u32, src.max(dst) as u32);
+            if seen.insert(key) {
+                edges.push(key);
+                degree[src] += 1;
+                degree[dst] += 1;
+            }
+        }
+    }
+
+    let nodes: Vec<Value> = names
+        .iter()
+        .zip(degree.iter())
+        .map(|(n, d)| json!({ "n": n, "d": d }))
+        .collect();
+    let edge_list: Vec<Value> = edges.iter().map(|(a, b)| json!([a, b])).collect();
+    Ok(json!({ "nodes": nodes, "edges": edge_list }))
+}
+
 #[tauri::command]
 fn skills_list() -> Vec<SkillInfo> {
     let mut out = Vec::new();
@@ -2379,6 +2470,7 @@ pub fn run() {
             obsidian_search,
             obsidian_read,
             obsidian_append,
+            obsidian_graph,
             skills_list,
             skill_read,
             conv_list,

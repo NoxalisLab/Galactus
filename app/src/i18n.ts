@@ -79,6 +79,12 @@ const dict: Record<string, { en: string; fr: string }> = {
     fr: "Moteur Galactus : experts Metal via le chemin de parité bit-exact (numérique certifiée)",
   },
   "engine.residentShort": { en: "resident", fr: "résident" },
+  "load.title": { en: "Loading %m", fr: "Chargement de %m" },
+  "load.hint": {
+    en: "The expert cache is warming up; the first load is the longest.",
+    fr: "Le cache d'experts se remplit ; le premier chargement est le plus long.",
+  },
+  "load.elapsed": { en: "%s elapsed", fr: "%s écoulées" },
   "live.ram": { en: "Engine resident memory, live", fr: "Mémoire résidente du moteur, en direct" },
   "live.tps": { en: "Generation speed, live (chars / 4 per second)", fr: "Vitesse de génération en direct (caractères / 4 par seconde)" },
   "models.hwNote": {
@@ -117,6 +123,14 @@ const dict: Record<string, { en: string; fr: string }> = {
   "mem.saved": { en: "Saved ✓", fr: "Enregistré ✓" },
   "mem.vaultNone": { en: "Connect a vault to read and write notes", fr: "Connecte un coffre pour lire et écrire des notes" },
   "mem.chooseVault": { en: "Choose vault", fr: "Choisir le coffre" },
+  "mem.cosmos": { en: "Constellation", fr: "Constellation" },
+  "cosmos.title": { en: "Constellation", fr: "Constellation" },
+  "cosmos.sub": { en: "%n notes · %e links", fr: "%n notes · %e liens" },
+  "cosmos.hint": {
+    en: "Drag to orbit · scroll to zoom · double-click to resume the spin",
+    fr: "Glisse pour orbiter · molette pour zoomer · double-clic pour relancer la rotation",
+  },
+  "cosmos.empty": { en: "No notes found in the vault.", fr: "Aucune note trouvée dans le coffre." },
 
   "agent.subtitle": { en: "Workspace, autonomy and skills", fr: "Dossier, autonomie et skills" },
   "agent.workspaceTitle": { en: "Working folder", fr: "Dossier de travail" },
