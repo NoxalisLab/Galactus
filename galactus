@@ -1,0 +1,9 @@
+#!/bin/bash
+# CLI galactus : construit au besoin, puis delegue au binaire.
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+BIN="$ROOT/app/src-tauri/target/release/galactus"
+if [ ! -x "$BIN" ]; then
+  echo "construction de la CLI…" >&2
+  (cd "$ROOT/app/src-tauri" && cargo build --release --bin galactus) || exit 1
+fi
+exec "$BIN" "$@"

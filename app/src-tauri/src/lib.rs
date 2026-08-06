@@ -6,6 +6,7 @@
 // behind the permission gate, the settings store and the MCP stdio clients.
 
 mod knowledge;
+pub mod cli;
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -788,7 +789,9 @@ async fn install_model(app: AppHandle, model_id: String) -> Result<(), String> {
     }
 
     std::thread::spawn(move || {
-        let result = install_pipeline(&app, &root, &model_id, &base, &files, total_bytes, &cancel);
+        let result = install_pipeline_with(&root, &model_id, &base, &files, total_bytes, &cancel, &|phase, pct, label| {
+            emit_progress(&app, &model_id, phase, pct, label, false);
+        });
         match result {
             Ok(()) => emit_progress(&app, &model_id, "done", 100.0, "done", true),
             Err(e) => emit_progress(&app, &model_id, "error", 0.0, &e, true),
@@ -798,14 +801,14 @@ async fn install_model(app: AppHandle, model_id: String) -> Result<(), String> {
     Ok(())
 }
 
-fn install_pipeline(
-    app: &AppHandle,
+fn install_pipeline_with(
     root: &Path,
     id: &str,
     base: &str,
     files: &[String],
     total_bytes: u64,
     cancel: &AtomicBool,
+    progress: &dyn Fn(&str, f64, &str),
 ) -> Result<(), String> {
     let (model_dir, pack, _profile) = model_paths(root, id);
     std::fs::create_dir_all(&model_dir).map_err(|e| e.to_string())?;
@@ -850,13 +853,10 @@ fn install_pipeline(
                     } else {
                         0.0
                     };
-                    emit_progress(
-                        app,
-                        id,
+                    progress(
                         "download",
                         pct,
                         &format!("download {:.1}/{:.1} GB", done as f64 / 1e9, total_bytes as f64 / 1e9),
-                        false,
                     );
                     std::thread::sleep(Duration::from_secs(2));
                 }
@@ -865,7 +865,7 @@ fn install_pipeline(
     }
 
     // 2. Profile.
-    emit_progress(app, id, "profile", 62.0, "profiling", false);
+    progress("profile", 62.0, "profiling");
     let out = python3_cmd()
         .current_dir(root)
         .args([
@@ -882,7 +882,7 @@ fn install_pipeline(
     }
 
     // 3. Plan.
-    emit_progress(app, id, "plan", 65.0, "planning", false);
+    progress("plan", 65.0, "planning");
     let out = python3_cmd()
         .current_dir(root)
         .args([
@@ -917,7 +917,7 @@ fn install_pipeline(
     }
     std::fs::create_dir_all(pack.parent().unwrap()).map_err(|e| e.to_string())?;
 
-    emit_progress(app, id, "pack", 68.0, "building pack", false);
+    progress("pack", 68.0, "building pack");
     let mut child = python3_cmd()
         .current_dir(root)
         .args([
@@ -961,7 +961,7 @@ fn install_pipeline(
                 ) {
                     if total > 0.0 {
                         let pct = 68.0 + (done / total) * 31.0;
-                        emit_progress(app, id, "pack", pct, &format!("pack {done:.0}/{total:.0}"), false);
+                        progress("pack", pct, &format!("pack {done:.0}/{total:.0}"));
                     }
                 }
             }
