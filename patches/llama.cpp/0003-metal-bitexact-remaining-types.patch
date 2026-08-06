@@ -1,0 +1,551 @@
+--- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
++++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
+@@ -2342,15 +2342,29 @@
+     return ggml_type_size(GGML_TYPE_I32)*ne02*ne21;
+ }
+ 
+-// galactus: bit-exact CPU-parity path for mul_mat_id with iq1_s weights
++// galactus: bit-exact CPU-parity path for mul_mat_id with the GLM expert quant types
++// (iq1_s, iq2_xxs, iq3_xxs, iq4_xs, q2_K, q3_K)
+ static bool ggml_metal_galactus_bitexact_enabled(void) {
+     const char * env = getenv("GALACTUS_METAL_BITEXACT");
+     return env != NULL && env[0] == '1' && env[1] == '\0';
++}
++
++// name of the bit-exact dot kernel for the given weight type; NULL when unsupported
++static const char * ggml_metal_op_mul_mat_id_galactus_bitexact_kernel(enum ggml_type type) {
++    switch (type) {
++        case GGML_TYPE_IQ1_S:   return "kernel_galactus_mul_mv_id_iq1_s_q8_K_bitexact";
++        case GGML_TYPE_IQ2_XXS: return "kernel_galactus_mul_mv_id_iq2_xxs_q8_K_bitexact";
++        case GGML_TYPE_IQ3_XXS: return "kernel_galactus_mul_mv_id_iq3_xxs_q8_K_bitexact";
++        case GGML_TYPE_IQ4_XS:  return "kernel_galactus_mul_mv_id_iq4_xs_q8_K_bitexact";
++        case GGML_TYPE_Q2_K:    return "kernel_galactus_mul_mv_id_q2_K_q8_K_bitexact";
++        case GGML_TYPE_Q3_K:    return "kernel_galactus_mul_mv_id_q3_K_q8_K_bitexact";
++        default:                return NULL;
++    }
+ }
+ 
+ static bool ggml_metal_op_mul_mat_id_use_galactus_bitexact(const ggml_tensor * op) {
+     return ggml_metal_galactus_bitexact_enabled() &&
+-           op->src[0]->type == GGML_TYPE_IQ1_S    &&
++           ggml_metal_op_mul_mat_id_galactus_bitexact_kernel(op->src[0]->type) != NULL &&
+            op->src[1]->type == GGML_TYPE_F32      &&
+            op->src[0]->ne[0] % 256 == 0; // QK_K
+ }
+@@ -2403,10 +2417,10 @@
+     const uint32_t r2 = 1;
+     const uint32_t r3 = 1;
+ 
+-    // galactus: bit-exact CPU-parity path (GALACTUS_METAL_BITEXACT=1, iq1_s weights):
++    // galactus: bit-exact CPU-parity path (GALACTUS_METAL_BITEXACT=1, GLM expert quant types):
+     // quantize the f32 activations to Q8_K exactly like quantize_row_q8_K on the CPU,
+-    // then run an integer dot product with the same sequential float tail as
+-    // ggml_vec_dot_iq1_s_q8_K
++    // then run an integer dot product with the same sequential float tail as the
++    // corresponding ggml_vec_dot_*_q8_K NEON function
+     if (ggml_metal_op_mul_mat_id_use_galactus_bitexact(op)) {
+         // the Q8_K scratch lives in the dst allocation, after the tpe/ids extras
+         ggml_metal_buffer_id bid_q8 = bid_dst;
+@@ -2454,11 +2468,11 @@
+                 /*.ne1  =*/ ne1,
+             };
+ 
+-            auto pipeline = ggml_metal_library_get_pipeline(lib, "kernel_galactus_mul_mv_id_iq1_s_q8_K_bitexact");
++            const char * dot_kernel = ggml_metal_op_mul_mat_id_galactus_bitexact_kernel(op->src[0]->type);
++
++            auto pipeline = ggml_metal_library_get_pipeline(lib, dot_kernel);
+             if (!pipeline.pipeline) {
+-                pipeline = ggml_metal_library_compile_pipeline(lib,
+-                        "kernel_galactus_mul_mv_id_iq1_s_q8_K_bitexact",
+-                        "kernel_galactus_mul_mv_id_iq1_s_q8_K_bitexact", nullptr);
++                pipeline = ggml_metal_library_compile_pipeline(lib, dot_kernel, dot_kernel, nullptr);
+             }
+ 
+             ggml_metal_encoder_set_pipeline(enc, pipeline);
+--- a/ggml/src/ggml-metal/ggml-metal.metal
++++ b/ggml/src/ggml-metal/ggml-metal.metal
+@@ -11451,6 +11451,294 @@
+ 
+             dsc  = yb->d * (float) xb->d;
+             expr = fma((float) sumi3, IQ1S_DELTA, (float)(sumi1 + sumi2));
++        }
++
++        // sequential float tail in superblock order, exactly like the CPU loop
++        const int lim = (nsb - ib0) < 32 ? (nsb - ib0) : 32;
++        for (int k = 0; k < lim; ++k) {
++            const float dk = simd_shuffle(dsc,  (ushort) k);
++            const float ek = simd_shuffle(expr, (ushort) k);
++            sumf = fma(dk, ek, sumf);
++        }
++    }
++
++    if (tiisg == 0) {
++        device float * dst_row = (device float *)(dst) + (int64_t) idx*args.ne0 + (int64_t) iid1*args.ne1*args.ne0;
++        dst_row[r0] = sumf;
++    }
++}
++
++// ------------------------------------------------------------------------------------------------
++// galactus: bit-exact CPU-parity dot kernels for the remaining GLM expert quant types
++// (iq2_xxs, iq3_xxs, iq4_xs, q2_K, q3_K), same activation path (Q8_K quantize kernel above).
++//
++// Each kernel replicates the exact float operation sequence of the compiled NEON CPU function
++// in ggml/src/ggml-cpu/arch/arm/quants.c: integer sums per superblock are exact (computed in
++// parallel over the simdgroup lanes), the float tail is accumulated SEQUENTIALLY in superblock
++// order on a logical lane via simd_shuffle, using metal::fma to mirror the fmadd contraction
++// observed in the arm64 disassembly.
++// ------------------------------------------------------------------------------------------------
++
++// ggml_vec_dot_iq2_xxs_q8_K (NEON), compiled float tail per superblock:
++//   sumf1 = fma((float) p1, 0.5f + (float)(aux1 >> 28), sumf1)   x4 (ib32 = 0,2,4,6)
++//   sumf2 = fma((float) p2, 0.5f + (float)(aux3 >> 28), sumf2)   x4
++//   dsc   = y.d * (float) x.d                                    (single fmul)
++//   sumf  = fma(dsc, sumf1 + sumf2, sumf)                        (fmadd)
++// final: *s = 0.25f * sumf
++kernel void kernel_galactus_mul_mv_id_iq2_xxs_q8_K_bitexact(
++        constant ggml_metal_kargs_galactus_mmv_id_q8k & args,
++        device const char * src0s,
++        device const char * src1q, // Q8_K-quantized activations
++        device       char * dst,
++        device const char * ids,
++        uint3  tgpig[[threadgroup_position_in_grid]],
++        ushort tiisg[[thread_index_in_simdgroup]]) {
++    const int r0   = tgpig.x;             // output row within the expert
++    const int iid1 = tgpig.z/args.nei0;   // token
++    const int idx  = tgpig.z%args.nei0;   // expert slot
++
++    const int32_t i02 = ((device const int32_t *) (ids + iid1*args.nbi1))[idx];
++
++    const int i11 = idx % args.ne11;
++    const int i12 = iid1;
++
++    const int nsb = args.ne00/QK_K;
++
++    device const block_iq2_xxs * xr = (device const block_iq2_xxs *)(src0s + i02*args.nb02 + r0*args.nb01);
++    device const block_q8_K    * yr = (device const block_q8_K    *)(src1q) + (i12*args.ne11 + i11)*nsb;
++
++    float sumf = 0.0f;
++
++    for (int ib0 = 0; ib0 < nsb; ib0 += 32) {
++        const int i = ib0 + tiisg;
++
++        float dsc  = 0.0f;
++        float expr = 0.0f;
++
++        if (i < nsb) {
++            device const block_iq2_xxs * xb = xr + i;
++            device const block_q8_K    * yb = yr + i;
++
++            device const int8_t   * q8 = yb->qs;
++            device const uint16_t * q2 = xb->qs;
++
++            float sumf1 = 0.0f;
++            float sumf2 = 0.0f;
++
++            for (int ib32 = 0; ib32 < QK_K/32; ib32 += 2) {
++                // aux32[0..3] of the CPU kernel (little-endian assembly from uint16 pairs)
++                const uint32_t aux0 = (uint32_t) q2[0] | ((uint32_t) q2[1] << 16);
++                const uint32_t aux1 = (uint32_t) q2[2] | ((uint32_t) q2[3] << 16);
++                const uint32_t aux2 = (uint32_t) q2[4] | ((uint32_t) q2[5] << 16);
++                const uint32_t aux3 = (uint32_t) q2[6] | ((uint32_t) q2[7] << 16);
++                q2 += 8;
++
++                int p1 = 0;
++                int p2 = 0;
++                for (int l = 0; l < 4; ++l) {
++                    // grid entries: bytes of aux0/aux2; signs: 7-bit groups of aux1/aux3
++                    constant uint8_t * g1 = (constant uint8_t *)(iq2xxs_grid + ((aux0 >> (8*l)) & 255));
++                    constant uint8_t * g2 = (constant uint8_t *)(iq2xxs_grid + ((aux2 >> (8*l)) & 255));
++                    const uint8_t s1 = ksigns_iq2xs[(aux1 >> (7*l)) & 127];
++                    const uint8_t s2 = ksigns_iq2xs[(aux3 >> (7*l)) & 127];
++                    for (int j = 0; j < 8; ++j) {
++                        const int v1 = (s1 & (1 << j)) ? -((int) g1[j]) : (int) g1[j];
++                        const int v2 = (s2 & (1 << j)) ? -((int) g2[j]) : (int) g2[j];
++                        p1 += v1 * (int) q8[ 0 + 8*l + j];
++                        p2 += v2 * (int) q8[32 + 8*l + j];
++                    }
++                }
++                q8 += 64;
++
++                sumf1 = fma((float) p1, 0.5f + (float)(aux1 >> 28), sumf1);
++                sumf2 = fma((float) p2, 0.5f + (float)(aux3 >> 28), sumf2);
++            }
++
++            dsc  = yb->d * (float) xb->d;
++            expr = sumf1 + sumf2;
++        }
++
++        // sequential float tail in superblock order, exactly like the CPU loop
++        const int lim = (nsb - ib0) < 32 ? (nsb - ib0) : 32;
++        for (int k = 0; k < lim; ++k) {
++            const float dk = simd_shuffle(dsc,  (ushort) k);
++            const float ek = simd_shuffle(expr, (ushort) k);
++            sumf = fma(dk, ek, sumf);
++        }
++    }
++
++    if (tiisg == 0) {
++        device float * dst_row = (device float *)(dst) + (int64_t) idx*args.ne0 + (int64_t) iid1*args.ne1*args.ne0;
++        dst_row[r0] = 0.25f * sumf;
++    }
++}
++
++// ggml_vec_dot_iq3_xxs_q8_K (NEON), compiled float tail per superblock:
++//   sumf1 = fma((float) p1, 0.5f + (float)(aux0 >> 28), sumf1)   x4 (ib32 = 0,2,4,6)
++//   sumf2 = fma((float) p2, 0.5f + (float)(aux1 >> 28), sumf2)   x4
++//   dsc   = y.d * (float) x.d                                    (single fmul)
++//   sumf  = fma(dsc, sumf1 + sumf2, sumf)                        (fmadd)
++// final: *s = 0.5f * sumf
++kernel void kernel_galactus_mul_mv_id_iq3_xxs_q8_K_bitexact(
++        constant ggml_metal_kargs_galactus_mmv_id_q8k & args,
++        device const char * src0s,
++        device const char * src1q, // Q8_K-quantized activations
++        device       char * dst,
++        device const char * ids,
++        uint3  tgpig[[threadgroup_position_in_grid]],
++        ushort tiisg[[thread_index_in_simdgroup]]) {
++    const int r0   = tgpig.x;             // output row within the expert
++    const int iid1 = tgpig.z/args.nei0;   // token
++    const int idx  = tgpig.z%args.nei0;   // expert slot
++
++    const int32_t i02 = ((device const int32_t *) (ids + iid1*args.nbi1))[idx];
++
++    const int i11 = idx % args.ne11;
++    const int i12 = iid1;
++
++    const int nsb = args.ne00/QK_K;
++
++    device const block_iq3_xxs * xr = (device const block_iq3_xxs *)(src0s + i02*args.nb02 + r0*args.nb01);
++    device const block_q8_K    * yr = (device const block_q8_K    *)(src1q) + (i12*args.ne11 + i11)*nsb;
++
++    float sumf = 0.0f;
++
++    for (int ib0 = 0; ib0 < nsb; ib0 += 32) {
++        const int i = ib0 + tiisg;
++
++        float dsc  = 0.0f;
++        float expr = 0.0f;
++
++        if (i < nsb) {
++            device const block_iq3_xxs * xb = xr + i;
++            device const block_q8_K    * yb = yr + i;
++
++            device const int8_t  * q8  = yb->qs;
++            device const uint8_t * q3  = xb->qs;
++            device const uint8_t * gas = xb->qs + QK_K/4;
++
++            float sumf1 = 0.0f;
++            float sumf2 = 0.0f;
++
++            for (int ib32 = 0; ib32 < QK_K/32; ib32 += 2) {
++                // aux32[0..1] of the CPU kernel (byte assembly: gas is not 4-byte aligned)
++                const uint32_t aux0 = (uint32_t) gas[0] | ((uint32_t) gas[1] << 8)
++                                   | ((uint32_t) gas[2] << 16) | ((uint32_t) gas[3] << 24);
++                const uint32_t aux1 = (uint32_t) gas[4] | ((uint32_t) gas[5] << 8)
++                                   | ((uint32_t) gas[6] << 16) | ((uint32_t) gas[7] << 24);
++                gas += 8;
++
++                int p1 = 0;
++                int p2 = 0;
++                for (int l = 0; l < 4; ++l) {
++                    // elements 8l..8l+7: two 4-value grid entries; signs: 7-bit group l
++                    constant uint8_t * g1 = (constant uint8_t *)(iq3xxs_grid + q3[2*l + 0]);
++                    constant uint8_t * g2 = (constant uint8_t *)(iq3xxs_grid + q3[2*l + 1]);
++                    constant uint8_t * g3 = (constant uint8_t *)(iq3xxs_grid + q3[2*l + 8]);
++                    constant uint8_t * g4 = (constant uint8_t *)(iq3xxs_grid + q3[2*l + 9]);
++                    const uint8_t s1 = ksigns_iq2xs[(aux0 >> (7*l)) & 127];
++                    const uint8_t s2 = ksigns_iq2xs[(aux1 >> (7*l)) & 127];
++                    for (int j = 0; j < 4; ++j) {
++                        const int v1 = (s1 & (1 <<  j))      ? -((int) g1[j]) : (int) g1[j];
++                        const int v2 = (s1 & (1 << (j + 4))) ? -((int) g2[j]) : (int) g2[j];
++                        const int v3 = (s2 & (1 <<  j))      ? -((int) g3[j]) : (int) g3[j];
++                        const int v4 = (s2 & (1 << (j + 4))) ? -((int) g4[j]) : (int) g4[j];
++                        p1 += v1 * (int) q8[ 0 + 8*l + j] + v2 * (int) q8[ 0 + 8*l + j + 4];
++                        p2 += v3 * (int) q8[32 + 8*l + j] + v4 * (int) q8[32 + 8*l + j + 4];
++                    }
++                }
++                q3 += 16;
++                q8 += 64;
++
++                sumf1 = fma((float) p1, 0.5f + (float)(aux0 >> 28), sumf1);
++                sumf2 = fma((float) p2, 0.5f + (float)(aux1 >> 28), sumf2);
++            }
++
++            dsc  = yb->d * (float) xb->d;
++            expr = sumf1 + sumf2;
++        }
++
++        // sequential float tail in superblock order, exactly like the CPU loop
++        const int lim = (nsb - ib0) < 32 ? (nsb - ib0) : 32;
++        for (int k = 0; k < lim; ++k) {
++            const float dk = simd_shuffle(dsc,  (ushort) k);
++            const float ek = simd_shuffle(expr, (ushort) k);
++            sumf = fma(dk, ek, sumf);
++        }
++    }
++
++    if (tiisg == 0) {
++        device float * dst_row = (device float *)(dst) + (int64_t) idx*args.ne0 + (int64_t) iid1*args.ne1*args.ne0;
++        dst_row[r0] = 0.5f * sumf;
++    }
++}
++
++// ggml_vec_dot_iq4_xs_q8_K (NEON), compiled float tail per superblock:
++//   dsc  = (float) x.d * y.d              (single fmul; fcvt then fmul)
++//   sumf = fma(dsc, (float)(sumi1 + sumi2), sumf)   (fmadd)
++// no final scale
++kernel void kernel_galactus_mul_mv_id_iq4_xs_q8_K_bitexact(
++        constant ggml_metal_kargs_galactus_mmv_id_q8k & args,
++        device const char * src0s,
++        device const char * src1q, // Q8_K-quantized activations
++        device       char * dst,
++        device const char * ids,
++        uint3  tgpig[[threadgroup_position_in_grid]],
++        ushort tiisg[[thread_index_in_simdgroup]]) {
++    const int r0   = tgpig.x;             // output row within the expert
++    const int iid1 = tgpig.z/args.nei0;   // token
++    const int idx  = tgpig.z%args.nei0;   // expert slot
++
++    const int32_t i02 = ((device const int32_t *) (ids + iid1*args.nbi1))[idx];
++
++    const int i11 = idx % args.ne11;
++    const int i12 = iid1;
++
++    const int nsb = args.ne00/QK_K;
++
++    device const block_iq4_xs * xr = (device const block_iq4_xs *)(src0s + i02*args.nb02 + r0*args.nb01);
++    device const block_q8_K   * yr = (device const block_q8_K   *)(src1q) + (i12*args.ne11 + i11)*nsb;
++
++    float sumf = 0.0f;
++
++    for (int ib0 = 0; ib0 < nsb; ib0 += 32) {
++        const int i = ib0 + tiisg;
++
++        float dsc  = 0.0f;
++        float expr = 0.0f;
++
++        if (i < nsb) {
++            device const block_iq4_xs * xb = xr + i;
++            device const block_q8_K   * yb = yr + i;
++
++            device const int8_t  * q8 = yb->qs;
++            device const uint8_t * q4 = xb->qs;
++
++            uint16_t h = xb->scales_h;
++
++            int sumi1 = 0;
++            int sumi2 = 0;
++            for (int ib = 0; ib < QK_K/64; ++ib) {
++                int p1 = 0;
++                int p2 = 0;
++                for (int j = 0; j < 16; ++j) {
++                    p1 += (int) kvalues_iq4nl[q4[j +  0] & 0xf] * (int) q8[j +  0]
++                        + (int) kvalues_iq4nl[q4[j +  0] >>  4] * (int) q8[j + 16];
++                    p2 += (int) kvalues_iq4nl[q4[j + 16] & 0xf] * (int) q8[j + 32]
++                        + (int) kvalues_iq4nl[q4[j + 16] >>  4] * (int) q8[j + 48];
++                }
++                q4 += 32;
++                q8 += 64;
++
++                const int ls1 = (int)((xb->scales_l[ib] & 0xf) | ((h << 4) & 0x30)) - 32;
++                const int ls2 = (int)((xb->scales_l[ib] >>  4) | ((h << 2) & 0x30)) - 32;
++                h >>= 4;
++                sumi1 += p1 * ls1;
++                sumi2 += p2 * ls2;
++            }
++
++            dsc  = (float) xb->d * yb->d;
++            expr = (float)(sumi1 + sumi2);
+         }
+ 
+         // sequential float tail in superblock order, exactly like the CPU loop
+@@ -11467,3 +11755,189 @@
+         dst_row[r0] = sumf;
+     }
+ }
++
++// ggml_vec_dot_q2_K_q8_K (NEON), compiled float tail per superblock (TWO sequential fmadds):
++//   dmin = fnmul(y.d, (float) x.dmin) = -(y.d * (float) x.dmin)
++//   sumf = fma(dmin, (float) mins_total, sumf)     (fmadd, mins term FIRST)
++//   d    = y.d * (float) x.d                        (single fmul)
++//   sumf = fma(d, (float) isum, sumf)               (fmadd)
++// no final scale
++kernel void kernel_galactus_mul_mv_id_q2_K_q8_K_bitexact(
++        constant ggml_metal_kargs_galactus_mmv_id_q8k & args,
++        device const char * src0s,
++        device const char * src1q, // Q8_K-quantized activations
++        device       char * dst,
++        device const char * ids,
++        uint3  tgpig[[threadgroup_position_in_grid]],
++        ushort tiisg[[thread_index_in_simdgroup]]) {
++    const int r0   = tgpig.x;             // output row within the expert
++    const int iid1 = tgpig.z/args.nei0;   // token
++    const int idx  = tgpig.z%args.nei0;   // expert slot
++
++    const int32_t i02 = ((device const int32_t *) (ids + iid1*args.nbi1))[idx];
++
++    const int i11 = idx % args.ne11;
++    const int i12 = iid1;
++
++    const int nsb = args.ne00/QK_K;
++
++    device const block_q2_K * xr = (device const block_q2_K *)(src0s + i02*args.nb02 + r0*args.nb01);
++    device const block_q8_K * yr = (device const block_q8_K *)(src1q) + (i12*args.ne11 + i11)*nsb;
++
++    float sumf = 0.0f;
++
++    for (int ib0 = 0; ib0 < nsb; ib0 += 32) {
++        const int i = ib0 + tiisg;
++
++        float dsc_mins  = 0.0f;
++        float expr_mins = 0.0f;
++        float dsc_q     = 0.0f;
++        float expr_q    = 0.0f;
++
++        if (i < nsb) {
++            device const block_q2_K * xb = xr + i;
++            device const block_q8_K * yb = yr + i;
++
++            device const int8_t  * q8 = yb->qs;
++            device const uint8_t * q2 = xb->qs;
++            device const uint8_t * sc = xb->scales;
++
++            int mins_total = 0;
++            for (int j = 0; j < QK_K/16; ++j) {
++                mins_total += (int)(sc[j] >> 4) * (int) yb->bsums[j];
++            }
++
++            int isum = 0;
++            for (int j = 0; j < QK_K/128; ++j) {
++                for (int sh = 0; sh < 4; ++sh) {          // shifts 0,2,4,6
++                    const int is = j*8 + sh*2;
++                    int p0 = 0;
++                    int p1 = 0;
++                    for (int m = 0; m < 16; ++m) {
++                        p0 += (int)((q2[j*32 + m +  0] >> (2*sh)) & 3) * (int) q8[j*128 + sh*32 + m +  0];
++                        p1 += (int)((q2[j*32 + m + 16] >> (2*sh)) & 3) * (int) q8[j*128 + sh*32 + m + 16];
++                    }
++                    isum += p0 * (int)(sc[is + 0] & 0xf)
++                          + p1 * (int)(sc[is + 1] & 0xf);
++                }
++            }
++
++            dsc_mins  = -(yb->d * (float) xb->dmin);   // fnmul
++            expr_mins = (float) mins_total;
++            dsc_q     = yb->d * (float) xb->d;
++            expr_q    = (float) isum;
++        }
++
++        // sequential float tail in superblock order: mins fmadd first, then quants fmadd
++        const int lim = (nsb - ib0) < 32 ? (nsb - ib0) : 32;
++        for (int k = 0; k < lim; ++k) {
++            const float dmk = simd_shuffle(dsc_mins,  (ushort) k);
++            const float emk = simd_shuffle(expr_mins, (ushort) k);
++            const float dqk = simd_shuffle(dsc_q,     (ushort) k);
++            const float eqk = simd_shuffle(expr_q,    (ushort) k);
++            sumf = fma(dmk, emk, sumf);
++            sumf = fma(dqk, eqk, sumf);
++        }
++    }
++
++    if (tiisg == 0) {
++        device float * dst_row = (device float *)(dst) + (int64_t) idx*args.ne0 + (int64_t) iid1*args.ne1*args.ne0;
++        dst_row[r0] = sumf;
++    }
++}
++
++// ggml_vec_dot_q3_K_q8_K (NEON), compiled float tail per superblock:
++//   dsc  = y.d * (float) x.d              (single fmul)
++//   sumf = fma(dsc, (float) isum, sumf)   (fmadd)
++// no final scale
++kernel void kernel_galactus_mul_mv_id_q3_K_q8_K_bitexact(
++        constant ggml_metal_kargs_galactus_mmv_id_q8k & args,
++        device const char * src0s,
++        device const char * src1q, // Q8_K-quantized activations
++        device       char * dst,
++        device const char * ids,
++        uint3  tgpig[[threadgroup_position_in_grid]],
++        ushort tiisg[[thread_index_in_simdgroup]]) {
++    const int r0   = tgpig.x;             // output row within the expert
++    const int iid1 = tgpig.z/args.nei0;   // token
++    const int idx  = tgpig.z%args.nei0;   // expert slot
++
++    const int32_t i02 = ((device const int32_t *) (ids + iid1*args.nbi1))[idx];
++
++    const int i11 = idx % args.ne11;
++    const int i12 = iid1;
++
++    const int nsb = args.ne00/QK_K;
++
++    device const block_q3_K * xr = (device const block_q3_K *)(src0s + i02*args.nb02 + r0*args.nb01);
++    device const block_q8_K * yr = (device const block_q8_K *)(src1q) + (i12*args.ne11 + i11)*nsb;
++
++    float sumf = 0.0f;
++
++    for (int ib0 = 0; ib0 < nsb; ib0 += 32) {
++        const int i = ib0 + tiisg;
++
++        float dsc  = 0.0f;
++        float expr = 0.0f;
++
++        if (i < nsb) {
++            device const block_q3_K * xb = xr + i;
++            device const block_q8_K * yb = yr + i;
++
++            device const int8_t  * q8 = yb->qs;
++            device const uint8_t * q3 = xb->qs;
++            device const uint8_t * hm = xb->hmask;
++            device const uint8_t * sb = xb->scales;
++
++            // 16 6-bit scales, minus 32 (same bit shuffle as the CPU kmask machinery)
++            const uint32_t aux0 = (uint32_t) sb[0] | ((uint32_t) sb[1] << 8) | ((uint32_t) sb[ 2] << 16) | ((uint32_t) sb[ 3] << 24);
++            const uint32_t aux1 = (uint32_t) sb[4] | ((uint32_t) sb[5] << 8) | ((uint32_t) sb[ 6] << 16) | ((uint32_t) sb[ 7] << 24);
++            const uint32_t aux2 = (uint32_t) sb[8] | ((uint32_t) sb[9] << 8) | ((uint32_t) sb[10] << 16) | ((uint32_t) sb[11] << 24);
++
++            uint32_t utmp[4];
++            utmp[3] = ((aux1 >> 4) & 0x0f0f0f0f) | (((aux2 >> 6) & 0x03030303) << 4);
++            utmp[2] = ((aux0 >> 4) & 0x0f0f0f0f) | (((aux2 >> 4) & 0x03030303) << 4);
++            utmp[1] = ( aux1       & 0x0f0f0f0f) | (((aux2 >> 2) & 0x03030303) << 4);
++            utmp[0] = ( aux0       & 0x0f0f0f0f) | (((aux2 >> 0) & 0x03030303) << 4);
++
++            int scale[16];
++            for (int j = 0; j < 16; ++j) {
++                scale[j] = (int)((utmp[j/4] >> (8*(j%4))) & 0xff) - 32;
++            }
++
++            int isum = 0;
++            for (int j = 0; j < QK_K/128; ++j) {
++                for (int sh = 0; sh < 4; ++sh) {          // shifts 0,2,4,6
++                    const int is = j*8 + sh*2;
++                    int p0 = 0;
++                    int p1 = 0;
++                    for (int m = 0; m < 16; ++m) {
++                        const int l0 = (int)((q3[j*32 + m +  0] >> (2*sh)) & 3)
++                                     - ((hm[m +  0] & (1 << (sh + 4*j))) ? 0 : 4);
++                        const int l1 = (int)((q3[j*32 + m + 16] >> (2*sh)) & 3)
++                                     - ((hm[m + 16] & (1 << (sh + 4*j))) ? 0 : 4);
++                        p0 += l0 * (int) q8[j*128 + sh*32 + m +  0];
++                        p1 += l1 * (int) q8[j*128 + sh*32 + m + 16];
++                    }
++                    isum += p0 * scale[is + 0] + p1 * scale[is + 1];
++                }
++            }
++
++            dsc  = yb->d * (float) xb->d;
++            expr = (float) isum;
++        }
++
++        // sequential float tail in superblock order, exactly like the CPU loop
++        const int lim = (nsb - ib0) < 32 ? (nsb - ib0) : 32;
++        for (int k = 0; k < lim; ++k) {
++            const float dk = simd_shuffle(dsc,  (ushort) k);
++            const float ek = simd_shuffle(expr, (ushort) k);
++            sumf = fma(dk, ek, sumf);
++        }
++    }
++
++    if (tiisg == 0) {
++        device float * dst_row = (device float *)(dst) + (int64_t) idx*args.ne0 + (int64_t) iid1*args.ne1*args.ne0;
++        dst_row[r0] = sumf;
++    }
++}
