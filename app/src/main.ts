@@ -18,7 +18,7 @@ import * as store from "./store";
 import type { ChatItem, Conversation, ConvMeta } from "./store";
 
 const app = document.getElementById("app")!;
-const LOGO = "/noxalis-white.png";
+const LOGO = "/galactus-mark.svg";
 
 type View = "chat" | "models" | "connectors" | "memory" | "agent" | "settings";
 type Autonomy = "manual" | "assisted" | "autonomous";
@@ -495,7 +495,7 @@ function userRowEl(text: string): HTMLElement {
 }
 
 function assistantBodyEl(): { row: HTMLElement; body: HTMLElement } {
-  const row = el(`<div class="row-a"><div class="av a">✦</div><div class="body"></div></div>`);
+  const row = el(`<div class="row-a"><div class="av a">G</div><div class="body"></div></div>`);
   return { row, body: row.querySelector(".body")! };
 }
 
@@ -538,7 +538,7 @@ function paintChat(): void {
   const conv = store.current();
   if (conv.items.length === 0) {
     const ready = server.running && server.phase === "ready";
-    log.appendChild(el(`<div class="empty"><span class="big">✦</span>${esc(ready ? t("chat.empty") : t("chat.noserver"))}</div>`));
+    log.appendChild(el(`<div class="empty"><img class="big-mark" src="${LOGO}" alt=""/>${esc(ready ? t("chat.empty") : t("chat.noserver"))}</div>`));
     paintPlan();
     return;
   }
@@ -893,7 +893,7 @@ function modelsView(): HTMLElement {
     const card = el(`<div class="mcard">
       <div class="top">
         <div class="info">
-          <div class="nm"><b>${esc(m.name)}</b><span class="chip-cert">✦ ${esc(t("models.certified"))}</span></div>
+          <div class="nm"><b>${esc(m.name)}</b><span class="chip-cert">✓ ${esc(t("models.certified"))}</span></div>
           <span class="meta">${esc(m.arch)} · ${fmtGb(m.gguf_bytes)} · ${m.experts_used ?? "?"}/${m.experts ?? "?"}</span>
         </div>
         <div class="spd"><b style="color:${speedColor}">${tps && v.ok ? "~" + tps.toFixed(0) : "—"}</b><small>${esc(v.ok ? t("models.onThisMac") : "—")}</small></div>
@@ -1176,7 +1176,7 @@ function settingsView(): HTMLElement {
 // ---------- onboarding ----------
 function onboardView(): HTMLElement {
   const wrap = el(`<div class="onb"><div class="box">
-    <div class="g">G</div>
+    <img class="g" src="${LOGO}" alt="Galactus"/>
     <h1>${esc(t("onboard.title"))}</h1>
     <p>${esc(t("onboard.body"))}</p>
     <div class="checks" id="checks">
@@ -1234,8 +1234,8 @@ function render() {
 
   const layout = el(`<div class="layout">
     <div class="side">
-      <div class="side-head"><div class="lights"><span></span><span></span><span></span></div><img src="${LOGO}" alt="Noxalis Lab"/></div>
-      <div class="brand2"><div class="g">G</div><div class="txt"><b>Galactus</b><span>Noxalis Lab · v0.1</span></div></div>
+      <div class="side-head"></div>
+      <div class="brand2"><img class="mark" src="${LOGO}" alt="Galactus"/><div class="txt"><b>Galactus</b><span>${esc(t("brand.by"))}</span></div></div>
       <div class="nav">
         ${nav("chat", I.chat, t("nav.chat"))}
         ${nav("models", I.models, t("nav.models"))}

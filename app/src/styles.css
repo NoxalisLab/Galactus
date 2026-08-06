@@ -98,12 +98,11 @@ svg { display: block; }
 
 /* ---------------- sidebar ---------------- */
 .side { width: 228px; flex: none; display: flex; flex-direction: column; background: var(--side); border-right: 1px solid var(--bd); }
-.side-head { height: 52px; display: flex; align-items: center; gap: 10px; padding: 0 18px; border-bottom: 1px solid var(--bd); -webkit-app-region: drag; }
-.side-head .lights { display: flex; gap: 6px; }
-.side-head .lights span { width: 11px; height: 11px; border-radius: 50%; background: #3a3a44; }
-.side-head img { margin-left: 6px; height: 21px; width: auto; opacity: 0.92; }
-.brand2 { display: flex; align-items: center; gap: 10px; padding: 18px 20px 14px; }
-.brand2 .g { width: 30px; height: 30px; border-radius: 9px; background: var(--grad140); display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 15px; color: var(--win); }
+/* Empty drag strip: the REAL macOS traffic lights overlay here (titleBarStyle
+   Overlay) — no fake placeholders. */
+.side-head { height: 52px; flex: none; border-bottom: 1px solid var(--bd); -webkit-app-region: drag; }
+.brand2 { display: flex; align-items: center; gap: 11px; padding: 18px 20px 14px; }
+.brand2 .mark { width: 30px; height: 30px; flex: none; }
 .brand2 .txt { display: flex; flex-direction: column; line-height: 1.25; }
 .brand2 .txt b { font-weight: 600; font-size: 14px; }
 .brand2 .txt span { font-size: 11px; color: var(--dim); }
@@ -200,6 +199,7 @@ svg { display: block; }
 
 .empty { color: var(--dim); text-align: center; margin-top: 16vh; font-size: 14px; }
 .empty .big { font-size: 30px; display: block; margin-bottom: 12px; opacity: 0.5; }
+.empty .big-mark { width: 44px; height: 44px; display: block; margin: 0 auto 14px; opacity: 0.75; }
 
 /* generic empty state (pages) */
 .empty-block { border: 1px dashed var(--bd3); border-radius: 12px; padding: 36px 20px; display: flex; flex-direction: column; align-items: center; gap: 5px; text-align: center; animation: gx-fade 0.2s ease both; }
@@ -342,7 +342,7 @@ textarea.mem:focus { border-color: rgba(138, 124, 255, 0.4); }
 /* onboarding */
 .onb { position: absolute; inset: 0; background: var(--win); display: flex; align-items: center; justify-content: center; z-index: 20; animation: gx-fade 0.25s ease both; }
 .onb .box { width: 440px; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px; }
-.onb .g { width: 56px; height: 56px; border-radius: 17px; background: var(--grad140); display: flex; align-items: center; justify-content: center; font-size: 26px; font-weight: 600; color: var(--win); margin-bottom: 12px; box-shadow: 0 12px 40px rgba(138, 124, 255, 0.28); }
+.onb .g { width: 64px; height: 64px; margin-bottom: 12px; filter: drop-shadow(0 12px 40px rgba(138, 124, 255, 0.45)); }
 .onb h1 { font-size: 21px; font-weight: 600; letter-spacing: -0.02em; }
 .onb p { font-size: 13.5px; color: var(--dim2); line-height: 1.6; max-width: 380px; }
 .onb .checks { width: 100%; margin-top: 22px; border: 1px solid var(--bd); border-radius: 12px; background: var(--card); overflow: hidden; text-align: left; }

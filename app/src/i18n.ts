@@ -2,6 +2,7 @@
 export type Lang = "en" | "fr";
 
 const dict: Record<string, { en: string; fr: string }> = {
+  "brand.by": { en: "by Noxalis Lab · v0.1", fr: "par Noxalis Lab · v0.1" },
   "nav.chat": { en: "Chat", fr: "Discussion" },
   "nav.models": { en: "Models", fr: "Modèles" },
   "nav.connectors": { en: "Connectors", fr: "Connecteurs" },
@@ -28,7 +29,7 @@ const dict: Record<string, { en: string; fr: string }> = {
   "auto.ask": { en: "Suggest", fr: "Proposer" },
   "auto.auto": { en: "Automatic", fr: "Automatique" },
   "chat.copied": { en: "copied", fr: "copié" },
-  "chat.empty": { en: "Ask anything — files, shell, code, writing.", fr: "Demande ce que tu veux — fichiers, shell, code, rédaction." },
+  "chat.empty": { en: "Ask anything: files, shell, code, writing.", fr: "Demande ce que tu veux : fichiers, shell, code, rédaction." },
   "chat.revert": { en: "Undo this change", fr: "Annuler cette modification" },
   "chat.reverted": { en: "reverted", fr: "annulé" },
   "chat.revertFail": { en: "no backup", fr: "pas de sauvegarde" },
@@ -58,7 +59,7 @@ const dict: Record<string, { en: string; fr: string }> = {
   "models.stop": { en: "Stop", fr: "Arrêter" },
   "models.installed": { en: "Installed", fr: "Installé" },
   "models.tooSmall": { en: "Below the minimum for this Mac", fr: "Sous le minimum pour ce Mac" },
-  "models.nativeFit": { en: "Fits in RAM — stock is faster", fr: "Tient en RAM — le stock est plus rapide" },
+  "models.nativeFit": { en: "Fits in RAM, stock is faster", fr: "Tient en RAM, le stock est plus rapide" },
   "models.hwNote": {
     en: "Speeds are estimated for this Mac from measured benchmarks.",
     fr: "Vitesses estimées pour ce Mac à partir de mesures réelles.",
@@ -154,7 +155,7 @@ const dict: Record<string, { en: string; fr: string }> = {
   },
   "onboard.detecting": { en: "Looking for your Galactus folder…", fr: "Recherche de ton dossier Galactus…" },
   "onboard.detected": { en: "Galactus folder found", fr: "Dossier Galactus trouvé" },
-  "onboard.notfound": { en: "Not found automatically — choose it below", fr: "Introuvable automatiquement — choisis-le ci-dessous" },
+  "onboard.notfound": { en: "Not found automatically. Choose it below", fr: "Introuvable automatiquement. Choisis-le ci-dessous" },
   "onboard.use": { en: "Use this folder", fr: "Utiliser ce dossier" },
   "onboard.choose": { en: "Choose a folder", fr: "Choisir un dossier" },
 
@@ -215,8 +216,8 @@ const dict: Record<string, { en: string; fr: string }> = {
 
   // drag & drop
   "chat.dropHint": {
-    en: "Path added — ask Galactus to read the file.",
-    fr: "Chemin ajouté — demande à Galactus de lire le fichier.",
+    en: "Path added. Ask Galactus to read the file.",
+    fr: "Chemin ajouté. Demande à Galactus de lire le fichier.",
   },
 
   // conversation list extras
@@ -253,16 +254,16 @@ const dict: Record<string, { en: string; fr: string }> = {
   "preview.close": { en: "Close", fr: "Fermer" },
   "preview.copied": { en: "copied", fr: "copié" },
   "preview.mermaidMissing": {
-    en: "Mermaid renderer not available — showing the diagram source.",
-    fr: "Rendu Mermaid indisponible — voici la source du diagramme.",
+    en: "Mermaid renderer not available. Showing the diagram source.",
+    fr: "Rendu Mermaid indisponible. Voici la source du diagramme.",
   },
   "preview.mermaidError": {
-    en: "The diagram could not be rendered — showing the source.",
-    fr: "Le diagramme n'a pas pu être rendu — voici la source.",
+    en: "The diagram could not be rendered. Showing the source.",
+    fr: "Le diagramme n'a pas pu être rendu. Voici la source.",
   },
   "preview.svgError": {
-    en: "Invalid SVG — showing the source.",
-    fr: "SVG invalide — voici la source.",
+    en: "Invalid SVG. Showing the source.",
+    fr: "SVG invalide. Voici la source.",
   },
   "preview.empty": { en: "Nothing to preview.", fr: "Rien à prévisualiser." },
 };
