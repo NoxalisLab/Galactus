@@ -117,7 +117,7 @@ int main() try {
         auto * arena = static_cast<unsigned char *>(arena_memory);
         // VRAIS experts : les emplacements 0..118 recoivent les experts 0..118
         for (int64_t s = 0; s < slots; ++s) {
-            const auto key = (static_cast<std::uint32_t>(pc.layer) << 8) | static_cast<std::uint32_t>(s);
+            const auto key = (static_cast<std::uint32_t>(pc.layer) << key_expert_bits) | static_cast<std::uint32_t>(s);
             const auto & location = layout.lookup(key);
             pread_exact(internal_fd, arena + s * record, location.internal_length, location.internal_offset);
             pread_exact(external_fd, arena + s * record + location.internal_length,

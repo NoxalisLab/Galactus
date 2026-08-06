@@ -13,6 +13,7 @@
 
 #include "h4-expert-cache.hpp"
 #include "h4-expert-store.hpp"
+#include "h4-profile.hpp"
 #include "h4-reader.hpp"
 
 #include <cstdio>
@@ -49,7 +50,7 @@ int main(int argc, char ** argv) try {
         std::uint32_t layer, expert;
         Span s;
         while (control >> layer >> expert >> s.role >> s.shard >> s.source_offset >> s.length >> s.record_offset) {
-            spans_by_key[(layer << 8) | expert].push_back(s);
+            spans_by_key[(layer << key_expert_bits) | expert].push_back(s);
         }
     }
     std::printf("controle : %zu cles\n", spans_by_key.size());
@@ -57,7 +58,7 @@ int main(int argc, char ** argv) try {
     // Service par couche, comme le rappel du graphe : les cles d'une meme
     // couche ensemble.
     std::map<std::uint32_t, std::vector<std::uint32_t>> keys_by_layer;
-    for (const auto & [key, _] : spans_by_key) keys_by_layer[key >> 8].push_back(key);
+    for (const auto & [key, _] : spans_by_key) keys_by_layer[key >> key_expert_bits].push_back(key);
 
     // Barattage optionnel : forcer evictions et reemplois d'emplacements
     // AVANT le service des cles de controle. C'est le chemin que le premier
@@ -65,16 +66,20 @@ int main(int argc, char ** argv) try {
     const int churn_rounds = std::getenv("GALACTUS_CHECK_CHURN") != nullptr
         ? std::atoi(std::getenv("GALACTUS_CHECK_CHURN")) : 0;
     if (churn_rounds > 0) {
-        std::printf("barattage : %d tours de 256 experts par couche de controle\n", churn_rounds);
+        // Experts REELS du profil actif, pas la capacite d'encodage des clefs.
+        const std::uint32_t experts = ModelProfile::active().experts;
+        std::printf("barattage : %d tours de %u experts par couche de controle\n",
+                    churn_rounds, experts);
         for (const auto & [layer, _] : keys_by_layer) {
             for (int round = 0; round < churn_rounds; ++round) {
-                // parcours pseudo-melange deterministe (pas de PRNG : 149 est
-                // premier avec 256, l'ordre varie avec le tour)
-                for (std::uint32_t chunk = 0; chunk < 256; chunk += 8) {
+                // parcours pseudo-melange deterministe (pas de PRNG : le pas
+                // 149 balaie le domaine, l'ordre varie avec le tour)
+                for (std::uint32_t chunk = 0; chunk < experts; chunk += 8) {
                     std::uint32_t batch[8];
                     for (std::uint32_t i = 0; i < 8; ++i) {
-                        const std::uint32_t expert = (149U * (chunk + i) + 31U * round) & 0xFFU;
-                        batch[i] = (layer << 8) | expert;
+                        const std::uint32_t expert =
+                            (149U * (chunk + i) + 31U * static_cast<std::uint32_t>(round)) % experts;
+                        batch[i] = (layer << key_expert_bits) | expert;
                     }
                     store.serve_layer(batch, 8);
                 }
@@ -91,7 +96,7 @@ int main(int argc, char ** argv) try {
     for (const auto & [key, spans] : spans_by_key) {
         const auto * slot = static_cast<const unsigned char *>(store.data(key));
         if (slot == nullptr) {
-            std::printf("L%u E%u : PAS D'EMPLACEMENT\n", key >> 8, key & 0xFF);
+            std::printf("L%u E%u : PAS D'EMPLACEMENT\n", key >> key_expert_bits, key & key_expert_mask);
             ++failed; continue;
         }
         for (const auto & s : spans) {
@@ -115,11 +120,11 @@ int main(int argc, char ** argv) try {
                 while (first < s.length &&
                        slot[s.record_offset + first] == static_cast<unsigned char>(expected[first])) ++first;
                 std::printf("L%u E%u %-4s : DIFFERENT des l'octet %llu / %llu\n",
-                            key >> 8, key & 0xFF, s.role.c_str(),
+                            key >> key_expert_bits, key & key_expert_mask, s.role.c_str(),
                             (unsigned long long) first, (unsigned long long) s.length);
             } else {
                 std::printf("L%u E%u %-4s : OK (%llu octets)\n",
-                            key >> 8, key & 0xFF, s.role.c_str(), (unsigned long long) s.length);
+                            key >> key_expert_bits, key & key_expert_mask, s.role.c_str(), (unsigned long long) s.length);
             }
         }
     }

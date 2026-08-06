@@ -10,12 +10,15 @@
 // reutilisation vaut un token pour tout expert reselectionne, la question
 // n'est pas a quelle frequence mais s'il revient.
 //
-// Sans allocation en regime permanent : chaque couche a exactement 256 experts
-// possibles, donc les deux listes sont chainees dans un tableau fixe de 256
-// noeuds. Tout est O(1).
+// Sans allocation en regime permanent : les deux listes d'une couche sont
+// chainees dans un tableau fixe de key_expert_capacity noeuds, dimensionne sur
+// la CAPACITE d'encodage des clefs et non sur le nombre d'experts du modele.
+// Tout est O(1), et une clef hors domaine reste dans les bornes du tableau.
 //
 // La taille d'un expert vient de galactus::h4::frozen_layer_record_bytes(),
-// c'est-a-dire des constantes gelees du packer — pas d'une table recopiee.
+// c'est-a-dire de la table du profil actif, pas d'une table recopiee.
+
+#include "h4-core.hpp"
 
 #include <array>
 #include <cstdint>
@@ -25,10 +28,14 @@ namespace galactus::h4 {
 
 class ExpertCache {
 public:
-    static constexpr std::uint32_t experts_per_layer_count = 256;
-    static constexpr std::uint32_t first_layer = 3;
-    static constexpr std::uint32_t last_layer = 77;
-    static constexpr std::uint32_t layer_count = last_layer - first_layer + 1;  // 75
+    // Plage de couches du profil actif (h4-profile.hpp). Le nombre reel
+    // d'experts par couche est ModelProfile::active().experts ; il ne faut pas
+    // le confondre avec galactus::h4::key_expert_capacity, qui n'est qu'une
+    // borne de structure, ni avec quota_per_layer(), qui est le nombre
+    // d'experts RESIDENTS autorises par couche.
+    [[nodiscard]] static std::uint32_t first_layer() noexcept;
+    [[nodiscard]] static std::uint32_t last_layer() noexcept;
+    [[nodiscard]] static std::uint32_t layer_count() noexcept;
 
     // capacity_bytes est le budget TOTAL du cache. Le quota par couche est
     // egal en nombre d'experts : n = capacity / somme des tailles d'un expert
@@ -48,12 +55,13 @@ public:
     Access access(std::uint32_t key) noexcept;
 
     // Renvoie true si l'expert etait deja resident, et met a jour l'etat du
-    // cache. Une cle est layer * 256 + expert.
+    // cache. Une cle est (couche << key_expert_bits) | expert.
     bool touch(std::uint32_t key) noexcept { return access(key).hit; }
 
     [[nodiscard]] bool resident(std::uint32_t key) const noexcept;
 
-    [[nodiscard]] std::uint32_t experts_per_layer() const noexcept { return quota_; }
+    // Nombre d'experts RESIDENTS autorises par couche, deduit du budget.
+    [[nodiscard]] std::uint32_t quota_per_layer() const noexcept { return quota_; }
     [[nodiscard]] std::uint32_t protected_quota() const noexcept { return protected_quota_; }
     [[nodiscard]] std::uint32_t probation_quota() const noexcept { return probation_quota_; }
     [[nodiscard]] std::uint64_t capacity_bytes() const noexcept { return capacity_bytes_; }
@@ -76,7 +84,7 @@ private:
     };
 
     struct Layer {
-        std::array<Node, experts_per_layer_count> nodes{};
+        std::array<Node, key_expert_capacity> nodes{};
         std::int16_t probation_head = -1, probation_tail = -1;
         std::int16_t protected_head = -1, protected_tail = -1;
         std::uint32_t probation_size = 0, protected_size = 0;

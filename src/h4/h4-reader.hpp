@@ -80,7 +80,7 @@ struct P0RecordLocation {
 class P0Layout {
 public:
     explicit P0Layout(
-        const std::array<std::uint64_t, 75> & layer_record_bytes,
+        const std::vector<std::uint64_t> & layer_record_bytes,
         P0Profile profile = P0Profile::v1_599_401);
 
     [[nodiscard]] const P0RecordLocation & lookup(std::uint32_t key) const;
@@ -104,7 +104,7 @@ struct P1RecordLocation {
 
 class P1Layout {
 public:
-    explicit P1Layout(const std::array<std::uint64_t, 75> & layer_record_bytes);
+    explicit P1Layout(const std::vector<std::uint64_t> & layer_record_bytes);
 
     [[nodiscard]] const P1RecordLocation & lookup(std::uint32_t key) const;
     [[nodiscard]] std::uint64_t internal_bytes() const noexcept;

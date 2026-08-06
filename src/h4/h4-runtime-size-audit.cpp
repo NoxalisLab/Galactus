@@ -1,4 +1,5 @@
 #include "h4-core.hpp"
+#include "h4-profile.hpp"
 #include "h4-reader.hpp"
 
 #include <array>
@@ -11,7 +12,6 @@
 
 namespace {
 
-constexpr std::uint32_t record_count = 75U * galactus::h4::experts_per_layer;
 constexpr std::uint32_t maximum_slot_count = 10'760;
 constexpr std::uint32_t minimum_slot_count = 7'949;
 constexpr std::uint32_t queue_depth_per_volume = 32;
@@ -54,6 +54,12 @@ std::uint64_t checked_product(std::uint64_t left, std::uint64_t right) {
 } // namespace
 
 int main() {
+    // Enregistrements et couches REELS du profil actif, pas la capacite
+    // d'encodage des clefs.
+    const auto & profile = galactus::h4::ModelProfile::active();
+    const std::uint32_t layer_count = profile.layer_count();
+    const std::uint32_t record_count = layer_count * profile.experts;
+
     const auto current_plan = galactus::h4::plan_ring(
         queue_depth_per_volume,
         maximum_record_bytes,
@@ -87,7 +93,7 @@ int main() {
     const std::uint64_t maximum_slot_table_bytes = checked_product(
         maximum_slot_count, sizeof(ProposedSlotDescriptor));
     const std::uint64_t free_slot_stack_bytes = checked_product(maximum_slot_count, sizeof(std::uint32_t));
-    const std::uint64_t layer_lru_bytes = checked_product(75, sizeof(ProposedLayerLru));
+    const std::uint64_t layer_lru_bytes = checked_product(layer_count, sizeof(ProposedLayerLru));
     const std::uint64_t p0_layout_bytes = checked_product(record_count, sizeof(galactus::h4::P0RecordLocation));
     const std::uint64_t maximum_request_result_bytes = checked_product(
         queue_depth_per_volume * 2U,
@@ -128,7 +134,7 @@ int main() {
         << "    \"maximum_request_result_bytes\":" << maximum_request_result_bytes << ",\n"
         << "    \"subtotal_bytes\":" << deterministic_metadata_bytes << ",\n"
         << "    \"hash_index_required\":false,\n"
-        << "    \"reason\":\"the key domain maps directly to (layer-3)*256+expert\"\n"
+        << "    \"reason\":\"the key domain maps directly to (layer-first_layer)*experts+expert\"\n"
         << "  },\n"
         << "  \"current_reader_qd32\":{\n"
         << "    \"effective_queue_depth_per_volume\":" << current_plan.effective_queue_depth_per_volume << ",\n"

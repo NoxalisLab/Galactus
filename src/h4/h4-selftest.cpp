@@ -1,4 +1,5 @@
 #include "h4-core.hpp"
+#include "h4-profile.hpp"
 #include "h4-reader.hpp"
 
 #include <array>
@@ -126,12 +127,15 @@ int main() {
     require(v2_large.internal_bytes / record_alignment_bytes == 576, "invalid large P0v2 internal split");
     require(v2_large.external_bytes / record_alignment_bytes == 228, "invalid large P0v2 external split");
 
+    // Enumeration des experts REELS du profil actif (integre : GLM-5.2, donc
+    // 75 couches x 256 experts = 19 200 enregistrements).
+    const auto & profile = ModelProfile::active();
     const auto & layer_bytes = frozen_layer_record_bytes();
     CanonicalP1Placement placement;
     for (std::uint32_t layer_index = 0; layer_index < layer_bytes.size(); ++layer_index) {
         const auto bytes = layer_bytes[layer_index];
-        for (std::uint32_t expert = 0; expert < experts_per_layer; ++expert) {
-            placement.assign(minimum_routed_layer + layer_index, expert, bytes);
+        for (std::uint32_t expert = 0; expert < profile.experts; ++expert) {
+            placement.assign(profile.first_layer + layer_index, expert, bytes);
         }
     }
     require(placement.complete(), "canonical P1 placement is incomplete");
@@ -142,7 +146,7 @@ int main() {
     bool rejected_out_of_order = false;
     try {
         CanonicalP1Placement invalid_placement;
-        invalid_placement.assign(minimum_routed_layer, 1, layer_bytes[0]);
+        invalid_placement.assign(profile.first_layer, 1, layer_bytes[0]);
     } catch (const std::invalid_argument &) {
         rejected_out_of_order = true;
     }
@@ -151,8 +155,8 @@ int main() {
     std::string encoded;
     append_little_endian<std::uint32_t>(encoded, 0);
     append_little_endian<std::uint16_t>(encoded, 2);
-    append_little_endian<std::uint32_t>(encoded, (3U << 8U) | 7U);
-    append_little_endian<std::uint32_t>(encoded, (77U << 8U) | 255U);
+    append_little_endian<std::uint32_t>(encoded, (3U << key_expert_bits) | 7U);
+    append_little_endian<std::uint32_t>(encoded, (77U << key_expert_bits) | 255U);
     append_little_endian<std::uint32_t>(encoded, 1);
     append_little_endian<std::uint16_t>(encoded, 0);
     std::istringstream input(encoded);
@@ -194,7 +198,7 @@ int main() {
     const P0Layout p0_layout(layer_bytes);
     require(p0_layout.internal_bytes() == 118'405'201'920, "P0 internal file size mismatch");
     require(p0_layout.external_bytes() == 79'222'013'952, "P0 external file size mismatch");
-    const MissToken planned_token{7, {(3U << 8U), (77U << 8U) | 255U}};
+    const MissToken planned_token{7, {(3U << key_expert_bits), (77U << key_expert_bits) | 255U}};
     const auto planned_reads = p0_layout.plan_token(planned_token, 100);
     require(planned_reads.size() == 4, "P0 must emit two reads per missed record");
     require(planned_reads.front().request_id == 100, "P0 first request identifier mismatch");

@@ -6,7 +6,7 @@
 // meme d'un octet, fait echouer le binaire.
 //
 // Entrees : les tableaux compacts produits par scripts/trace-compact.py,
-//   <base>.keys.u32   uint32  layer * 256 + expert
+//   <base>.keys.u32   uint32  (layer << key_expert_bits) | expert
 //   <base>.phase.u8   uint8   index de phase
 // L'ordre de rejeu est l'ordre trie des noms, comme dans le simulateur.
 
@@ -93,7 +93,7 @@ int main(int argc, char ** argv) try {
 
     galactus::h4::ExpertCache cache(capacity_bytes, protected_fraction);
     std::printf("capacite %" PRIu64 " octets : %u experts par couche, %u proteges, %u en probation\n",
-                capacity_bytes, cache.experts_per_layer(),
+                capacity_bytes, cache.quota_per_layer(),
                 cache.protected_quota(), cache.probation_quota());
 
     std::uint64_t hits = 0, accesses = 0, cold = 0;
@@ -104,7 +104,7 @@ int main(int argc, char ** argv) try {
         std::uint64_t h = 0, a = 0, c = 0;
         for (std::size_t i = 0; i < keys.size(); ++i) {
             const bool counted = phases[i] == generation_phase;
-            const std::uint32_t layer = keys[i] >> 8;
+            const std::uint32_t layer = keys[i] >> galactus::h4::key_expert_bits;
             const bool was_resident = cache.resident(keys[i]);
             cache.touch(keys[i]);
             if (!counted) continue;

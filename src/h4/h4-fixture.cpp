@@ -21,6 +21,7 @@
 namespace {
 
 using galactus::h4::DualVolumeReader;
+using galactus::h4::key_expert_bits;
 using galactus::h4::MissToken;
 using galactus::h4::P0Layout;
 using galactus::h4::P1Layout;
@@ -268,7 +269,7 @@ int run_success(const Options & options) {
     SparseFixtureFile p1_internal(options.internal_directory, "p1-int", p1.internal_bytes());
     SparseFixtureFile p1_external(options.external_directory, "p1-ext", p1.external_bytes());
 
-    const std::vector<std::uint32_t> sentinel_keys = {(3U << 8U), (6U << 8U), (8U << 8U)};
+    const std::vector<std::uint32_t> sentinel_keys = {(3U << key_expert_bits), (6U << key_expert_bits), (8U << key_expert_bits)};
     struct Verification {
         ReadRequest request;
         std::uint64_t checksum;

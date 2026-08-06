@@ -1,3 +1,4 @@
+#include "h4-profile.hpp"
 #include "h4-reader.hpp"
 
 #include <algorithm>
@@ -26,6 +27,7 @@
 namespace {
 
 using galactus::h4::DualVolumeReader;
+using galactus::h4::ModelProfile;
 using galactus::h4::P0Layout;
 using galactus::h4::P0Profile;
 using galactus::h4::P1Layout;
@@ -264,11 +266,13 @@ std::vector<ReadRequest> chunk_requests(
 class KeyEpochs {
 public:
     explicit KeyEpochs(std::uint64_t seed) : generator_(seed) {
-        keys_.reserve(75U * galactus::h4::experts_per_layer);
-        for (std::uint32_t layer = galactus::h4::minimum_routed_layer;
-             layer <= galactus::h4::maximum_routed_layer; ++layer) {
-            for (std::uint32_t expert = 0; expert < galactus::h4::experts_per_layer; ++expert) {
-                keys_.push_back((layer << 8U) | expert);
+        // Les clefs enumerees sont celles du modele : couches et experts du
+        // profil actif, pas la capacite d'encodage des clefs.
+        const auto & profile = ModelProfile::active();
+        keys_.reserve(static_cast<std::size_t>(profile.layer_count()) * profile.experts);
+        for (std::uint32_t layer = profile.first_layer; layer <= profile.last_layer; ++layer) {
+            for (std::uint32_t expert = 0; expert < profile.experts; ++expert) {
+                keys_.push_back((layer << galactus::h4::key_expert_bits) | expert);
             }
         }
         shuffle();

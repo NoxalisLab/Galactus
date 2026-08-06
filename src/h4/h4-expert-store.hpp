@@ -76,9 +76,9 @@ public:
     [[nodiscard]] const ExpertCache & cache() const noexcept { return cache_; }
     [[nodiscard]] std::uint64_t slot_bytes() const noexcept { return slot_bytes_; }
     [[nodiscard]] bool pinned() const noexcept { return pin_; }
-    [[nodiscard]] std::uint32_t slots_per_layer() const noexcept {
-        return pin_ ? ExpertCache::experts_per_layer_count : cache_.experts_per_layer();
-    }
+    // Emplacements reellement alloues par couche : tous les experts du modele
+    // en mode epingle, sinon le quota resident du cache.
+    [[nodiscard]] std::uint32_t slots_per_layer() const noexcept;
 
 private:
     std::uint32_t allocate_slot(std::uint32_t key);  // lance si la liste libre est a sec
@@ -92,14 +92,15 @@ private:
     unsigned char * arena_ = nullptr;
     std::uint64_t slot_bytes_ = 0;
     std::vector<std::uint64_t> layer_base_;          // offset du premier emplacement
-    std::vector<std::int16_t> slot_of_;              // 75 * 256, -1 si absent
+    std::vector<std::int16_t> slot_of_;              // couches * capacite, -1 si absent
     std::vector<std::vector<std::int16_t>> free_slots_;
     std::uint64_t next_request_id_ = 0;
     std::uint32_t split_ = 1;
 
     // Sonde zero-eviction (GALACTUS_H4_PIN=1) : chaque couche cablee recoit
-    // ses 256 experts a demeure, les autres 0. Jamais d'eviction ni de
-    // liberation ; le SLRU n'est pas consulte. Diagnostic seulement.
+    // tous les experts du profil actif a demeure, les autres 0. Jamais
+    // d'eviction ni de liberation ; le SLRU n'est pas consulte. Diagnostic
+    // seulement.
     bool pin_ = false;
     std::uint32_t pin_low_ = 0, pin_high_ = 0;
 

@@ -1,5 +1,7 @@
 #include "h4-reader.hpp"
 
+#include "h4-profile.hpp"
+
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
@@ -348,12 +350,13 @@ std::future<ReadResult> DualVolumeReader::submit(ReadRequest request) {
 }
 
 P0Layout::P0Layout(
-    const std::array<std::uint64_t, 75> & layer_record_bytes,
+    const std::vector<std::uint64_t> & layer_record_bytes,
     P0Profile profile) {
-    records_.reserve(75U * experts_per_layer);
+    const std::uint32_t experts = ModelProfile::active().experts;
+    records_.reserve(layer_record_bytes.size() * experts);
     for (std::uint32_t layer_index = 0; layer_index < layer_record_bytes.size(); ++layer_index) {
         const auto split = plan_p0_split(layer_record_bytes[layer_index], profile);
-        for (std::uint32_t expert = 0; expert < experts_per_layer; ++expert) {
+        for (std::uint32_t expert = 0; expert < experts; ++expert) {
             records_.push_back({internal_bytes_, split.internal_bytes, external_bytes_, split.external_bytes});
             internal_bytes_ += split.internal_bytes;
             external_bytes_ += split.external_bytes;
@@ -362,12 +365,13 @@ P0Layout::P0Layout(
 }
 
 const P0RecordLocation & P0Layout::lookup(std::uint32_t key) const {
-    const auto layer = key >> 8U;
-    const auto expert = key & 0xffU;
-    if (layer < minimum_routed_layer || layer > maximum_routed_layer || expert >= experts_per_layer) {
+    const auto layer = key >> key_expert_bits;
+    const auto expert = key & key_expert_mask;
+    const auto & mp = ModelProfile::active();
+    if (layer < mp.first_layer || layer > mp.last_layer || expert >= mp.experts) {
         throw std::invalid_argument("P0 lookup key is outside the routed-expert domain");
     }
-    const auto index = (layer - minimum_routed_layer) * experts_per_layer + expert;
+    const auto index = (layer - mp.first_layer) * mp.experts + expert;
     return records_.at(index);
 }
 
@@ -394,13 +398,14 @@ std::vector<ReadRequest> P0Layout::plan_token(const MissToken & token, std::uint
     return requests;
 }
 
-P1Layout::P1Layout(const std::array<std::uint64_t, 75> & layer_record_bytes) {
-    records_.reserve(75U * experts_per_layer);
+P1Layout::P1Layout(const std::vector<std::uint64_t> & layer_record_bytes) {
+    const std::uint32_t experts = ModelProfile::active().experts;
+    records_.reserve(layer_record_bytes.size() * experts);
     CanonicalP1Placement placement;
     for (std::uint32_t layer_index = 0; layer_index < layer_record_bytes.size(); ++layer_index) {
-        const auto layer = minimum_routed_layer + layer_index;
+        const auto layer = ModelProfile::active().first_layer + layer_index;
         const auto bytes = layer_record_bytes[layer_index];
-        for (std::uint32_t expert = 0; expert < experts_per_layer; ++expert) {
+        for (std::uint32_t expert = 0; expert < experts; ++expert) {
             const auto volume = placement.assign(layer, expert, bytes);
             if (volume == Volume::internal) {
                 records_.push_back({volume, internal_bytes_, bytes});
@@ -418,12 +423,13 @@ P1Layout::P1Layout(const std::array<std::uint64_t, 75> & layer_record_bytes) {
 }
 
 const P1RecordLocation & P1Layout::lookup(std::uint32_t key) const {
-    const auto layer = key >> 8U;
-    const auto expert = key & 0xffU;
-    if (layer < minimum_routed_layer || layer > maximum_routed_layer || expert >= experts_per_layer) {
+    const auto layer = key >> key_expert_bits;
+    const auto expert = key & key_expert_mask;
+    const auto & mp = ModelProfile::active();
+    if (layer < mp.first_layer || layer > mp.last_layer || expert >= mp.experts) {
         throw std::invalid_argument("P1 lookup key is outside the routed-expert domain");
     }
-    const auto index = (layer - minimum_routed_layer) * experts_per_layer + expert;
+    const auto index = (layer - mp.first_layer) * mp.experts + expert;
     return records_.at(index);
 }
 

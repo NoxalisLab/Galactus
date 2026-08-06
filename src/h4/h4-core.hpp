@@ -9,17 +9,29 @@
 namespace galactus::h4 {
 
 constexpr std::uint64_t record_alignment_bytes = 16'384;
-constexpr std::uint32_t minimum_routed_layer = 3;
-constexpr std::uint32_t maximum_routed_layer = 77;
-constexpr std::uint32_t experts_per_layer = 256;
+// Encodage des clefs : une clef est (couche << key_expert_bits) | expert.
+// 10 bits d'expert = 1024 au maximum structurel (Qwen3-Next : 512 par couche ;
+// GLM saturait exactement les 8 bits historiques a 256).
+constexpr std::uint32_t key_expert_bits = 10;
+constexpr std::uint32_t key_expert_mask = (1U << key_expert_bits) - 1U;
+// CAPACITE D'ENCODAGE, jamais le nombre d'experts du modele. Ne sert qu'a
+// dimensionner les tableaux indexes par (clef & key_expert_mask), pour qu'une
+// clef hors domaine reste dans les bornes. Le nombre REEL d'experts par couche
+// est ModelProfile::active().experts, et la plage de couches
+// ModelProfile::active().first_layer .. last_layer (voir h4-profile.hpp).
+constexpr std::uint32_t key_expert_capacity = 1U << key_expert_bits;
 constexpr std::uint64_t hard_ring_buffer_limit_bytes = 2'147'483'648;
 constexpr std::uint64_t hard_process_footprint_limit_bytes = 6'442'450'944;
 
-[[nodiscard]] const std::array<std::uint64_t, 75> & frozen_layer_record_bytes() noexcept;
+// Table des enregistrements par couche du PROFIL ACTIF (voir h4-profile.hpp).
+// Nom historique conserve : gelee signifie desormais immuable une fois le
+// profil charge, et non plus codee en dur GLM-5.2.
+[[nodiscard]] const std::vector<std::uint64_t> & frozen_layer_record_bytes() noexcept;
 
 enum class P0Profile {
     v1_599_401,
     v2_7157_2843,
+    single_volume,   // un seul SSD : tout l'enregistrement sur le volume interne
 };
 
 struct SplitRecordPlan {

@@ -27,3 +27,10 @@ tests/
 PROJECT.md
 galactus.env
 .gstack/
+
+# rebuts et sauvegardes locales - jamais versionnes
+_corbeille/
+_probe/
+app-backup-v1/
+*.tgz
+build-*/

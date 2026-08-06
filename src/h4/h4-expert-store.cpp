@@ -1,5 +1,9 @@
 #include "h4-expert-store.hpp"
 
+#include "h4-profile.hpp"
+
+#include <algorithm>
+
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -16,8 +20,8 @@ std::uint64_t monotonic_ns() {
             std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
-constexpr std::uint32_t layer_index(std::uint32_t key) {
-    return (key >> 8) - ExpertCache::first_layer;
+std::uint32_t layer_index(std::uint32_t key) {
+    return (key >> key_expert_bits) - ExpertCache::first_layer();
 }
 
 }  // namespace
@@ -29,12 +33,15 @@ ExpertStore::ExpertStore(std::uint64_t capacity_bytes,
                          std::uint32_t split)
     : cache_(capacity_bytes, protected_fraction), reader_(reader), layout_(layout),
       split_(split == 0 ? 1 : split) {
-    const std::uint32_t quota = cache_.experts_per_layer();
+    const std::uint32_t quota = cache_.quota_per_layer();
+    // Mode epingle : une couche cablee recoit TOUS les experts du modele, pas
+    // la capacite d'encodage des clefs.
+    const std::uint32_t model_experts = ModelProfile::active().experts;
     { // sonde zero-eviction : l'environnement est lu une fois, ici
         const char * pin = std::getenv("GALACTUS_H4_PIN");
         pin_ = pin != nullptr && pin[0] == '1';
-        pin_low_ = ExpertCache::first_layer;
-        pin_high_ = ExpertCache::last_layer;
+        pin_low_ = ExpertCache::first_layer();
+        pin_high_ = ExpertCache::last_layer();
         const char * spec = std::getenv("GALACTUS_H4_ONLY_LAYERS");
         int low = 0, high = 0;
         if (spec != nullptr && std::sscanf(spec, "%d-%d", &low, &high) == 2) {
@@ -44,24 +51,26 @@ ExpertStore::ExpertStore(std::uint64_t capacity_bytes,
         if (pin_ && (pin_high_ - pin_low_) > 20) {
             throw std::runtime_error(
                 "expert store: mode epingle limite a 21 couches cablees "
-                "(256 emplacements partout = arene intenable)");
+                "(tous les experts partout = arene intenable)");
         }
     }
-    layer_base_.resize(ExpertCache::layer_count);
-    free_slots_.resize(ExpertCache::layer_count);
-    slot_of_.assign(static_cast<std::size_t>(ExpertCache::layer_count) * 256U, -1);
+    layer_base_.resize(ExpertCache::layer_count());
+    free_slots_.resize(ExpertCache::layer_count());
+    // Indexe par (clef & key_expert_mask) : dimensionne sur la CAPACITE
+    // d'encodage pour qu'une clef hors domaine reste dans les bornes.
+    slot_of_.assign(static_cast<std::size_t>(ExpertCache::layer_count()) * key_expert_capacity, -1);
 
     std::uint64_t offset = 0;
-    for (std::uint32_t index = 0; index < ExpertCache::layer_count; ++index) {
+    for (std::uint32_t index = 0; index < ExpertCache::layer_count(); ++index) {
         layer_base_[index] = offset;
         const std::uint64_t record = frozen_layer_record_bytes()[index];
         if (record % record_alignment_bytes != 0) {
             throw std::runtime_error("expert store: record size is not 16 KiB aligned");
         }
-        const std::uint32_t layer_number = index + ExpertCache::first_layer;
+        const std::uint32_t layer_number = index + ExpertCache::first_layer();
         const std::uint32_t layer_quota = !pin_ ? quota
             : (layer_number >= pin_low_ && layer_number <= pin_high_
-               ? ExpertCache::experts_per_layer_count : 0U);
+               ? model_experts : 0U);
         offset += record * layer_quota;
         free_slots_[index].reserve(layer_quota);
         for (std::int32_t slot = static_cast<std::int32_t>(layer_quota) - 1; slot >= 0; --slot) {
@@ -81,9 +90,13 @@ ExpertStore::~ExpertStore() {
     std::free(arena_);
 }
 
+std::uint32_t ExpertStore::slots_per_layer() const noexcept {
+    return pin_ ? ModelProfile::active().experts : cache_.quota_per_layer();
+}
+
 const void * ExpertStore::data(std::uint32_t key) const noexcept {
     const std::uint32_t index = layer_index(key);
-    const std::int16_t slot = slot_of_[static_cast<std::size_t>(index) * 256U + (key & 0xFFu)];
+    const std::int16_t slot = slot_of_[static_cast<std::size_t>(index) * key_expert_capacity + (key & key_expert_mask)];
     if (slot < 0) return nullptr;
     return arena_ + layer_base_[index] +
            static_cast<std::uint64_t>(slot) * frozen_layer_record_bytes()[index];
@@ -97,17 +110,17 @@ std::uint32_t ExpertStore::allocate_slot(std::uint32_t key) {
         // insertion. Une liste a sec signifie une fuite d'emplacements --
         // l'UB silencieux du 3 aout (PPL 8,89) ne se reproduira pas.
         throw std::runtime_error("expert store: free list a sec, fuite d'emplacements (couche "
-                                 + std::to_string(index + 3) + ")");
+                                 + std::to_string(index + ExpertCache::first_layer()) + ")");
     }
     const std::int16_t slot = free_list.back();
     free_list.pop_back();
-    slot_of_[static_cast<std::size_t>(index) * 256U + (key & 0xFFu)] = slot;
+    slot_of_[static_cast<std::size_t>(index) * key_expert_capacity + (key & key_expert_mask)] = slot;
     return static_cast<std::uint32_t>(slot);
 }
 
 void ExpertStore::release_slot(std::uint32_t key) noexcept {
     const std::uint32_t index = layer_index(key);
-    auto & entry = slot_of_[static_cast<std::size_t>(index) * 256U + (key & 0xFFu)];
+    auto & entry = slot_of_[static_cast<std::size_t>(index) * key_expert_capacity + (key & key_expert_mask)];
     if (entry >= 0) {
         free_slots_[index].push_back(entry);
         entry = -1;
@@ -170,7 +183,7 @@ void ExpertStore::warm(const std::vector<std::uint32_t> & keys) {
 
 std::int16_t ExpertStore::slot_of(std::uint32_t key) const noexcept {
     const std::uint32_t index = layer_index(key);
-    return slot_of_[static_cast<std::size_t>(index) * 256U + (key & 0xFFu)];
+    return slot_of_[static_cast<std::size_t>(index) * key_expert_capacity + (key & key_expert_mask)];
 }
 
 std::uint64_t ExpertStore::serve_layer(const std::uint32_t * keys, std::uint32_t count) {
@@ -189,14 +202,33 @@ std::uint64_t ExpertStore::serve_layer(const std::uint32_t * keys, std::uint32_t
         }
         return bytes_read;
     }
+    std::vector<std::uint32_t> inflight;
+    inflight.reserve(count);
     for (std::uint32_t i = 0; i < count; ++i) {
         const auto access = cache_.access(keys[i]);
         // L'eviction peut survenir sur un SUCCES aussi (promotion ->
         // debordement du protege -> retrogradation -> debordement de la
         // probation). Toujours liberer AVANT de decider quoi que ce soit.
-        if (access.evicted) release_slot(access.evicted_key);
+        if (access.evicted) {
+            // Course corrigee (tour Linux h4check2) : si la cle evincee a une
+            // lecture emise dans CE service encore en vol, recycler son
+            // emplacement ferait ecrire deux pread concurrents au meme
+            // endroit. On draine d'abord, puis on libere. Les services de
+            // generation (peu de manquants, evictions de cles anciennes) ne
+            // drainent jamais ici ; seuls les lots de prompt le font.
+            if (std::find(inflight.begin(), inflight.end(), access.evicted_key)
+                    != inflight.end()) {
+                for (auto & future : pending) {
+                    bytes_read += future.get().bytes_read;
+                }
+                pending.clear();
+                inflight.clear();
+            }
+            release_slot(access.evicted_key);
+        }
         if (access.hit) continue;
         issue(keys[i], pending);
+        inflight.push_back(keys[i]);
     }
     for (auto & future : pending) {
         bytes_read += future.get().bytes_read;
@@ -218,17 +250,26 @@ ExpertStore::TokenResult ExpertStore::serve_token(
         pending.clear();
     };
 
-    std::uint32_t current_layer = keys.empty() ? 0 : (keys.front() >> 8);
+    std::uint32_t current_layer = keys.empty() ? 0 : (keys.front() >> key_expert_bits);
+    std::vector<std::uint32_t> inflight;
+    inflight.reserve(keys.size());
     for (const auto key : keys) {
-        if (mode == ServeMode::layer && (key >> 8) != current_layer) {
+        if (mode == ServeMode::layer && (key >> key_expert_bits) != current_layer) {
             // regime reel : on ne peut pas lire la couche suivante avant que
             // celle-ci soit servie, puisque son routeur n'a pas encore tourne
             drain();
-            current_layer = key >> 8;
+            inflight.clear();
+            current_layer = key >> key_expert_bits;
         }
         const auto access = cache_.access(key);
         if (access.evicted) {
-            // meme sur un succes : voir serve_layer
+            // meme sur un succes : voir serve_layer. Ne jamais recycler un
+            // emplacement dont la lecture de ce lot est encore en vol.
+            if (std::find(inflight.begin(), inflight.end(), access.evicted_key)
+                    != inflight.end()) {
+                drain();
+                inflight.clear();
+            }
             release_slot(access.evicted_key);
         }
         if (access.hit) {
@@ -237,6 +278,7 @@ ExpertStore::TokenResult ExpertStore::serve_token(
         }
         ++result.misses;
         issue(key, pending);
+        inflight.push_back(key);
     }
     drain();
     result.wall_ns = monotonic_ns() - started;

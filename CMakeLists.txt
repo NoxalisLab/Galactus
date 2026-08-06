@@ -35,7 +35,7 @@ find_library(GGML_BASE_LIBRARY
 add_executable(galactus-route-trace src/route-trace.cpp)
 add_executable(galactus-process-memory src/process-memory.cpp)
 
-add_library(galactus-h4-core STATIC src/h4/h4-core.cpp src/h4/h4-reader.cpp)
+add_library(galactus-h4-core STATIC src/h4/h4-core.cpp src/h4/h4-profile.cpp src/h4/h4-reader.cpp)
 target_include_directories(galactus-h4-core PUBLIC "${CMAKE_SOURCE_DIR}/src/h4")
 target_link_libraries(galactus-h4-core PUBLIC Threads::Threads)
 
@@ -75,7 +75,7 @@ add_executable(galactus-h4-clone-pack src/h4/h4-clone-pack.cpp)
 # (magasin + lecteur reels, comparaison hote contre le GGUF, sans Metal).
 add_executable(galactus-h4-serve-check
     src/h4/h4-serve-check.cpp
-    src/h4/h4-core.cpp
+    src/h4/h4-core.cpp src/h4/h4-profile.cpp
     src/h4/h4-expert-cache.cpp
     src/h4/h4-expert-store.cpp
     src/h4/h4-reader.cpp)
@@ -86,7 +86,7 @@ target_link_libraries(galactus-h4-serve-check PRIVATE Threads::Threads)
 # remappage a travers le planificateur. Fail-closed.
 add_executable(galactus-h4-metal-arena-probe
     src/h4/h4-metal-arena-probe.cpp
-    src/h4/h4-core.cpp
+    src/h4/h4-core.cpp src/h4/h4-profile.cpp
     src/h4/h4-reader.cpp)
 target_include_directories(galactus-h4-metal-arena-probe PRIVATE
     "${CMAKE_SOURCE_DIR}/src/h4"
@@ -267,5 +267,18 @@ target_link_libraries(galactus-route-trace PRIVATE
     "${GGML_BASE_LIBRARY}")
 
 set_target_properties(galactus-route-trace PROPERTIES
+    BUILD_RPATH "${LLAMA_CPP_BUILD_DIR}/bin"
+    INSTALL_RPATH "${LLAMA_CPP_BUILD_DIR}/bin")
+
+# galactus-h4-kernel-parity-probe : parite numerique CPU vs Metal des noyaux
+# mul_mat_id (phase MESURE : quantifier la divergence avant tout correctif).
+add_executable(galactus-h4-kernel-parity-probe src/h4/h4-kernel-parity-probe.cpp)
+target_include_directories(galactus-h4-kernel-parity-probe PRIVATE
+    "${CMAKE_SOURCE_DIR}/third_party/llama.cpp/ggml/include")
+target_link_libraries(galactus-h4-kernel-parity-probe PRIVATE
+    "${GGML_LIBRARY}"
+    "${GGML_BASE_LIBRARY}"
+    Threads::Threads)
+set_target_properties(galactus-h4-kernel-parity-probe PROPERTIES
     BUILD_RPATH "${LLAMA_CPP_BUILD_DIR}/bin"
     INSTALL_RPATH "${LLAMA_CPP_BUILD_DIR}/bin")

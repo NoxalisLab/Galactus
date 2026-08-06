@@ -1,7 +1,9 @@
 #include "h4-core.hpp"
+#include "h4-profile.hpp"
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -11,21 +13,7 @@
 namespace galactus::h4 {
 namespace {
 
-constexpr std::array<std::uint64_t, 75> layer_record_bytes = {
-    9'732'096, 9'732'096, 9'732'096, 11'304'960, 9'732'096, 13'172'736,
-    11'304'960, 9'732'096, 9'732'096, 9'732'096, 9'732'096, 9'732'096,
-    9'732'096, 9'732'096, 9'732'096, 9'732'096, 9'732'096, 9'732'096,
-    9'732'096, 9'732'096, 9'732'096, 9'732'096, 9'732'096, 9'732'096,
-    9'732'096, 9'732'096, 11'304'960, 9'732'096, 9'732'096, 9'732'096,
-    9'732'096, 9'732'096, 9'732'096, 9'732'096, 9'732'096, 9'732'096,
-    11'304'960, 11'304'960, 11'304'960, 11'304'960, 11'304'960, 11'304'960,
-    11'304'960, 11'304'960, 11'304'960, 11'304'960, 9'732'096, 9'732'096,
-    9'732'096, 9'732'096, 9'732'096, 9'732'096, 9'732'096, 9'732'096,
-    9'732'096, 9'732'096, 9'732'096, 9'732'096, 9'732'096, 9'732'096,
-    9'732'096, 9'732'096, 9'732'096, 9'732'096, 9'732'096, 11'304'960,
-    9'732'096, 11'304'960, 9'732'096, 11'304'960, 11'304'960, 11'304'960,
-    13'172'736, 13'172'736, 13'172'736,
-};
+// (table GLM-5.2 retiree : la verite vit dans h4-profile.cpp, profil integre)
 
 template <typename Integer>
 Integer read_little_endian(std::istream & input, const char * field) {
@@ -43,9 +31,12 @@ Integer read_little_endian(std::istream & input, const char * field) {
 }
 
 void validate_key(std::uint32_t key) {
-    const std::uint32_t layer = key >> 8U;
-    const std::uint32_t expert = key & 0xffU;
-    if (layer < minimum_routed_layer || layer > maximum_routed_layer || expert >= experts_per_layer) {
+    const std::uint32_t layer = key >> key_expert_bits;
+    const std::uint32_t expert = key & key_expert_mask;
+    // Domaine du MODELE, pas capacite d'encodage : un expert au-dela de
+    // profile.experts n'existe pas et doit etre rejete.
+    const auto & profile = ModelProfile::active();
+    if (layer < profile.first_layer || layer > profile.last_layer || expert >= profile.experts) {
         throw std::runtime_error("miss sequence contains a key outside the routed-expert domain");
     }
 }
@@ -59,8 +50,8 @@ std::uint64_t checked_add(std::uint64_t left, std::uint64_t right, const char * 
 
 } // namespace
 
-const std::array<std::uint64_t, 75> & frozen_layer_record_bytes() noexcept {
-    return layer_record_bytes;
+const std::vector<std::uint64_t> & frozen_layer_record_bytes() noexcept {
+    return ModelProfile::active().record_bytes;
 }
 
 SplitRecordPlan plan_p0_split(std::uint64_t record_bytes, P0Profile profile) {
@@ -69,19 +60,32 @@ SplitRecordPlan plan_p0_split(std::uint64_t record_bytes, P0Profile profile) {
     }
     const std::uint64_t blocks = record_bytes / record_alignment_bytes;
     std::uint64_t internal_blocks = 0;
+    if (profile == P0Profile::single_volume) {
+        // Un seul SSD : l'enregistrement entier vit sur le volume interne.
+        return { blocks * record_alignment_bytes, 0 };
+    }
     if (profile == P0Profile::v1_599_401) {
         if (blocks > (std::numeric_limits<std::uint64_t>::max() - 500) / 599) {
             throw std::overflow_error("P0 block split overflow");
         }
         internal_blocks = (blocks * 599 + 500) / 1000;
     } else {
-        // Jointly selected literal P0v2 cut points. Do not derive these by
-        // per-class rounding: 576 minimizes the aggregate large-class error.
+        // Jointly selected literal P0v2 cut points for the frozen GLM-5.2
+        // classes. Do not derive these by per-class rounding: 576 minimizes
+        // the aggregate large-class error.
         switch (record_bytes) {
         case 9'732'096: internal_blocks = 425; break;
         case 11'304'960: internal_blocks = 494; break;
         case 13'172'736: internal_blocks = 576; break;
-        default: throw std::invalid_argument("P0v2 has no frozen split for this record size");
+        default:
+            // Generic dual packs (app install, any MoE model): the cut MUST
+            // reproduce scripts/galactus-pack-plan.py --volumes dual, i.e.
+            // round(blocks * 0.7157) with Python's round() semantics
+            // (ties-to-even). nearbyint under FE_TONEAREST matches exactly.
+            internal_blocks = static_cast<std::uint64_t>(
+                std::nearbyint(static_cast<double>(blocks) * 0.7157));
+            internal_blocks = std::min(internal_blocks, blocks);
+            break;
         }
     }
     const std::uint64_t external_blocks = blocks - internal_blocks;
@@ -119,13 +123,15 @@ Volume CanonicalP1Placement::assign(
     std::uint32_t layer,
     std::uint32_t expert,
     std::uint64_t record_bytes) {
-    constexpr std::uint32_t routed_layer_count = maximum_routed_layer - minimum_routed_layer + 1;
-    constexpr std::uint32_t record_count = routed_layer_count * experts_per_layer;
+    // Le placement parcourt les enregistrements REELS du modele : couches et
+    // experts viennent du profil actif, jamais de la capacite d'encodage.
+    const auto & profile = ModelProfile::active();
+    const std::uint32_t record_count = profile.layer_count() * profile.experts;
     if (assigned_records_ >= record_count) {
         throw std::logic_error("canonical P1 placement already contains all routed experts");
     }
-    const std::uint32_t expected_layer = minimum_routed_layer + assigned_records_ / experts_per_layer;
-    const std::uint32_t expected_expert = assigned_records_ % experts_per_layer;
+    const std::uint32_t expected_layer = profile.first_layer + assigned_records_ / profile.experts;
+    const std::uint32_t expected_expert = assigned_records_ % profile.experts;
     if (layer != expected_layer || expert != expected_expert) {
         throw std::invalid_argument("P1 records must be assigned in canonical layer/expert order");
     }
@@ -139,8 +145,8 @@ std::uint32_t CanonicalP1Placement::assigned_records() const noexcept {
 }
 
 bool CanonicalP1Placement::complete() const noexcept {
-    constexpr std::uint32_t routed_layer_count = maximum_routed_layer - minimum_routed_layer + 1;
-    return assigned_records_ == routed_layer_count * experts_per_layer;
+    const auto & profile = ModelProfile::active();
+    return assigned_records_ == profile.layer_count() * profile.experts;
 }
 
 std::uint64_t CanonicalP1Placement::internal_bytes() const noexcept {
