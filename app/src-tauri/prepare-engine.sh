@@ -1,7 +1,8 @@
 #!/bin/bash
 # Embarque le moteur Galactus (llama-server + dylibs + OpenSSL) dans le bundle
 # de l'app, entierement relocalise : aucun Homebrew ni checkout requis chez
-# l'utilisateur. A lancer avant `npm run tauri build` (LANCER-UI-BUILD le fait).
+# l'utilisateur. A lancer avant `npm run tauri build`
+# (lanceurs/app/LANCER-UI-BUILD.command le fait).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"

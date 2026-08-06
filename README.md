@@ -176,7 +176,7 @@ build/bin/llama-cli --model GLM-5.2-UD-IQ1_S-00001-of-00006.gguf \
   --ctx-size 4096 -ngl 99 --no-repack --fit off --no-mmap -b 2 -ub 2
 ```
 
-Or use `LANCER-CHAT.command` for an interactive session with sane defaults. Main knobs: `GALACTUS_H4_CACHE_BYTES` (resident cache size, throughput scales with it), `GALACTUS_METAL_BITEXACT=1` (bit-exact GPU experts, the app's default), `GALACTUS_H4_CPU_MOE=1` (bit-exact CPU experts, for counter-verification), `GALACTUS_H4_QD` (read queue depth, default 32).
+Or use `lanceurs/LANCER-CHAT.command` for an interactive session with sane defaults. Main knobs: `GALACTUS_H4_CACHE_BYTES` (resident cache size, throughput scales with it), `GALACTUS_METAL_BITEXACT=1` (bit-exact GPU experts, the app's default), `GALACTUS_H4_CPU_MOE=1` (bit-exact CPU experts, for counter-verification), `GALACTUS_H4_QD` (read queue depth, default 32).
 
 ### The bug worth reading about
 
@@ -191,7 +191,7 @@ One stride-aware read later: 13.74 → 2.6439, and the differential probe now sh
 | `docs/STUDY.md` | complete study: hardware, method, all benchmarks, the bug hunt |
 | `docs/PHYSICAL-MODEL.md` | the machine's closed physical model and its ceilings |
 | `patches/` | pinned llama.cpp diff + apply script |
-| `lanceurs/` | the exact scripted runs behind every number above |
+| `lanceurs/` | the exact scripted runs behind every number above, by category |
 
 ### Porting to another MoE model
 
