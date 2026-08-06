@@ -1,5 +1,5 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { api, benchOnce, HwInfo, ModelEntry, onEvent, ServerStatus, SkillInfo } from "./api";
+import { api, benchOnce, HwInfo, InstallVolumes, ModelEntry, onEvent, ServerStatus, SkillInfo, VolumeInfo } from "./api";
 import {
   Agent,
   clearStandingPermissions,
@@ -436,6 +436,9 @@ function installLabel(l: string): string {
   if (l === "profiling") return t("install.profiling");
   if (l === "planning") return t("install.planning");
   if (l === "building pack") return t("install.building");
+  if (l === "probing volumes") return t("install.probing");
+  if (l.startsWith("dual ok")) return t("install.dualOk") + l.slice("dual ok".length);
+  if (l.startsWith("dual fallback")) return t("install.dualFallback") + l.slice("dual fallback".length);
   if (l.startsWith("pack ")) return t("install.pack") + l.slice("pack".length);
   const k = "install." + l;
   const v = t(k);
@@ -1072,6 +1075,191 @@ function prettyTool(name: string): string {
   return name;
 }
 
+// ---------- install (volume choice + dual-SSD dialog) ----------
+
+function startInstall(m: ModelEntry, volumes: InstallVolumes | null): void {
+  installProgress.set(m.id, { pct: 0, label: "download" });
+  render();
+  // Errors raised before the install thread starts come back here, not
+  // through the progress event: surface them and unfreeze the bar.
+  api.installModel(m.id, volumes).catch((e: any) => {
+    installProgress.delete(m.id);
+    toast(String(e?.message ?? e));
+    render();
+  });
+}
+
+/** The candidate whose mount carries the Galactus root (longest prefix). */
+function rootVolumeIndex(cands: VolumeInfo[]): number {
+  if (!root) return -1;
+  let best = -1;
+  let bestLen = -1;
+  cands.forEach((v, i) => {
+    const mount = v.mount === "/System/Volumes/Data" ? "/" : v.mount;
+    if (root!.startsWith(mount) && mount.length > bestLen) {
+      best = i;
+      bestLen = mount.length;
+    }
+  });
+  return best;
+}
+
+/**
+ * Volume detection drives what the dialog offers: one candidate shows the
+ * plain mono install, two or more open the mono/dual choice with a real
+ * bandwidth measure and the bottleneck verdict BEFORE confirming. The final
+ * guard lives in the pipeline: a dual install whose slow SSD is under 35% of
+ * the fast one falls back to mono on the fast SSD, with a warning.
+ */
+async function showInstallModal(m: ModelEntry): Promise<void> {
+  let vols: VolumeInfo[] = [];
+  try {
+    vols = await api.listVolumes();
+  } catch {
+    startInstall(m, null); // detection unavailable: classic install
+    return;
+  }
+  const packGb = (m.expert_bytes_total ?? m.gguf_bytes ?? 0) / 1e9;
+  const cands = vols.filter((v) => v.free_gb >= Math.max(0.32 * packGb + 2, 8));
+  if (!cands.length) {
+    toast(t("installdlg.noVolume"));
+    return;
+  }
+  const single = cands.length === 1;
+  let mode: "mono" | "dual" = "mono";
+  const rootIdx = Math.max(rootVolumeIndex(cands), 0);
+  let iSel = rootIdx;
+  let eSel = cands.findIndex((_, i) => i !== iSel);
+  const bw: (number | null)[] = cands.map(() => null);
+
+  const mm = el(`<div class="modal-bd"><div class="modal">
+    <h3>${esc(t("installdlg.title").replace("%s", m.name))}</h3>
+    <div class="ps">${esc(t("installdlg.hint"))}</div>
+    <div class="voldlg">
+      ${single ? "" : `<div class="seg" id="mseg"><button data-m="mono" class="on">${esc(t("installdlg.mono"))}</button><button data-m="dual">${esc(t("installdlg.dual"))}</button></div>`}
+      <div id="volsel"></div>
+      <div class="bwline" id="bwline"></div>
+      <div class="bwline warn" id="spaceline"></div>
+    </div>
+    <div class="acts">
+      <button class="bs" data-x>${esc(t("installdlg.cancel"))}</button>
+      <button class="bs" id="bwbtn">${esc(t("installdlg.measure"))}</button>
+      <button class="bp" id="go">${esc(t("installdlg.install"))}</button>
+    </div></div></div>`);
+
+  const volsel = mm.querySelector<HTMLElement>("#volsel")!;
+  const bwline = mm.querySelector<HTMLElement>("#bwline")!;
+  const spaceline = mm.querySelector<HTMLElement>("#spaceline")!;
+  const goBtn = mm.querySelector<HTMLButtonElement>("#go")!;
+  const bwBtn = mm.querySelector<HTMLButtonElement>("#bwbtn")!;
+
+  const optLabel = (v: VolumeInfo) =>
+    `${v.name} · ${t("installdlg.free").replace("%s", String(v.free_gb))}`;
+  const options = (sel: number, skip: number) =>
+    cands
+      .map((v, i) =>
+        i === skip ? "" : `<option value="${i}" ${i === sel ? "selected" : ""}>${esc(optLabel(v))}</option>`
+      )
+      .join("");
+
+  const paintVerdict = () => {
+    if (mode === "dual" && bw[iSel] != null && bw[eSel] != null) {
+      const a = bw[iSel]!;
+      const b = bw[eSel]!;
+      const parts = `${esc(cands[iSel].name)}: <b>${a.toFixed(1)}</b> ${esc("GB/s")} · ${esc(cands[eSel].name)}: <b>${b.toFixed(1)}</b> ${esc("GB/s")}`;
+      const ok = Math.min(a, b) >= 0.35 * Math.max(a, b);
+      bwline.classList.toggle("bad", !ok);
+      bwline.innerHTML = `${parts}<br/>${esc(ok ? t("installdlg.verdictOk") : t("installdlg.verdictSlow"))}`;
+    } else if (mode === "mono" && bw[iSel] != null) {
+      bwline.classList.remove("bad");
+      bwline.innerHTML = `${esc(cands[iSel].name)}: <b>${bw[iSel]!.toFixed(1)}</b> ${esc("GB/s")}`;
+    } else {
+      bwline.classList.remove("bad");
+      bwline.textContent = "";
+    }
+  };
+
+  const paintSpace = () => {
+    // Rough per-volume needs: full pack in mono, the P0v2 shares in dual.
+    let lacking: string | null = null;
+    if (mode === "mono") {
+      if (cands[iSel].free_gb < packGb + 2) lacking = cands[iSel].name;
+    } else {
+      if (cands[iSel].free_gb < 0.75 * packGb + 2) lacking = cands[iSel].name;
+      else if (cands[eSel].free_gb < 0.32 * packGb + 2) lacking = cands[eSel].name;
+    }
+    spaceline.textContent = lacking ? t("installdlg.noSpace").replace("%s", lacking) : "";
+    goBtn.disabled = lacking != null;
+  };
+
+  const paintSel = () => {
+    if (mode === "mono") {
+      volsel.innerHTML = single
+        ? `<div class="fld"><small>${esc(t("installdlg.volume"))}</small><div class="volone">${esc(optLabel(cands[0]))}</div></div>`
+        : `<div class="fld"><small>${esc(t("installdlg.volume"))}</small><select id="vi">${options(iSel, -1)}</select></div>`;
+    } else {
+      volsel.innerHTML = `
+        <div class="fld"><small>${esc(t("installdlg.primary"))}</small><select id="vi">${options(iSel, -1)}</select></div>
+        <div class="fld"><small>${esc(t("installdlg.secondary"))}</small><select id="ve">${options(eSel, iSel)}</select></div>`;
+    }
+    volsel.querySelector<HTMLSelectElement>("#vi")?.addEventListener("change", (e) => {
+      iSel = Number((e.target as HTMLSelectElement).value);
+      if (eSel === iSel) eSel = cands.findIndex((_, i) => i !== iSel);
+      paintSel();
+    });
+    volsel.querySelector<HTMLSelectElement>("#ve")?.addEventListener("change", (e) => {
+      eSel = Number((e.target as HTMLSelectElement).value);
+      paintVerdict();
+      paintSpace();
+    });
+    paintVerdict();
+    paintSpace();
+  };
+  paintSel();
+
+  mm.querySelector<HTMLElement>("#mseg")?.addEventListener("click", (e) => {
+    const b = (e.target as HTMLElement).closest("[data-m]") as HTMLElement | null;
+    if (!b) return;
+    mode = b.dataset.m as "mono" | "dual";
+    mm.querySelectorAll<HTMLElement>("#mseg button").forEach((x) =>
+      x.classList.toggle("on", x.dataset.m === mode)
+    );
+    paintSel();
+  });
+
+  bwBtn.addEventListener("click", async () => {
+    bwBtn.disabled = true;
+    bwline.classList.remove("bad");
+    bwline.textContent = t("installdlg.measuring");
+    const targets = mode === "dual" ? [iSel, eSel] : [iSel];
+    try {
+      for (const idx of targets) {
+        bw[idx] = await api.volumeBandwidth(cands[idx].probe);
+      }
+      paintVerdict();
+    } catch (e: any) {
+      bwline.textContent = t("installdlg.measureFail").replace("%s", String(e?.message ?? e));
+    }
+    bwBtn.disabled = false;
+  });
+
+  goBtn.addEventListener("click", () => {
+    const volumes: InstallVolumes | null =
+      mode === "dual"
+        ? { internal_dir: cands[iSel].dir, external_dir: cands[eSel].dir }
+        : iSel === rootVolumeIndex(cands)
+          ? null // classic location inside the Galactus folder
+          : { internal_dir: cands[iSel].dir };
+    mm.remove();
+    startInstall(m, volumes);
+  });
+  mm.addEventListener("click", (e) => {
+    const tg = e.target as HTMLElement;
+    if (tg === mm || tg.closest("[data-x]")) mm.remove();
+  });
+  document.body.appendChild(mm);
+}
+
 // ---------- models ----------
 function modelsView(): HTMLElement {
   const wrap = el(`<div class="main">
@@ -1134,15 +1322,7 @@ function modelsView(): HTMLElement {
     else if (!m.installed) {
       const b = el(`<button class="bp">${esc(t("models.download"))}</button>`);
       b.addEventListener("click", () => {
-        installProgress.set(m.id, { pct: 0, label: "download" });
-        render();
-        // Errors raised before the install thread starts come back here, not
-        // through the progress event: surface them and unfreeze the bar.
-        api.installModel(m.id).catch((e: any) => {
-          installProgress.delete(m.id);
-          toast(String(e?.message ?? e));
-          render();
-        });
+        void showInstallModal(m);
       });
       slot.replaceWith(b);
     } else if (runningHere) {
@@ -1167,9 +1347,34 @@ function modelsView(): HTMLElement {
       box.append(bench, b);
       slot.replaceWith(box);
     } else {
+      const box = el(`<span style="display:flex;gap:10px;align-items:center"></span>`);
+      // Discreet delete with a two-step confirmation, like the file revert.
+      const del = el(`<span class="link dellink">${esc(t("models.delete"))}</span>`);
+      del.addEventListener("click", async () => {
+        if (!del.dataset.armed) {
+          del.dataset.armed = "1";
+          del.textContent = t("models.deleteConfirm").replace("%s", fmtGb(m.gguf_bytes));
+          setTimeout(() => {
+            if (del.dataset.armed) { delete del.dataset.armed; del.textContent = t("models.delete"); }
+          }, 4000);
+          return;
+        }
+        delete del.dataset.armed;
+        del.textContent = t("models.deleting");
+        try {
+          const summary = await api.deleteModel(m.id);
+          delete benchResults[m.id];
+          toast(summary, "ok");
+        } catch (e: any) {
+          toast(t("models.deleteFail").replace("%s", String(e?.message ?? e)));
+        }
+        try { registry = await api.registry(); } catch {}
+        render();
+      });
       const b = el(`<button class="bp">${esc(t("models.start"))}</button>`);
       b.addEventListener("click", async () => { try { serverFail = null; await api.serverStart(m.id, null); agent = null; await refreshServer(); render(); } catch (e: any) { toast(String(e?.message ?? e)); } });
-      slot.replaceWith(b);
+      box.append(del, b);
+      slot.replaceWith(box);
     }
     grid.appendChild(card);
   }

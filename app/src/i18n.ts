@@ -282,6 +282,50 @@ const dict: Record<string, { en: string; fr: string }> = {
   "install.building": { en: "Building pack", fr: "Construction du pack" },
   "install.pack": { en: "Pack", fr: "Pack" },
   "install.done": { en: "Done", fr: "Terminé" },
+  "install.probing": { en: "Measuring SSD bandwidth", fr: "Mesure des débits SSD" },
+  "install.dualOk": { en: "Dual pack", fr: "Double pack" },
+  "install.dualFallback": { en: "Bottleneck, single SSD", fr: "Goulot, un seul SSD" },
+
+  // install dialog (volume choice)
+  "installdlg.title": { en: "Install %s", fr: "Installer %s" },
+  "installdlg.hint": {
+    en: "Choose where the expert pack lives. Two SSDs read in parallel add up their bandwidth.",
+    fr: "Choisis où vit le pack d'experts. Deux SSD lus en parallèle additionnent leur bande passante.",
+  },
+  "installdlg.mono": { en: "Single SSD", fr: "Un seul SSD" },
+  "installdlg.dual": { en: "Two SSDs", fr: "Deux SSD" },
+  "installdlg.volume": { en: "SSD", fr: "SSD" },
+  "installdlg.primary": { en: "Primary SSD (internal pack)", fr: "SSD principal (pack interne)" },
+  "installdlg.secondary": { en: "Second SSD (external pack)", fr: "Second SSD (pack externe)" },
+  "installdlg.free": { en: "%s GB free", fr: "%s Go libres" },
+  "installdlg.singleInfo": {
+    en: "The pack will be written to %s.",
+    fr: "Le pack sera écrit sur %s.",
+  },
+  "installdlg.measure": { en: "Measure", fr: "Mesurer" },
+  "installdlg.measuring": { en: "Measuring, about 10 s per SSD", fr: "Mesure en cours, environ 10 s par SSD" },
+  "installdlg.measureFail": { en: "Measure failed: %s", fr: "Échec de la mesure : %s" },
+  "installdlg.verdictOk": {
+    en: "Balanced speeds: the dual pack will aggregate both SSDs.",
+    fr: "Débits équilibrés : le double pack agrégera les deux SSD.",
+  },
+  "installdlg.verdictSlow": {
+    en: "Bottleneck: the slow SSD would cap the pair. Install will fall back to the fast one alone.",
+    fr: "Goulot : le SSD lent briderait la paire. L'installation retombera sur le rapide seul.",
+  },
+  "installdlg.noSpace": { en: "Not enough free space on %s", fr: "Espace insuffisant sur %s" },
+  "installdlg.noVolume": {
+    en: "No volume has enough free space for this model.",
+    fr: "Aucun volume n'a assez d'espace libre pour ce modèle.",
+  },
+  "installdlg.install": { en: "Install", fr: "Installer" },
+  "installdlg.cancel": { en: "Cancel", fr: "Annuler" },
+
+  // model deletion
+  "models.delete": { en: "Delete", fr: "Supprimer" },
+  "models.deleteConfirm": { en: "Delete %s?", fr: "Supprimer %s ?" },
+  "models.deleting": { en: "Deleting", fr: "Suppression" },
+  "models.deleteFail": { en: "Delete failed: %s", fr: "Échec de la suppression : %s" },
 
   "nav.newchat": { en: "New conversation", fr: "Nouvelle discussion" },
 

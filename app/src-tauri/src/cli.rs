@@ -27,8 +27,13 @@ fn print_models(root: &Path) -> Result<(), String> {
     println!("{:<20} {:>8} {:>10}  {}", "modele", "taille", "installe", "statut");
     for m in parsed["models"].as_array().cloned().unwrap_or_default() {
         let id = m["id"].as_str().unwrap_or("?");
-        let (dir, pack, _) = model_paths(root, id);
-        let installed = find_gguf(&dir).is_some() && pack.exists();
+        let (dir, _pack, _) = model_paths(root, id);
+        // Meme regle que l'app : les packs resolus (registre, settings, mono)
+        // doivent exister — le GLM double-pack compte comme installe.
+        let installed = find_gguf(&dir).is_some()
+            && resolve_packs(root, id, &m)
+                .map(|(i, e)| i.is_file() && e.is_file())
+                .unwrap_or(false);
         println!(
             "{:<20} {:>7.0}G {:>10}  {}",
             id,
@@ -42,9 +47,12 @@ fn print_models(root: &Path) -> Result<(), String> {
 
 fn serve(root: &Path, model_id: &str, args: &[String]) -> Result<(), String> {
     let entry = registry_entry(root, model_id)?;
-    let (model_dir, pack, profile) = model_paths(root, model_id);
+    let (model_dir, _pack, profile) = model_paths(root, model_id);
     let gguf = find_gguf(&model_dir).ok_or("GGUF introuvable : lance `galactus install` d'abord")?;
-    if !pack.exists() {
+    // Double pack : deux chemins distincts font lire les deux SSD en
+    // parallele (decoupe P0v2) ; identiques = pack mono-volume.
+    let (pack_internal, pack_external) = resolve_packs(root, model_id, &entry)?;
+    if !pack_internal.is_file() || !pack_external.is_file() {
         return Err("pack introuvable : lance `galactus install` d'abord".into());
     }
     let ram_mode = ram_mode_from_args(args);
@@ -62,19 +70,27 @@ fn serve(root: &Path, model_id: &str, args: &[String]) -> Result<(), String> {
 
     let expert_total = entry["expert_bytes_total"].as_u64().unwrap_or(u64::MAX);
     let regime = if cpu_moe { "cpu-bit-exact" } else if cache_bytes >= expert_total { "resident-bit-exact" } else { "streamed-bit-exact" };
+    let dual = pack_internal != pack_external;
     println!("galactus serve {model_id}");
     println!("  regime  : {regime} (empreinte {ram_mode}, cache {:.1} Go, ubatch {ubatch})", cache_bytes as f64 / 1e9);
+    println!("  packs   : {}", if dual { "double (deux SSD en parallele)" } else { "mono-volume" });
+    println!("    interne : {}", pack_internal.display());
+    println!("    externe : {}", pack_external.display());
     println!("  endpoint: http://127.0.0.1:{port}/v1  (Ctrl+C pour arreter)\n");
 
     let mut cmd = Command::new(&bin);
     cmd.env("GALACTUS_H4", "1")
-        .env("GALACTUS_PROFILE", &profile)
-        .env("GALACTUS_H4_INTERNAL", &pack)
-        .env("GALACTUS_H4_EXTERNAL", &pack)
+        .env("GALACTUS_H4_INTERNAL", &pack_internal)
+        .env("GALACTUS_H4_EXTERNAL", &pack_external)
         .env("GALACTUS_H4_CACHE_BYTES", cache_bytes.to_string())
         .env("GALACTUS_H4_PROTECTED", format!("{fraction:.2}"))
         .env("GALACTUS_H4_QD", "32")
         .env("LC_ALL", "C");
+    // Un profil pointe mais absent ferait avorter le moteur : ne le passer
+    // que s'il existe (sinon profil builtin, les classes gelees GLM-5.2).
+    if profile.is_file() {
+        cmd.env("GALACTUS_PROFILE", &profile);
+    }
     if cpu_moe {
         cmd.env("GALACTUS_H4_CPU_MOE", "1").arg("--n-cpu-moe").arg("99");
     } else {
@@ -158,6 +174,10 @@ pub fn cli_main() {
                 let id = rest.first().ok_or("usage : galactus serve <modele> [--ram eco|balanced|perf] [--cpu-moe] [--port N]")?;
                 serve(&galactus_root()?, id, rest)
             }
+            "remove" | "rm" => {
+                let id = rest.first().ok_or("usage : galactus remove <modele>")?;
+                remove_cli(id)
+            }
             "stop" => {
                 let root = galactus_root()?;
                 reap_orphan_servers(&root);
@@ -178,6 +198,7 @@ pub fn cli_main() {
                 println!("      --cpu-moe                         experts CPU bit-exacts (contre-verification)");
                 println!("      --port N                          port (defaut {SERVER_PORT_BASE})");
                 println!("  galactus bench [--port N]             mesure la vitesse du serveur actif");
+                println!("  galactus remove <modele>              supprime le modele (confirmation par le nom)");
                 println!("  galactus status                       serveur actif ?");
                 println!("  galactus stop                         arrete les serveurs galactus");
                 Ok(())
@@ -209,10 +230,29 @@ fn install_cli(root: &Path, id: &str) -> Result<(), String> {
     }
     let total = entry["gguf_bytes"].as_u64().unwrap_or(0);
     let cancel = std::sync::atomic::AtomicBool::new(false);
-    install_pipeline_with(root, id, &base, &files, total, &cancel, &|_phase, pct, label| {
+    install_pipeline_with(root, id, &base, &files, total, None, &cancel, &|_phase, pct, label| {
         print!("\r  {pct:5.1}%  {label:<48}");
         let _ = std::io::stdout().flush();
     })?;
     println!("\ninstallation terminee : galactus serve {id}");
+    Ok(())
+}
+
+/// Suppression d'un modele : confirmation par saisie du nom exact, puis le
+/// meme chemin que l'app (delete_model). Les packs hors depot sont epargnes.
+fn remove_cli(id: &str) -> Result<(), String> {
+    let root = galactus_root()?;
+    let _ = registry_entry(&root, id)?; // erreur claire si le modele n'existe pas
+    print!("supprimer {id} ? Tape le nom exact du modele pour confirmer : ");
+    let _ = std::io::stdout().flush();
+    let mut line = String::new();
+    std::io::stdin()
+        .read_line(&mut line)
+        .map_err(|e| e.to_string())?;
+    if line.trim() != id {
+        return Err("confirmation refusee (nom different), rien n'a ete supprime".into());
+    }
+    let summary = delete_model_impl(id)?;
+    println!("{summary}");
     Ok(())
 }

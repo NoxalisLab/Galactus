@@ -242,9 +242,14 @@ fn load_registry() -> Result<Vec<Value>, String> {
     let mut out = Vec::new();
     for mut m in models {
         let id = m["id"].as_str().unwrap_or("").to_string();
-        let (model_dir, pack, _profile) = model_paths(&root, &id);
+        let (model_dir, _pack, _profile) = model_paths(&root, &id);
         let gguf_present = find_gguf(&model_dir).is_some();
-        let pack_present = pack.exists();
+        // Dual-pack aware: a model whose packs resolve through the registry
+        // fields or the install settings (GLM double-pack) counts as installed.
+        let (pack_i, pack_e) = resolve_packs(&root, &id, &m)?;
+        let pack_present = pack_i.is_file() && pack_e.is_file();
+        m["pack_internal"] = json!(pack_i.display().to_string());
+        m["pack_external"] = json!(pack_e.display().to_string());
         m["gguf_present"] = json!(gguf_present);
         m["pack_present"] = json!(pack_present);
         m["installed"] = json!(gguf_present && pack_present);
@@ -261,6 +266,420 @@ fn registry_entry(root: &Path, id: &str) -> Result<Value, String> {
         .as_array()
         .and_then(|a| a.iter().find(|m| m["id"] == id).cloned())
         .ok_or_else(|| format!("unknown model {id}"))
+}
+
+// ---------------------------------------------------------------- pack resolution
+
+/// Expand a leading `~` or `$HOME` in a user-supplied path.
+fn expand_home(s: &str) -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    if let Some(rest) = s.strip_prefix("$HOME") {
+        format!("{home}{rest}")
+    } else if let Some(rest) = s.strip_prefix('~') {
+        format!("{home}{rest}")
+    } else {
+        s.to_string()
+    }
+}
+
+/// Wildcard match for ONE path component: `*` (any run) and `?` (one char).
+fn component_matches(pat: &str, name: &str) -> bool {
+    let p: Vec<char> = pat.chars().collect();
+    let n: Vec<char> = name.chars().collect();
+    let mut dp = vec![vec![false; n.len() + 1]; p.len() + 1];
+    dp[0][0] = true;
+    for i in 1..=p.len() {
+        if p[i - 1] == '*' {
+            dp[i][0] = dp[i - 1][0];
+        }
+        for j in 1..=n.len() {
+            dp[i][j] = match p[i - 1] {
+                '*' => dp[i - 1][j] || dp[i][j - 1],
+                '?' => dp[i - 1][j - 1],
+                c => dp[i - 1][j - 1] && c == n[j - 1],
+            };
+        }
+    }
+    dp[p.len()][n.len()]
+}
+
+/// First (lexicographic) file matching a simple glob pattern: `*`/`?` inside a
+/// component, `**` for any directory depth — the same idioms galactus.env uses.
+/// The walk is bounded so a pack lookup stays instant even on a huge volume.
+fn glob_first(pattern: &str) -> Option<PathBuf> {
+    use std::path::Component;
+    let mut base = PathBuf::new();
+    let mut parts: Vec<String> = Vec::new();
+    let mut in_glob = false;
+    for comp in Path::new(pattern).components() {
+        match comp {
+            Component::RootDir => base.push("/"),
+            Component::Normal(c) => {
+                let c = c.to_string_lossy().into_owned();
+                if !in_glob && !c.contains('*') && !c.contains('?') {
+                    base.push(&c);
+                } else {
+                    in_glob = true;
+                    parts.push(c);
+                }
+            }
+            Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    if parts.is_empty() {
+        return base.is_file().then_some(base);
+    }
+    fn walk(dir: &Path, parts: &[String], depth: u32, budget: &mut u32, out: &mut Vec<PathBuf>) {
+        if *budget == 0 || depth == 0 {
+            return;
+        }
+        let Some((head, rest)) = parts.split_first() else { return };
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        let mut entries: Vec<_> = rd.flatten().collect();
+        entries.sort_by_key(|e| e.file_name());
+        if head == "**" {
+            // `**` also matches zero directories: try the rest right here.
+            walk(dir, rest, depth, budget, out);
+            for e in &entries {
+                if *budget == 0 {
+                    return;
+                }
+                *budget -= 1;
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, parts, depth - 1, budget, out);
+                }
+            }
+        } else {
+            for e in &entries {
+                if *budget == 0 {
+                    return;
+                }
+                *budget -= 1;
+                let name = e.file_name().to_string_lossy().into_owned();
+                if !component_matches(head, &name) {
+                    continue;
+                }
+                let p = e.path();
+                if rest.is_empty() {
+                    if p.is_file() {
+                        out.push(p);
+                    }
+                } else if p.is_dir() {
+                    walk(&p, rest, depth - 1, budget, out);
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    let mut budget: u32 = 20_000;
+    walk(&base, &parts, 8, &mut budget, &mut out);
+    out.sort();
+    out.into_iter().next()
+}
+
+/// Resolve one pack path spec: `~`/`$HOME` expansion, paths relative to the
+/// Galactus root, simple glob patterns. Yields the file only if it exists.
+fn resolve_pack_spec(root: &Path, spec: &str) -> Option<PathBuf> {
+    let expanded = expand_home(spec.trim());
+    if expanded.is_empty() {
+        return None;
+    }
+    let full = if Path::new(&expanded).is_absolute() {
+        PathBuf::from(&expanded)
+    } else {
+        root.join(&expanded)
+    };
+    let s = full.to_string_lossy().into_owned();
+    if s.contains('*') || s.contains('?') {
+        glob_first(&s)
+    } else {
+        full.is_file().then_some(full)
+    }
+}
+
+/// The (internal, external) pack pair of a model, in priority order:
+///   (a) `internal_pack` / `external_pack` fields of the registry entry,
+///   (b) settings `pack_internal_<id>` / `pack_external_<id>` (dual install),
+///   (c) the classic mono pack artifacts/h4/packs/<id>/<id>.pack for BOTH.
+/// A tier is selected only when EVERY spec it declares resolves to an existing
+/// file: half of a dual pack is useless (the records are cut across the two
+/// files), and a registry carrying another machine's paths must fall through.
+/// Identical internal and external paths mean mono-volume to the engine.
+fn resolve_packs(root: &Path, id: &str, entry: &Value) -> Result<(PathBuf, PathBuf), String> {
+    let tier = |i_spec: Option<&str>, e_spec: Option<&str>| -> Option<(PathBuf, PathBuf)> {
+        let i = match i_spec {
+            Some(s) => Some(resolve_pack_spec(root, s)?),
+            None => None,
+        };
+        let e = match e_spec {
+            Some(s) => Some(resolve_pack_spec(root, s)?),
+            None => None,
+        };
+        match (i, e) {
+            (Some(i), Some(e)) => Some((i, e)),
+            (Some(i), None) => Some((i.clone(), i)),
+            (None, Some(e)) => Some((e.clone(), e)),
+            (None, None) => None,
+        }
+    };
+    if let Some(p) = tier(entry["internal_pack"].as_str(), entry["external_pack"].as_str()) {
+        return Ok(p);
+    }
+    let settings = settings_load();
+    let non_empty = |k: String| -> Option<String> {
+        settings.get(&k).map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+    };
+    let set_i = non_empty(format!("pack_internal_{id}"));
+    let set_e = non_empty(format!("pack_external_{id}"));
+    if let Some(p) = tier(set_i.as_deref(), set_e.as_deref()) {
+        return Ok(p);
+    }
+    let (_, pack, _) = model_paths(root, id);
+    Ok((pack.clone(), pack))
+}
+
+// ---------------------------------------------------------------- volumes + bandwidth
+
+#[derive(Serialize, Clone)]
+struct VolumeInfo {
+    name: String,
+    mount: String,
+    /// Suggested pack directory on this volume (GalactusH4 convention).
+    dir: String,
+    /// Where the bandwidth probe should look for a big file.
+    probe: String,
+    free_gb: u64,
+    total_gb: u64,
+}
+
+/// `df -g` for a path: (device, total_gb, free_gb, mount point).
+fn df_line(path: &str) -> Option<(String, u64, u64, String)> {
+    let out = run_capture("df", &["-g", path]);
+    let l = out.lines().nth(1)?;
+    let cols: Vec<&str> = l.split_whitespace().collect();
+    if cols.len() < 9 {
+        return None;
+    }
+    let device = cols[0].to_string();
+    let total = cols[1].parse().ok()?;
+    let free = cols[3].parse().ok()?;
+    // The mount point may contain spaces: everything from column 8 on.
+    let mount = cols[8..].join(" ");
+    Some((device, total, free, mount))
+}
+
+/// Mounted volumes that can host a pack: the system data volume (via $HOME),
+/// everything under /Volumes, and the volume carrying the Galactus root.
+/// Deduplicated by device so /, /System/Volumes/Data and the /Volumes symlink
+/// to the boot disk collapse into one entry.
+#[tauri::command]
+fn list_volumes() -> Vec<VolumeInfo> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    let mut candidates: Vec<(String, String)> = vec![("Macintosh HD".into(), home.clone())];
+    if let Ok(rd) = std::fs::read_dir("/Volumes") {
+        let mut vols: Vec<_> = rd.flatten().collect();
+        vols.sort_by_key(|e| e.file_name());
+        for e in vols {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                continue;
+            }
+            // The boot-disk symlink in /Volumes duplicates the home entry.
+            if e.path().read_link().is_ok() {
+                continue;
+            }
+            candidates.push((name, e.path().display().to_string()));
+        }
+    }
+    if let Ok(root) = galactus_root() {
+        candidates.push((String::new(), root.display().to_string()));
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for (name, path) in candidates {
+        let Some((device, total, free, mount)) = df_line(&path) else { continue };
+        if !device.starts_with("/dev/") || !seen.insert(device) {
+            continue;
+        }
+        let on_data = mount == "/" || mount == "/System/Volumes/Data";
+        let name = if !name.is_empty() {
+            name
+        } else if on_data {
+            "Macintosh HD".into()
+        } else {
+            Path::new(&mount)
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| mount.clone())
+        };
+        let (dir, probe) = if on_data {
+            (format!("{home}/GalactusH4"), home.clone())
+        } else {
+            (format!("{mount}/GalactusH4"), mount.clone())
+        };
+        // Only writable volumes can host a pack (Time Machine, DMGs and
+        // network mounts often are not): probed with a real create+delete.
+        let test_base = if on_data { Path::new(&home) } else { Path::new(&mount) };
+        let test = test_base.join(format!(".galactus-wtest-{}", std::process::id()));
+        let writable = std::fs::File::create(&test).is_ok();
+        let _ = std::fs::remove_file(&test);
+        if !writable {
+            continue;
+        }
+        out.push(VolumeInfo { name, mount, dir, probe, free_gb: free, total_gb: total });
+    }
+    out
+}
+
+const BW_CHUNK: usize = 8 * 1024 * 1024;
+const BW_MIN_FILE: u64 = 2_000_000_000;
+
+/// F_NOCACHE on macOS: reads bypass the unified buffer cache, so the probe
+/// measures the SSD instead of RAM (same flag the H4 reader uses).
+#[cfg(target_os = "macos")]
+fn set_nocache(file: &std::fs::File) {
+    use std::os::unix::io::AsRawFd;
+    extern "C" {
+        fn fcntl(fd: i32, cmd: i32, ...) -> i32;
+    }
+    const F_NOCACHE: i32 = 48;
+    unsafe {
+        fcntl(file.as_raw_fd(), F_NOCACHE, 1);
+    }
+}
+
+/// Biggest file above `min_bytes` under `dir` (bounded walk, symlinks not
+/// followed). Stops early once a comfortably large file is found.
+fn find_big_file(dir: &Path, min_bytes: u64) -> Option<PathBuf> {
+    let mut best: Option<(u64, PathBuf)> = None;
+    let mut stack = vec![(dir.to_path_buf(), 0u32)];
+    let mut budget: u32 = 40_000;
+    while let Some((d, depth)) = stack.pop() {
+        if budget == 0 {
+            break;
+        }
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            if budget == 0 {
+                break;
+            }
+            budget -= 1;
+            if e.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
+            let Ok(meta) = e.metadata() else { continue };
+            if meta.is_dir() {
+                if depth < 5 {
+                    stack.push((e.path(), depth + 1));
+                }
+            } else if meta.is_file() && meta.len() >= min_bytes {
+                if best.as_ref().map(|(s, _)| meta.len() > *s).unwrap_or(true) {
+                    best = Some((meta.len(), e.path()));
+                }
+                if best.as_ref().map(|(s, _)| *s >= 4 * min_bytes).unwrap_or(false) {
+                    return best.map(|(_, p)| p);
+                }
+            }
+        }
+    }
+    best.map(|(_, p)| p)
+}
+
+/// Write an incompressible ~2 GB probe file (xorshift-filled blocks: zeros
+/// could be shortcut by the storage stack) for volumes holding nothing big.
+fn write_probe_file(path: &Path, size: u64) -> Result<(), String> {
+    use std::io::Write;
+    let mut f = std::fs::File::create(path).map_err(|e| e.to_string())?;
+    let mut block = vec![0u8; BW_CHUNK];
+    let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
+    for b in block.chunks_exact_mut(8) {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        b.copy_from_slice(&x.to_le_bytes());
+    }
+    let mut written = 0u64;
+    while written < size {
+        f.write_all(&block).map_err(|e| e.to_string())?;
+        written += block.len() as u64;
+    }
+    f.sync_all().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Timed sequential read of ~1.5 GB in 8 MiB blocks with the cache bypassed.
+/// On files much bigger than the read, the start offset varies run to run.
+fn read_bandwidth(path: &Path) -> Result<f64, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    #[cfg(target_os = "macos")]
+    set_nocache(&f);
+    let len = f.metadata().map_err(|e| e.to_string())?.len();
+    let target: u64 = 1_500_000_000.min(len);
+    if len > target + BW_CHUNK as u64 {
+        let slots = (len - target) / BW_CHUNK as u64 + 1;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos() as u64;
+        f.seek(SeekFrom::Start((nanos % slots) * BW_CHUNK as u64))
+            .map_err(|e| e.to_string())?;
+    }
+    let mut buf = vec![0u8; BW_CHUNK];
+    let mut total: u64 = 0;
+    let t0 = Instant::now();
+    while total < target {
+        let n = f.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        total += n as u64;
+    }
+    let secs = t0.elapsed().as_secs_f64();
+    if total < 200_000_000 || secs <= 0.0 {
+        return Err("probe read too small to be meaningful".into());
+    }
+    Ok(total as f64 / 1e9 / secs)
+}
+
+/// Sequential read bandwidth of the volume at `path`, in GB/s. Reads a real
+/// big file found under the path; when none exists, a temporary probe file is
+/// written, read back cache-cold, then deleted.
+fn measure_volume(base: &Path) -> Result<f64, String> {
+    if !base.is_dir() {
+        return Err(format!("not a directory: {}", base.display()));
+    }
+    match find_big_file(base, BW_MIN_FILE) {
+        Some(p) => read_bandwidth(&p),
+        None => {
+            let p = base.join(".galactus-bw-probe.bin");
+            let written = write_probe_file(&p, BW_MIN_FILE);
+            let result = written.and_then(|_| read_bandwidth(&p));
+            let _ = std::fs::remove_file(&p);
+            result
+        }
+    }
+}
+
+#[tauri::command]
+async fn volume_bandwidth(path: String) -> Result<f64, String> {
+    measure_volume(Path::new(&path))
+}
+
+/// Probe base for a pack destination dir: nearest existing ancestor, then the
+/// mount root (the system data volume probes through $HOME).
+fn probe_base_for(dir: &Path) -> PathBuf {
+    let mut p = dir.to_path_buf();
+    while !p.exists() && p.pop() {}
+    if let Some((_, _, _, mount)) = df_line(&p.to_string_lossy()) {
+        if mount == "/" || mount == "/System/Volumes/Data" {
+            return PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/".into()));
+        }
+        return PathBuf::from(mount);
+    }
+    p
 }
 
 // ---------------------------------------------------------------- server
@@ -460,9 +879,13 @@ fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -> Resu
     reap_orphan_servers(&root);
     let port = pick_free_port()?;
     let entry = registry_entry(&root, &model_id)?;
-    let (model_dir, pack, profile) = model_paths(&root, &model_id);
+    let (model_dir, _pack, profile) = model_paths(&root, &model_id);
     let gguf = find_gguf(&model_dir).ok_or("model GGUF not found")?;
-    if !pack.exists() {
+    // Dual-pack resolution: two distinct paths make the engine split every
+    // record across both SSDs and read them in parallel (P0v2); identical
+    // paths are the classic mono pack.
+    let (pack_internal, pack_external) = resolve_packs(&root, &model_id, &entry)?;
+    if !pack_internal.is_file() || !pack_external.is_file() {
         return Err("pack not found — install the model first".into());
     }
 
@@ -541,13 +964,17 @@ fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -> Resu
 
     let mut cmd = Command::new(&server_bin);
     cmd.env("GALACTUS_H4", "1")
-        .env("GALACTUS_PROFILE", &profile)
-        .env("GALACTUS_H4_INTERNAL", &pack)
-        .env("GALACTUS_H4_EXTERNAL", &pack)
+        .env("GALACTUS_H4_INTERNAL", &pack_internal)
+        .env("GALACTUS_H4_EXTERNAL", &pack_external)
         .env("GALACTUS_H4_CACHE_BYTES", cache_bytes.to_string())
         .env("GALACTUS_H4_PROTECTED", format!("{fraction:.2}"))
         .env("GALACTUS_H4_QD", "32")
         .env("LC_ALL", "C");
+    // A missing profile file makes the engine abort; leaving the variable
+    // unset selects its builtin profile (the GLM-5.2 frozen classes).
+    if profile.is_file() {
+        cmd.env("GALACTUS_PROFILE", &profile);
+    }
     if cpu_moe {
         cmd.env("GALACTUS_H4_CPU_MOE", "1");
     } else {
@@ -741,6 +1168,92 @@ fn emit_progress(app: &AppHandle, id: &str, phase: &str, pct: f64, label: &str, 
     );
 }
 
+/// Delete a model: the GGUF folder, the packs INSIDE the repo's pack store,
+/// and every per-model setting. Packs living outside the repo (the GLM
+/// double-pack on ~/GalactusH4, an external SSD) are never touched: they are
+/// reported as spared instead. models/<id> as a symlink removes the LINK only.
+#[tauri::command]
+async fn delete_model(model_id: String) -> Result<String, String> {
+    delete_model_impl(&model_id)
+}
+
+fn delete_model_impl(model_id: &str) -> Result<String, String> {
+    let root = galactus_root()?;
+    // Refuse while this model is serving: the engine holds the pack open.
+    {
+        let s = server_state().lock().unwrap_or_else(|e| e.into_inner());
+        if s.child.is_some() && s.model_id.as_deref() == Some(model_id) {
+            return Err("model is running — stop it first".into());
+        }
+    }
+    let entry = registry_entry(&root, &model_id)?;
+    let mut removed: Vec<String> = Vec::new();
+    let mut spared: Vec<String> = Vec::new();
+
+    // Packs resolved for this model: only delete inside the model's OWN
+    // folder of the pack store (artifacts/h4/packs/<id>/). Anything else —
+    // ~/GalactusH4, an external SSD, or a shared store folder like the GLM
+    // tour packs — is spared and reported.
+    let own_store = root.join("artifacts/h4/packs").join(model_id);
+    let (pack_i, pack_e) = resolve_packs(&root, model_id, &entry)?;
+    let mut packs = vec![pack_i];
+    if packs[0] != pack_e {
+        packs.push(pack_e);
+    }
+    for p in packs {
+        if !p.exists() {
+            continue;
+        }
+        if p.starts_with(&own_store) {
+            std::fs::remove_file(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+            removed.push(p.display().to_string());
+        } else {
+            spared.push(p.display().to_string());
+        }
+    }
+
+    // The model folder. A symlinked models/<id> (the GLM convention points at
+    // a shared GGUF directory) loses the link, never the target.
+    let model_dir = root.join("models").join(&model_id);
+    if let Ok(meta) = std::fs::symlink_metadata(&model_dir) {
+        if meta.file_type().is_symlink() {
+            std::fs::remove_file(&model_dir).map_err(|e| e.to_string())?;
+            removed.push(format!("{} (symlink)", model_dir.display()));
+        } else if meta.is_dir() {
+            std::fs::remove_dir_all(&model_dir).map_err(|e| e.to_string())?;
+            removed.push(model_dir.display().to_string());
+        }
+    }
+
+    // The per-model pack folder (manifests, leftovers), inside the store.
+    if own_store.is_dir() {
+        std::fs::remove_dir_all(&own_store).map_err(|e| e.to_string())?;
+        removed.push(own_store.display().to_string());
+    }
+
+    // Per-model settings: pack placement and bench result.
+    {
+        let mut map = settings_load();
+        let before = map.len();
+        map.remove(&format!("pack_internal_{model_id}"));
+        map.remove(&format!("pack_external_{model_id}"));
+        map.remove(&format!("bench_{model_id}"));
+        if map.len() != before {
+            settings_store(&map)?;
+        }
+    }
+
+    let mut summary = if removed.is_empty() {
+        "nothing to remove".to_string()
+    } else {
+        format!("removed: {}", removed.join(", "))
+    };
+    if !spared.is_empty() {
+        summary.push_str(&format!(" | kept (outside the repo): {}", spared.join(", ")));
+    }
+    Ok(summary)
+}
+
 #[tauri::command]
 fn cancel_install(model_id: String) {
     if let Some(flag) = install_cancels().lock().unwrap_or_else(|e| e.into_inner()).get(&model_id) {
@@ -748,10 +1261,33 @@ fn cancel_install(model_id: String) {
     }
 }
 
+/// Where the user asked the pack(s) to live: one directory for a mono pack,
+/// two for the dual (two-SSD) split. `None` keeps the classic default under
+/// artifacts/h4/packs/<id>/.
+#[derive(Clone)]
+struct InstallVolumes {
+    internal_dir: PathBuf,
+    external_dir: Option<PathBuf>,
+}
+
 #[tauri::command]
-async fn install_model(app: AppHandle, model_id: String) -> Result<(), String> {
+async fn install_model(app: AppHandle, model_id: String, volumes: Option<Value>) -> Result<(), String> {
     let root = galactus_root()?;
     let entry = registry_entry(&root, &model_id)?;
+    let vols: Option<InstallVolumes> = volumes.and_then(|v| {
+        let internal = v["internal_dir"].as_str().unwrap_or("").trim().to_string();
+        if internal.is_empty() {
+            return None;
+        }
+        Some(InstallVolumes {
+            internal_dir: PathBuf::from(expand_home(&internal)),
+            external_dir: v["external_dir"]
+                .as_str()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| PathBuf::from(expand_home(s))),
+        })
+    });
     let download = entry["download"].clone();
     let base = download["base"]
         .as_str()
@@ -789,7 +1325,7 @@ async fn install_model(app: AppHandle, model_id: String) -> Result<(), String> {
     }
 
     std::thread::spawn(move || {
-        let result = install_pipeline_with(&root, &model_id, &base, &files, total_bytes, &cancel, &|phase, pct, label| {
+        let result = install_pipeline_with(&root, &model_id, &base, &files, total_bytes, vols.as_ref(), &cancel, &|phase, pct, label| {
             emit_progress(&app, &model_id, phase, pct, label, false);
         });
         match result {
@@ -807,10 +1343,11 @@ fn install_pipeline_with(
     base: &str,
     files: &[String],
     total_bytes: u64,
+    vols: Option<&InstallVolumes>,
     cancel: &AtomicBool,
     progress: &dyn Fn(&str, f64, &str),
 ) -> Result<(), String> {
-    let (model_dir, pack, _profile) = model_paths(root, id);
+    let (model_dir, default_pack, _profile) = model_paths(root, id);
     std::fs::create_dir_all(&model_dir).map_err(|e| e.to_string())?;
 
     // 1. Download with resume; progress from on-disk sizes.
@@ -864,6 +1401,51 @@ fn install_pipeline_with(
         }
     }
 
+    // 1b. Volume decision. With two SSDs the bandwidths are measured FIRST
+    //     and the dual split is only kept when the slow one holds at least
+    //     35% of the fast one: below that the slow SSD caps the pair and a
+    //     mono pack on the fast SSD wins (the guard falls back with a
+    //     warning in the progress stream). The internal pack carries the
+    //     bigger share (71.57%), so it goes on the faster volume.
+    let mut dual_dirs: Option<(PathBuf, PathBuf)> = None;
+    let mut mono_dir: Option<PathBuf> = None;
+    if let Some(v) = vols {
+        if let Some(ext) = &v.external_dir {
+            progress("probe", 60.2, "probing volumes");
+            let bw_a = measure_volume(&probe_base_for(&v.internal_dir))?;
+            if cancel.load(Ordering::SeqCst) {
+                return Err("cancelled".into());
+            }
+            let bw_b = measure_volume(&probe_base_for(ext))?;
+            if cancel.load(Ordering::SeqCst) {
+                return Err("cancelled".into());
+            }
+            let (fast, slow) = (bw_a.max(bw_b), bw_a.min(bw_b));
+            if slow >= 0.35 * fast {
+                progress("probe", 61.0, &format!("dual ok {bw_a:.1}/{bw_b:.1} GB/s"));
+                dual_dirs = Some(if bw_a >= bw_b {
+                    (v.internal_dir.clone(), ext.clone())
+                } else {
+                    (ext.clone(), v.internal_dir.clone())
+                });
+            } else {
+                progress("probe", 61.0, &format!("dual fallback {bw_a:.1}/{bw_b:.1} GB/s"));
+                mono_dir = Some(if bw_a >= bw_b { v.internal_dir.clone() } else { ext.clone() });
+            }
+        } else {
+            mono_dir = Some(v.internal_dir.clone());
+        }
+    }
+    let dual = dual_dirs.is_some();
+    let (pack_internal, pack_external): (PathBuf, Option<PathBuf>) = match (&dual_dirs, &mono_dir) {
+        (Some((di, de)), _) => (
+            di.join(id).join(format!("{id}-internal.pack")),
+            Some(de.join(id).join(format!("{id}-external.pack"))),
+        ),
+        (None, Some(d)) => (d.join(id).join(format!("{id}.pack")), None),
+        (None, None) => (default_pack.clone(), None),
+    };
+
     // 2. Profile.
     progress("profile", 62.0, "profiling");
     let out = python3_cmd()
@@ -881,7 +1463,9 @@ fn install_pipeline_with(
         return Err(format!("profile: {}", String::from_utf8_lossy(&out.stderr)));
     }
 
-    // 3. Plan.
+    // 3. Plan. The dual ratio stays at the planner's default (0.7157, the
+    //    internal share): it is the P0v2 profile the engine's record split
+    //    reproduces at read time — a different ratio would corrupt reads.
     progress("plan", 65.0, "planning");
     let out = python3_cmd()
         .current_dir(root)
@@ -892,7 +1476,7 @@ fn install_pipeline_with(
             "--output",
             &format!("models/{id}/plan.json"),
             "--volumes",
-            "single",
+            if dual { "dual" } else { "single" },
         ])
         .output()
         .map_err(|e| e.to_string())?;
@@ -915,11 +1499,14 @@ fn install_pipeline_with(
     if sha.len() < 12 {
         return Err("plan sha unavailable".into());
     }
-    std::fs::create_dir_all(pack.parent().unwrap()).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(pack_internal.parent().unwrap()).map_err(|e| e.to_string())?;
+    if let Some(ext) = &pack_external {
+        std::fs::create_dir_all(ext.parent().unwrap()).map_err(|e| e.to_string())?;
+    }
 
     progress("pack", 68.0, "building pack");
-    let mut child = python3_cmd()
-        .current_dir(root)
+    let mut cmd = python3_cmd();
+    cmd.current_dir(root)
         .args([
             "scripts/galactus-pack-write.py",
             "--plan",
@@ -932,9 +1519,13 @@ fn install_pipeline_with(
             "full",
             "--internal-output",
         ])
-        .arg(&pack)
+        .arg(&pack_internal);
+    if let Some(ext) = &pack_external {
+        cmd.arg("--external-output").arg(ext);
+    }
+    let mut child = cmd
         .arg("--manifest")
-        .arg(pack.parent().unwrap().join("manifest.json"))
+        .arg(pack_internal.parent().unwrap().join("manifest.json"))
         .args(["--minimum-free-after-gib", "20", "--confirm"])
         .arg(format!("WRITE-{}", &sha[..12]))
         .stdout(Stdio::piped())
@@ -983,6 +1574,25 @@ fn install_pipeline_with(
         } else {
             format!("pack writer failed: {err_tail}")
         });
+    }
+
+    // 5. Custom placement: remember the pack paths so resolve_packs (serve,
+    //    registry, CLI) finds them. The default location needs no settings.
+    if vols.is_some() {
+        let mut map = settings_load();
+        map.insert(
+            format!("pack_internal_{id}"),
+            pack_internal.display().to_string(),
+        );
+        map.insert(
+            format!("pack_external_{id}"),
+            pack_external
+                .as_ref()
+                .unwrap_or(&pack_internal)
+                .display()
+                .to_string(),
+        );
+        settings_store(&map)?;
     }
     Ok(())
 }
@@ -2555,6 +3165,9 @@ pub fn run() {
             server_stop,
             install_model,
             cancel_install,
+            delete_model,
+            list_volumes,
+            volume_bandwidth,
             tool_fs_read,
             tool_web_fetch,
             scratch_write,

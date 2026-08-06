@@ -33,6 +33,24 @@ export interface ModelEntry {
   installed?: boolean;
   gguf_present?: boolean;
   pack_present?: boolean;
+  pack_internal?: string;
+  pack_external?: string;
+}
+
+export interface VolumeInfo {
+  name: string;
+  mount: string;
+  /** Suggested pack directory on this volume. */
+  dir: string;
+  /** Path the bandwidth probe reads from. */
+  probe: string;
+  free_gb: number;
+  total_gb: number;
+}
+
+export interface InstallVolumes {
+  internal_dir: string;
+  external_dir?: string;
 }
 
 export interface ServerStatus {
@@ -66,8 +84,12 @@ export const api = {
   serverStart: (modelId: string, cacheGb: number | null) =>
     invoke<void>("server_start", { modelId, cacheGb }),
   serverStop: () => invoke<void>("server_stop"),
-  installModel: (modelId: string) => invoke<void>("install_model", { modelId }),
+  installModel: (modelId: string, volumes?: InstallVolumes | null) =>
+    invoke<void>("install_model", { modelId, volumes: volumes ?? null }),
   cancelInstall: (modelId: string) => invoke<void>("cancel_install", { modelId }),
+  deleteModel: (modelId: string) => invoke<string>("delete_model", { modelId }),
+  listVolumes: () => invoke<VolumeInfo[]>("list_volumes"),
+  volumeBandwidth: (path: string) => invoke<number>("volume_bandwidth", { path }),
   fsRead: (path: string, maxBytes: number, offset?: number) =>
     invoke<string>("tool_fs_read", { path, maxBytes, offset }),
   scratchWrite: (name: string, content: string) =>

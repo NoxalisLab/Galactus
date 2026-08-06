@@ -116,6 +116,8 @@
       "certified_date": "2026-08-04",
       "native_fit_ram_gb": 256,
       "requires": "128 GB RAM minimum, dual SSD recommended",
+      "internal_pack": "$HOME/GalactusH4/**/*p0v2-internal.pack",
+      "external_pack": "/Volumes/NoxalisExtended/Noxalis Lab/NoxalisAi/galactus/artifacts/h4/packs/tour83-p0v2/external/h4-p0v2-external.pack",
       "measured": [
         {
           "cache_gb": 92,
