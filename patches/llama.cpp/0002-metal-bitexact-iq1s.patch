@@ -1,0 +1,372 @@
+--- a/ggml/src/ggml-metal/ggml-metal-impl.h
++++ b/ggml/src/ggml-metal/ggml-metal-impl.h
+@@ -1221,5 +1221,27 @@
+ typedef struct {
+     int64_t  np;
+ } ggml_metal_kargs_opt_step_sgd;
++
++// galactus: bit-exact CPU-parity path for mul_mat_id with iq1_s weights
++// (activated via GALACTUS_METAL_BITEXACT=1)
++typedef struct {
++    int32_t  ne10; // row length in f32 elements (multiple of 256)
++    int32_t  ne11;
++    uint64_t nb11;
++    uint64_t nb12;
++} ggml_metal_kargs_galactus_q8k_quant;
++
++typedef struct {
++    int32_t  nei0; // n_expert_used
++    int32_t  nei1; // n_tokens
++    uint64_t nbi1;
++    int32_t  ne00; // n_embd
++    int32_t  ne01; // rows per expert
++    uint64_t nb01;
++    uint64_t nb02;
++    int32_t  ne11;
++    int32_t  ne0;
++    int32_t  ne1;
++} ggml_metal_kargs_galactus_mmv_id_q8k;
+ 
+ #endif // GGML_METAL_IMPL
+--- a/ggml/src/ggml-metal/ggml-metal.metal
++++ b/ggml/src/ggml-metal/ggml-metal.metal
+@@ -11278,3 +11278,192 @@
+ typedef decltype(kernel_count_equal<int32_t>) kernel_count_equal_t;
+ 
+ template [[host_name("kernel_count_equal_i32")]] kernel kernel_count_equal_t kernel_count_equal<int32_t>;
++
++// ------------------------------------------------------------------------------------------------
++// galactus: bit-exact CPU-parity path for mul_mat_id with iq1_s weights
++// (activated on the host side via GALACTUS_METAL_BITEXACT=1)
++//
++// The CPU backend quantizes the f32 activations to Q8_K (quantize_row_q8_K_ref) and then runs an
++// integer dot product (ggml_vec_dot_iq1_s_q8_K, NEON) with a sequential float tail per superblock.
++// These kernels replicate those exact float operations:
++//   - quantize: amax scan (first strict max wins), iscale = -127/max (IEEE divide),
++//     per-element round-to-nearest-even (rint == nearest_int magic constant in range),
++//     integer bsums per 16, d = 1/iscale (IEEE divide)
++//   - dot: exact integer sums per superblock (parallel over simdgroup lanes), then the float tail
++//     accumulated SEQUENTIALLY in superblock order matching the compiled CPU code:
++//       dsc  = y.d * (float) x.d                        (single rounded fmul)
++//       expr = fma((float) sumi3, 0.125f, (float)(sumi1 + sumi2))
++//       sumf = fma(dsc, expr, sumf)                     (fmadd, as compiled on arm64)
++// ------------------------------------------------------------------------------------------------
++
++kernel void kernel_galactus_quantize_q8_K_bitexact(
++        constant ggml_metal_kargs_galactus_q8k_quant & args,
++        device const char * src1,
++        device       char * dst,
++        uint3  tgpig[[threadgroup_position_in_grid]],
++        ushort tiisg[[thread_index_in_simdgroup]]) {
++    const int isb = tgpig.x;                     // superblock index within the row
++    const int ir  = tgpig.y;                     // row index = i12*ne11 + i11
++    const int nsb = args.ne10/QK_K;
++
++    const int i11 = ir % args.ne11;
++    const int i12 = ir / args.ne11;
++
++    device const float * x = (device const float *)(src1 + i11*args.nb11 + i12*args.nb12) + isb*QK_K;
++    device block_q8_K  * y = (device block_q8_K  *)(dst) + ir*nsb + isb;
++
++    // per-lane sequential scan over 8 contiguous elements; first strict max wins (CPU order)
++    const int j0 = tiisg*8;
++
++    float amax = 0.0f;
++    float vmax = 0.0f;
++    int   imax = j0;
++    for (int j = 0; j < 8; ++j) {
++        const float v  = x[j0 + j];
++        const float av = fabs(v);
++        if (av > amax) {
++            amax = av;
++            vmax = v;
++            imax = j0 + j;
++        }
++    }
++
++    // cross-lane reduction; on ties the smallest index wins (matches the sequential CPU scan)
++    for (ushort off = 16; off > 0; off >>= 1) {
++        const float o_amax = simd_shuffle_down(amax, off);
++        const float o_vmax = simd_shuffle_down(vmax, off);
++        const int   o_imax = simd_shuffle_down(imax, off);
++        if (o_amax > amax || (o_amax == amax && o_imax < imax)) {
++            amax = o_amax;
++            vmax = o_vmax;
++            imax = o_imax;
++        }
++    }
++    amax = simd_shuffle(amax, 0);
++    vmax = simd_shuffle(vmax, 0);
++
++    if (amax == 0.0f) {
++        if (tiisg == 0) {
++            y->d = 0.0f;
++        }
++        for (int j = 0; j < 8; ++j) {
++            y->qs[j0 + j] = 0;
++        }
++        if (tiisg < 16) {
++            y->bsums[tiisg] = 0;
++        }
++        return;
++    }
++
++    const float iscale = precise::divide(-127.0f, vmax);
++
++    int lsum = 0;
++    for (int j = 0; j < 8; ++j) {
++        // nearest_int(iscale*x) on the CPU compiles to fmul + magic-constant fadd (no fma),
++        // i.e. round-to-nearest-even of the rounded product: identical to rint here
++        const int v = (int) rint(iscale * x[j0 + j]);
++        const int q = MIN(127, v);
++        y->qs[j0 + j] = (char) q;
++        lsum += q;
++    }
++
++    // bsums over groups of 16 elements = lane pairs (2j, 2j+1); exact integer math
++    const int pair = lsum + simd_shuffle_down(lsum, 1);
++    if ((tiisg & 1) == 0) {
++        y->bsums[tiisg/2] = (short) pair;
++    }
++    if (tiisg == 0) {
++        y->d = precise::divide(1.0f, iscale);
++    }
++}
++
++kernel void kernel_galactus_mul_mv_id_iq1_s_q8_K_bitexact(
++        constant ggml_metal_kargs_galactus_mmv_id_q8k & args,
++        device const char * src0s,
++        device const char * src1q, // Q8_K-quantized activations (kernel above)
++        device       char * dst,
++        device const char * ids,
++        uint3  tgpig[[threadgroup_position_in_grid]],
++        ushort tiisg[[thread_index_in_simdgroup]]) {
++    const int r0   = tgpig.x;             // output row within the expert
++    const int iid1 = tgpig.z/args.nei0;   // token
++    const int idx  = tgpig.z%args.nei0;   // expert slot
++
++    const int32_t i02 = ((device const int32_t *) (ids + iid1*args.nbi1))[idx];
++
++    const int i11 = idx % args.ne11;
++    const int i12 = iid1;
++
++    const int nsb = args.ne00/QK_K;
++
++    device const block_iq1_s * xr = (device const block_iq1_s *)(src0s + i02*args.nb02 + r0*args.nb01);
++    device const block_q8_K  * yr = (device const block_q8_K  *)(src1q) + (i12*args.ne11 + i11)*nsb;
++
++    float sumf = 0.0f;
++
++    for (int ib0 = 0; ib0 < nsb; ib0 += 32) {
++        const int i = ib0 + tiisg;
++
++        float dsc  = 0.0f;
++        float expr = 0.0f;
++
++        if (i < nsb) {
++            device const block_iq1_s * xb = xr + i;
++            device const block_q8_K  * yb = yr + i;
++
++            device const int8_t   * q8 = yb->qs;
++            device const uint8_t  * qs = xb->qs;
++            device const uint16_t * qh = xb->qh;
++
++            int sumi1 = 0, sumi2 = 0, sumi3 = 0;
++
++            for (int ib = 0; ib < QK_K/32; ib += 2) {
++                int p1 = 0;
++                int p2 = 0;
++                for (int l = 0; l < 4; ++l) {
++                    const int sh1 = 8 - 3*l; // <<8, <<5, <<2, >>1 as in the CPU kernel
++                    const uint32_t g1i = qs[l + 0] | ((sh1 >= 0 ? ((uint32_t) qh[ib + 0] << sh1)
++                                                               : ((uint32_t) qh[ib + 0] >> 1)) & 0x700);
++                    const uint32_t g2i = qs[l + 4] | ((sh1 >= 0 ? ((uint32_t) qh[ib + 1] << sh1)
++                                                               : ((uint32_t) qh[ib + 1] >> 1)) & 0x700);
++                    // iq1s_grid_gpu packs the 8 grid values of the CPU iq1s_grid entry as
++                    // nibbles (value + 1), planar: byte j = (v[j+4]+1)<<4 | (v[j]+1);
++                    // the decode below yields the exact same int8 values as the CPU table
++                    constant uint8_t * g1 = (constant uint8_t *)(iq1s_grid_gpu + g1i);
++                    constant uint8_t * g2 = (constant uint8_t *)(iq1s_grid_gpu + g2i);
++                    for (int j = 0; j < 4; ++j) {
++                        p1 += ((int)(g1[j] & 0xf) - 1) * (int) q8[ 0 + 8*l + j]
++                            + ((int)(g1[j] >> 4)  - 1) * (int) q8[ 0 + 8*l + j + 4];
++                        p2 += ((int)(g2[j] & 0xf) - 1) * (int) q8[32 + 8*l + j]
++                            + ((int)(g2[j] >> 4)  - 1) * (int) q8[32 + 8*l + j + 4];
++                    }
++                }
++                q8 += 64;
++                qs += 8;
++
++                const int ls1 = 2*((qh[ib + 0] >> 12) & 7) + 1;
++                const int ls2 = 2*((qh[ib + 1] >> 12) & 7) + 1;
++                sumi1 += p1 * ls1;
++                sumi2 += p2 * ls2;
++                sumi3 += ((int) yb->bsums[2*ib + 0] + (int) yb->bsums[2*ib + 1]) * ls1 * ((qh[ib + 0] & 0x8000) ? -1 : 1)
++                       + ((int) yb->bsums[2*ib + 2] + (int) yb->bsums[2*ib + 3]) * ls2 * ((qh[ib + 1] & 0x8000) ? -1 : 1);
++            }
++
++            dsc  = yb->d * (float) xb->d;
++            expr = fma((float) sumi3, IQ1S_DELTA, (float)(sumi1 + sumi2));
++        }
++
++        // sequential float tail in superblock order, exactly like the CPU loop
++        const int lim = (nsb - ib0) < 32 ? (nsb - ib0) : 32;
++        for (int k = 0; k < lim; ++k) {
++            const float dk = simd_shuffle(dsc,  (ushort) k);
++            const float ek = simd_shuffle(expr, (ushort) k);
++            sumf = fma(dk, ek, sumf);
++        }
++    }
++
++    if (tiisg == 0) {
++        device float * dst_row = (device float *)(dst) + (int64_t) idx*args.ne0 + (int64_t) iid1*args.ne1*args.ne0;
++        dst_row[r0] = sumf;
++    }
++}
+--- a/ggml/src/ggml-metal/ggml-metal-ops.h
++++ b/ggml/src/ggml-metal/ggml-metal-ops.h
+@@ -36,6 +36,10 @@
+ // id map [n_tokens, n_expert]
+ size_t ggml_metal_op_mul_mat_id_extra_ids(const struct ggml_tensor * op);
+ 
++// galactus: scratch space for Q8_K-quantized activations on the bit-exact path
++// (GALACTUS_METAL_BITEXACT=1, iq1_s weights); 0 when the path is inactive
++size_t ggml_metal_op_mul_mat_id_extra_q8k(const struct ggml_tensor * op);
++
+ // return true if we should use the FA vector kernel for this op
+ bool ggml_metal_op_flash_attn_ext_use_vec(const struct ggml_tensor * op);
+ 
+--- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
++++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
+@@ -10,6 +10,7 @@
+ 
+ #include <cassert>
+ #include <algorithm>
++#include <cstdlib>
+ #include <limits>
+ #include <cmath>
+ 
+@@ -2339,6 +2340,33 @@
+     const int64_t ne21 = op->src[2]->ne[1]; // n_token
+ 
+     return ggml_type_size(GGML_TYPE_I32)*ne02*ne21;
++}
++
++// galactus: bit-exact CPU-parity path for mul_mat_id with iq1_s weights
++static bool ggml_metal_galactus_bitexact_enabled(void) {
++    const char * env = getenv("GALACTUS_METAL_BITEXACT");
++    return env != NULL && env[0] == '1' && env[1] == '\0';
++}
++
++static bool ggml_metal_op_mul_mat_id_use_galactus_bitexact(const ggml_tensor * op) {
++    return ggml_metal_galactus_bitexact_enabled() &&
++           op->src[0]->type == GGML_TYPE_IQ1_S    &&
++           op->src[1]->type == GGML_TYPE_F32      &&
++           op->src[0]->ne[0] % 256 == 0; // QK_K
++}
++
++size_t ggml_metal_op_mul_mat_id_extra_q8k(const ggml_tensor * op) {
++    assert(op->op == GGML_OP_MUL_MAT_ID);
++
++    if (!ggml_metal_op_mul_mat_id_use_galactus_bitexact(op)) {
++        return 0;
++    }
++
++    const ggml_tensor * src1 = op->src[1];
++
++    const int64_t nrows = src1->ne[1]*src1->ne[2]*src1->ne[3];
++
++    return ggml_row_size(GGML_TYPE_Q8_K, src1->ne[0])*nrows;
+ }
+ 
+ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
+@@ -2374,7 +2402,79 @@
+ 
+     const uint32_t r2 = 1;
+     const uint32_t r3 = 1;
++
++    // galactus: bit-exact CPU-parity path (GALACTUS_METAL_BITEXACT=1, iq1_s weights):
++    // quantize the f32 activations to Q8_K exactly like quantize_row_q8_K on the CPU,
++    // then run an integer dot product with the same sequential float tail as
++    // ggml_vec_dot_iq1_s_q8_K
++    if (ggml_metal_op_mul_mat_id_use_galactus_bitexact(op)) {
++        // the Q8_K scratch lives in the dst allocation, after the tpe/ids extras
++        ggml_metal_buffer_id bid_q8 = bid_dst;
++        bid_q8.offs += ggml_nbytes(op) + ggml_metal_op_mul_mat_id_extra_tpe(op) + ggml_metal_op_mul_mat_id_extra_ids(op);
++
++        const int nsb = ne10/256; // superblocks (QK_K) per activation row
++
++        {
++            ggml_metal_kargs_galactus_q8k_quant args = {
++                /*.ne10 =*/ ne10,
++                /*.ne11 =*/ ne11,
++                /*.nb11 =*/ nb11,
++                /*.nb12 =*/ nb12,
++            };
++
++            auto pipeline = ggml_metal_library_get_pipeline(lib, "kernel_galactus_quantize_q8_K_bitexact");
++            if (!pipeline.pipeline) {
++                pipeline = ggml_metal_library_compile_pipeline(lib,
++                        "kernel_galactus_quantize_q8_K_bitexact",
++                        "kernel_galactus_quantize_q8_K_bitexact", nullptr);
++            }
+ 
++            ggml_metal_encoder_set_pipeline(enc, pipeline);
++            ggml_metal_encoder_set_bytes   (enc, &args, sizeof(args), 0);
++            ggml_metal_encoder_set_buffer  (enc, bid_src1, 1);
++            ggml_metal_encoder_set_buffer  (enc, bid_q8,   2);
++
++            ggml_metal_encoder_dispatch_threadgroups(enc, nsb, ne11*ne12, 1, 32, 1, 1);
++        }
++
++        // the dot kernel has to wait for the quantized activations
++        ggml_metal_op_concurrency_reset(ctx);
++
++        {
++            ggml_metal_kargs_galactus_mmv_id_q8k args = {
++                /*.nei0 =*/ ne20,
++                /*.nei1 =*/ ne21,
++                /*.nbi1 =*/ nb21,
++                /*.ne00 =*/ ne00,
++                /*.ne01 =*/ ne01,
++                /*.nb01 =*/ nb01,
++                /*.nb02 =*/ nb02,
++                /*.ne11 =*/ ne11,
++                /*.ne0  =*/ ne0,
++                /*.ne1  =*/ ne1,
++            };
++
++            auto pipeline = ggml_metal_library_get_pipeline(lib, "kernel_galactus_mul_mv_id_iq1_s_q8_K_bitexact");
++            if (!pipeline.pipeline) {
++                pipeline = ggml_metal_library_compile_pipeline(lib,
++                        "kernel_galactus_mul_mv_id_iq1_s_q8_K_bitexact",
++                        "kernel_galactus_mul_mv_id_iq1_s_q8_K_bitexact", nullptr);
++            }
++
++            ggml_metal_encoder_set_pipeline(enc, pipeline);
++            ggml_metal_encoder_set_bytes   (enc, &args, sizeof(args), 0);
++            ggml_metal_encoder_set_buffer  (enc, bid_src0, 1);
++            ggml_metal_encoder_set_buffer  (enc, bid_q8,   2);
++            ggml_metal_encoder_set_buffer  (enc, bid_dst,  3);
++            ggml_metal_encoder_set_buffer  (enc, bid_src2, 4);
++
++            // one simdgroup per output row
++            ggml_metal_encoder_dispatch_threadgroups(enc, ne01, 1, ne20*ne21, 32, 1, 1);
++        }
++
++        return 1;
++    }
++
+     // find the break-even point where the matrix-matrix kernel becomes more efficient compared
+     // to the matrix-vector kernel
+     // ne20 = n_used_experts
+--- a/ggml/src/ggml-metal/ggml-metal.cpp
++++ b/ggml/src/ggml-metal/ggml-metal.cpp
+@@ -219,6 +219,7 @@
+             {
+                 res += ggml_metal_op_mul_mat_id_extra_tpe(tensor);
+                 res += ggml_metal_op_mul_mat_id_extra_ids(tensor);
++                res += ggml_metal_op_mul_mat_id_extra_q8k(tensor);
+             } break;
+         case GGML_OP_FLASH_ATTN_EXT:
+             {
