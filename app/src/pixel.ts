@@ -5,11 +5,14 @@
 export type PixelMode =
   | "idle"
   | "thinking"
-  | "reading"
+  | "reading"   // exploration : saute de planete en planete
+  | "doc"       // lecture d'un document : page en main
   | "writing"
   | "running"
   | "connector"
-  | "web"
+  | "web"       // appel satellite
+  | "memory"    // range une etoile dans le coffre a souvenirs
+  | "fleet"     // lance la flotte de sous-agents
   | "done";
 
 const SCALE = 3;
@@ -279,6 +282,27 @@ export class PixelViz {
         oy = f % 16 < 8 ? 0 : 1;
         headDx = f % 32 < 16 ? 0 : 1;
         break;
+      case "doc": {
+        // Lecture d'un document : page en main, les yeux balayent les lignes.
+        arms = "hold";
+        const scan = [-1, -1, 0, 1, 1, 0];
+        eyeDx = scan[Math.floor(f / 3) % scan.length];
+        oy = f % 20 < 10 ? 0 : 1;
+        break;
+      }
+      case "memory":
+        // Memorisation : il regarde l'etoile filer vers le coffre.
+        arms = "reach";
+        eyeDx = 1;
+        oy = f % 16 < 8 ? 0 : 1;
+        break;
+      case "fleet":
+        // Lancement des sous-agents : il salue la flotte au decollage.
+        arms = "up";
+        eyeDx = 1;
+        mouthWide = mf % 24 < 12;
+        oy = f % 8 < 4 ? 0 : 1;
+        break;
       case "done":
         arms = "up";
         mouthWide = true;
@@ -290,8 +314,12 @@ export class PixelViz {
     // ---- decors derriere le robot
     if (mode === "reading") this.drawPlanets(ox);
     if (mode === "web") this.drawSatellite(f, oy);
+    if (mode === "fleet") this.drawFleet(f);
 
     this.drawRobot(ox, oy, headDx, eyeDx, blink, mouthWide, arms);
+
+    if (mode === "doc") this.drawPage(oy, f);
+    if (mode === "memory") this.drawMemoryChest(f, oy);
 
     // ---- extras par mode (au-dessus du robot)
     if (mode === "thinking") {
@@ -314,8 +342,8 @@ export class PixelViz {
 
     // ---- label a droite de la scene
     if (this.label) {
-      const wide = mode === "reading" || mode === "web";
-      const labelX = (wide ? STAGE : GRID) * SCALE + 10;
+      const wide = mode === "reading" || mode === "web" || mode === "fleet";
+      const labelX = (wide ? STAGE : mode === "memory" ? GRID + 2 : GRID) * SCALE + 10;
       c.font = '11px "IBM Plex Mono", ui-monospace, monospace';
       c.fillStyle = LABEL_COLOR;
       c.textBaseline = "middle";
@@ -456,6 +484,65 @@ export class PixelViz {
     for (let i = 0; i < stars.length; i++) {
       const tw = (this.frame + i * 5) % 22 < 11 ? 0.5 : 0.2;
       this.px(stars[i][0], stars[i][1], WHITE, tw);
+    }
+  }
+
+  /** Page tenue devant le robot (mode doc : lecture d'un document). */
+  private drawPage(oy: number, f: number): void {
+    const P = (x: number, y: number, col: string, a = 1): void => this.px(x, y + oy, col, a);
+    for (let y = 8; y <= 13; y++) {
+      for (let x = 1; x <= 5; x++) P(x, y, WHITE, 0.92);
+    }
+    P(5, 8, ACC, 0.35); // coin corne
+    // Lignes de texte ; celle "en cours de lecture" est accentuee
+    const cur = Math.floor(f / 6) % 4;
+    for (let i = 0; i < 4; i++) {
+      const y = 9 + i;
+      const on = i === cur;
+      P(2, y, on ? ACC2 : ACC, on ? 0.95 : 0.4);
+      P(3, y, on ? ACC2 : ACC, on ? 0.95 : 0.4);
+      if (i % 2 === 0) P(4, y, on ? ACC2 : ACC, on ? 0.95 : 0.4);
+    }
+  }
+
+  /** Une etoile file de la tete du robot vers le coffre a souvenirs (memory). */
+  private drawMemoryChest(f: number, robotOy: number): void {
+    // Coffre a droite
+    const flash = f % 18 < 3;
+    this.px(13, 11, ACC2, 0.9); this.px(14, 11, flash ? WHITE : ACC2, 0.95); this.px(15, 11, ACC2, 0.9); // couvercle
+    this.px(13, 12, ACC, 0.85); this.px(14, 12, ACC, 0.85); this.px(15, 12, ACC, 0.85);
+    this.px(13, 13, ACC, 0.85); this.px(14, 13, flash ? WHITE : ACC2, 0.9); this.px(15, 13, ACC, 0.85);
+    if (flash) { this.px(14, 10, WHITE, 0.8); this.px(12.5, 10.5, ACC2, 0.6); this.px(15.5, 10.5, ACC2, 0.6); }
+    // L'etoile : arc parametrique de la tete (8,4) au coffre (14,11)
+    const t = (f % 18) / 18;
+    if (t < 0.85) {
+      const x = 8 + (14 - 8) * t;
+      const y = 4 + robotOy + (11 - 4) * t - 3.2 * Math.sin(Math.PI * t);
+      this.px(x, y, WHITE, 0.95);
+      this.px(x - 0.7, y + 0.3, ACC2, 0.5); // traine
+    }
+  }
+
+  /** Flotte de sous-agents au decollage (mode fleet). */
+  private drawFleet(f: number): void {
+    const pads = [17, 21, 25];
+    for (let i = 0; i < pads.length; i++) {
+      const x = pads[i];
+      // Pas de tir
+      this.px(x - 1, 15, ACC, 0.5); this.px(x, 15, ACC, 0.7); this.px(x + 1, 15, ACC, 0.5);
+      // Fusee : monte en boucle, decalage par pas de tir
+      const ry = 14 - ((f * 0.9 + i * 9) % 22);
+      if (ry > -2) {
+        this.px(x, ry - 1, WHITE, 0.95); // nez
+        this.px(x, ry, ACC2); // corps
+        this.px(x, ry + 1, ACC2);
+        this.px(x - 1, ry + 1, ACC, 0.7); // ailerons
+        this.px(x + 1, ry + 1, ACC, 0.7);
+        // Flamme
+        const hot = (f + i) % 4 < 2;
+        this.px(x, ry + 2, hot ? WHITE : ACC2, 0.9);
+        this.px(x, ry + 3, ACC2, hot ? 0.6 : 0.3);
+      }
     }
   }
 

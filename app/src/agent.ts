@@ -429,23 +429,27 @@ function prettyToolLabel(name: string): string {
 
 function activityModeFor(tool: string): import("./pixel").PixelMode {
   if (tool.startsWith("mcp__")) return "connector";
-  if (tool === "run_workflow") return "connector";
+  if (tool === "run_workflow") return "fleet";
   switch (tool) {
-    case "read_document":
-    case "read_file":
+    // Exploration : il saute de planete en planete.
     case "list_directory":
-    case "obsidian_read":
     case "obsidian_search":
-    case "use_skill":
     case "search_knowledge":
       return "reading";
+    // Lecture posee : page en main.
+    case "read_document":
+    case "read_file":
+    case "obsidian_read":
+    case "use_skill":
+      return "doc";
     case "fetch_url":
       return "web";
     case "write_file":
     case "obsidian_append":
     case "obsidian_update":
-    case "remember":
       return "writing";
+    case "remember":
+      return "memory";
     case "run_command":
       return "running";
     default:
@@ -939,7 +943,7 @@ export class Agent {
       this.hooks.onNotice?.(
         t("wf.run").replace("%i", String(i + 1)).replace("%n", String(tasks.length)).replace("%t", task.title)
       );
-      this.hooks.onActivity?.("connector", `${i + 1}/${tasks.length} · ${task.title}`);
+      this.hooks.onActivity?.("fleet", `${i + 1}/${tasks.length} · ${task.title}`);
 
       const transcript: string[] = [];
       const parent = this;
