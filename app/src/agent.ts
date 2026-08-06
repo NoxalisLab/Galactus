@@ -452,6 +452,31 @@ function activityModeFor(tool: string): import("./pixel").PixelMode {
   }
 }
 
+/**
+ * Compact unified-ish text diff (common prefix/suffix trim), embedded in the
+ * tool card result: EVERY write keeps its before/after on record, including
+ * auto-approved ones. The model sees it too and can self-check its edit.
+ */
+function plainDiff(before: string, after: string, existed: boolean): string {
+  const b = existed ? before.split("\n") : [];
+  const a = after.split("\n");
+  let pre = 0;
+  const min = Math.min(b.length, a.length);
+  while (pre < min && b[pre] === a[pre]) pre++;
+  let suf = 0;
+  while (suf < min - pre && b[b.length - 1 - suf] === a[a.length - 1 - suf]) suf++;
+  const rem = b.slice(pre, b.length - suf);
+  const add = a.slice(pre, a.length - suf);
+  if (!rem.length && !add.length) return "(no change)";
+  const CAP = 80;
+  const lines: string[] = [`@@ line ${pre + 1} · -${rem.length} +${add.length} @@`];
+  for (const l of rem.slice(0, CAP)) lines.push("- " + l);
+  if (rem.length > CAP) lines.push(`…(${rem.length - CAP} more removals)`);
+  for (const l of add.slice(0, CAP)) lines.push("+ " + l);
+  if (add.length > CAP) lines.push(`…(${add.length - CAP} more additions)`);
+  return lines.join("\n");
+}
+
 function mcpToolDefs(mcp: McpToolInfo[]): ToolDef[] {
   return mcp.map((tool) => ({
     type: "function" as const,
@@ -1036,25 +1061,24 @@ export class Agent {
         const content = String(args.content ?? "");
         const elevated = isElevatedWrite(p);
         const req: PermissionRequest = { kind: "fs_write", detail: p, elevated };
-        // Preview only when a dialog will actually show; skip it when the
-        // gate would pass silently (standing rule or agent auto-approval).
+        // The preview is ALWAYS computed: shown in the dialog when one opens,
+        // and kept as a diff in the tool card either way (git-like record).
         const silent = !elevated && (isStanding("fs_write", p) || this.autoApprove);
-        if (!silent) {
-          try {
-            const d = await api.fsPreview(p, content);
-            req.diff = {
-              before: d.before,
-              after: d.after,
-              added: d.added,
-              removed: d.removed,
-              existed: d.existed,
-            };
-          } catch {
-            // Preview failure must not block the permission flow.
+        let preview: { before: string; after: string; existed: boolean } | null = null;
+        try {
+          const d = await api.fsPreview(p, content);
+          preview = { before: d.before, after: d.after, existed: d.existed };
+          if (!silent) {
+            req.diff = { before: d.before, after: d.after, added: d.added, removed: d.removed, existed: d.existed };
           }
+        } catch {
+          // Preview failure must not block the permission flow.
         }
         const ok = await this.gate(req);
         result = ok ? await api.fsWrite(p, content) : "denied by user";
+        if (ok && preview) {
+          result += "\n\n" + plainDiff(preview.before, content, preview.existed);
+        }
       } else if (name === "list_directory") {
         const p = String(args.path ?? "");
         const ok = await this.gate({ kind: "fs_list", detail: p, elevated: false });
@@ -1111,17 +1135,22 @@ export class Agent {
         const content = String(args.content ?? "");
         const req: PermissionRequest = { kind: "obsidian", detail: `update: ${note}`, elevated: false };
         const silent = isStanding("obsidian", req.detail) || this.autoApprove;
-        if (!silent) {
-          try {
-            const abs = await api.obsidianResolve(note);
-            const d = await api.fsPreview(abs, content);
+        let preview: { before: string; existed: boolean } | null = null;
+        try {
+          const abs = await api.obsidianResolve(note);
+          const d = await api.fsPreview(abs, content);
+          preview = { before: d.before, existed: d.existed };
+          if (!silent) {
             req.diff = { before: d.before, after: d.after, added: d.added, removed: d.removed, existed: d.existed };
-          } catch {
-            /* preview failure must not block the flow */
           }
+        } catch {
+          /* preview failure must not block the flow */
         }
         const ok = await this.gate(req);
         result = ok ? (await api.obsidianWrite(note, content), `updated ${note}`) : "denied by user";
+        if (ok && preview) {
+          result += "\n\n" + plainDiff(preview.before, content, preview.existed);
+        }
       } else if (name.startsWith("mcp__")) {
         const parts = name.split("__");
         const server = parts[1] ?? "";
