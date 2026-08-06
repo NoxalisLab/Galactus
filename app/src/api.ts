@@ -109,6 +109,7 @@ export const api = {
     invoke<string>("obsidian_append", { note, text }),
   obsidianWrite: (note: string, text: string) =>
     invoke<void>("obsidian_write", { note, text }),
+  obsidianResolve: (note: string) => invoke<string>("obsidian_resolve", { note }),
   obsidianCreateVault: (path: string) =>
     invoke<string>("obsidian_create_vault", { path }),
   obsidianGraph: () =>

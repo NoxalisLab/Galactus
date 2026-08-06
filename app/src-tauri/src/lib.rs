@@ -748,7 +748,7 @@ fn cancel_install(model_id: String) {
 }
 
 #[tauri::command]
-fn install_model(app: AppHandle, model_id: String) -> Result<(), String> {
+async fn install_model(app: AppHandle, model_id: String) -> Result<(), String> {
     let root = galactus_root()?;
     let entry = registry_entry(&root, &model_id)?;
     let download = entry["download"].clone();
@@ -1070,7 +1070,7 @@ fn tool_fs_read(path: String, max_bytes: usize, offset: Option<u64>) -> Result<S
 /// by the system tool, nothing new to bundle). Output is capped like every
 /// tool; the permission gate on the frontend shows the exact URL.
 #[tauri::command]
-fn tool_web_fetch(url: String, max_bytes: Option<usize>) -> Result<String, String> {
+async fn tool_web_fetch(url: String, max_bytes: Option<usize>) -> Result<String, String> {
     if !(url.starts_with("https://") || url.starts_with("http://")) {
         return Err("only http(s) URLs are allowed".into());
     }
@@ -1245,7 +1245,7 @@ fn tool_fs_list(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn tool_shell_run(command: String, timeout_secs: u64) -> Result<String, String> {
+async fn tool_shell_run(command: String, timeout_secs: u64) -> Result<String, String> {
     let mut cmd = Command::new("/bin/zsh");
     cmd.arg("-lc").arg(&command);
     // The model's shell commands must find python3 even on a Mac without the
@@ -1375,7 +1375,14 @@ fn resolve_command(cmd: &str, path: &str) -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
-fn mcp_reload() -> Result<Vec<McpToolInfo>, String> {
+async fn mcp_reload() -> Result<Vec<McpToolInfo>, String> {
+    // One reload at a time: two concurrent reloads would each drain the
+    // server map and spawn duplicate children.
+    static RELOAD_GATE: OnceLock<Mutex<()>> = OnceLock::new();
+    let _serial = RELOAD_GATE
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     // Tear down previous servers.
     {
         let mut servers = mcp_state().lock().unwrap_or_else(|e| e.into_inner());
@@ -1480,7 +1487,7 @@ fn mcp_tools() -> Vec<McpToolInfo> {
 }
 
 #[tauri::command]
-fn mcp_call(server: String, tool: String, args: String) -> Result<String, String> {
+async fn mcp_call(server: String, tool: String, args: String) -> Result<String, String> {
     let parsed: Value = serde_json::from_str(&args).unwrap_or(json!({}));
     let mut servers = mcp_state().lock().unwrap_or_else(|e| e.into_inner());
     let proc_ = servers.get_mut(&server).ok_or(format!("MCP server {server} not running"))?;
@@ -1687,6 +1694,18 @@ fn parse_frontmatter(md: &str) -> (String, String) {
     (name, desc)
 }
 
+/// Resolved absolute path of a note (for the diff preview before an agent
+/// rewrite). Same hardening as every obsidian_* command.
+#[tauri::command]
+fn obsidian_resolve(note: String) -> Result<String, String> {
+    let vault = settings_load()
+        .get("obsidian_vault")
+        .cloned()
+        .filter(|s| !s.is_empty())
+        .ok_or("no Obsidian vault configured")?;
+    Ok(resolve_note(Path::new(&vault), &note)?.display().to_string())
+}
+
 /// Full write of a vault note (the constellation editor's save). Same
 /// traversal hardening as every obsidian_* command.
 #[tauri::command]
@@ -1726,7 +1745,7 @@ fn obsidian_create_vault(path: String) -> Result<String, String> {
 /// Graph of the Obsidian vault for the 3D constellation view: notes as
 /// nodes, wikilinks as edges. Bounded walk, resilient to weird files.
 #[tauri::command]
-fn obsidian_graph() -> Result<Value, String> {
+async fn obsidian_graph() -> Result<Value, String> {
     let vault = settings_load()
         .get("obsidian_vault")
         .cloned()
@@ -1930,7 +1949,7 @@ fn resolve_note(vault: &Path, note: &str) -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
-fn obsidian_search(query: String) -> Result<String, String> {
+async fn obsidian_search(query: String) -> Result<String, String> {
     let vault = vault_dir()?;
     let args: Vec<String> = [
         "-rIn", "-i", "--include=*.md", "-m", "2", "--", &query,
@@ -2231,7 +2250,7 @@ const DOC_MAX: usize = 400_000;
 /// Read any document as text. `mode` is "auto" (text layer, OCR fallback),
 /// "ocr" (force OCR) or "text" (text layer only).
 #[tauri::command]
-fn doc_read(path: String, mode: Option<String>) -> Result<String, String> {
+async fn doc_read(path: String, mode: Option<String>) -> Result<String, String> {
     if !Path::new(&path).is_file() {
         return Err(format!("file not found: {path}"));
     }
@@ -2562,6 +2581,7 @@ pub fn run() {
             obsidian_append,
             obsidian_graph,
             obsidian_write,
+            obsidian_resolve,
             obsidian_create_vault,
             skills_list,
             skill_read,

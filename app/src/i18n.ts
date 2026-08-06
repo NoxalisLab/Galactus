@@ -53,6 +53,7 @@ const dict: Record<string, { en: string; fr: string }> = {
   "tool.osearch": { en: "Search vault", fr: "Chercher dans le coffre" },
   "tool.oread": { en: "Read note", fr: "Lire la note" },
   "tool.owrite": { en: "Write note", fr: "Écrire la note" },
+  "tool.oupdate": { en: "Rewrite note", fr: "Réécrire la note" },
 
   "models.subtitle": { en: "Certified on the Galactus engine", fr: "Certifiés sur le moteur Galactus" },
   "models.certified": { en: "certified", fr: "certifié" },

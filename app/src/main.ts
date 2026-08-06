@@ -1065,6 +1065,7 @@ function prettyTool(name: string): string {
     read_document: t("tool.doc"), run_workflow: t("tool.workflow"), fetch_url: t("tool.web"),
     search_knowledge: t("tool.kb"),
     obsidian_search: t("tool.osearch"), obsidian_read: t("tool.oread"), obsidian_append: t("tool.owrite"),
+    obsidian_update: t("tool.oupdate"),
   };
   if (map[name]) return map[name];
   if (name.startsWith("mcp__")) return name.split("__").slice(1).join(" · ");

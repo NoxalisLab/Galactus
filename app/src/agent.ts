@@ -396,6 +396,22 @@ function builtinTools(hasVault: boolean, role: AgentRole = "main", hasKb = false
             required: ["note", "text"],
           },
         },
+      },
+      {
+        type: "function",
+        function: {
+          name: "obsidian_update",
+          description:
+            "Rewrite an Obsidian note ENTIRELY with new content (restructure, correct, reorganize). Read it first; prefer obsidian_append when you only add.",
+          parameters: {
+            type: "object",
+            properties: {
+              note: { type: "string", description: "Note path relative to the vault" },
+              content: { type: "string", description: "The full new content of the note" },
+            },
+            required: ["note", "content"],
+          },
+        },
       }
     );
   }
@@ -426,6 +442,7 @@ function activityModeFor(tool: string): import("./pixel").PixelMode {
       return "reading";
     case "write_file":
     case "obsidian_append":
+    case "obsidian_update":
     case "remember":
       return "writing";
     case "run_command":
@@ -533,7 +550,8 @@ export class Agent {
       "Be concise and warm. Answer in " + lang + " unless the user writes in another language. " +
       "Today is " + today + "; treat anything after your training data as unknown and verify time-sensitive facts with tools.";
     if (this.hasVault) {
-      p += " The user has an Obsidian vault you can search, read and append to with the obsidian_* tools.";
+      p +=
+        " The user has an Obsidian vault: search it (obsidian_search), read notes (obsidian_read), add to them (obsidian_append) or rewrite them entirely (obsidian_update) with the obsidian_* tools.";
     }
     if (this.hasKb) {
       p +=
@@ -1086,6 +1104,24 @@ export class Agent {
       } else if (name === "obsidian_append") {
         const ok = await this.gate({ kind: "obsidian", detail: `append: ${args.note}`, elevated: false });
         result = ok ? await api.obsidianAppend(String(args.note ?? ""), String(args.text ?? "")) : "denied by user";
+      } else if (name === "obsidian_update") {
+        // Full rewrite: the user sees a Cursor-style diff before approving,
+        // exactly like write_file.
+        const note = String(args.note ?? "");
+        const content = String(args.content ?? "");
+        const req: PermissionRequest = { kind: "obsidian", detail: `update: ${note}`, elevated: false };
+        const silent = isStanding("obsidian", req.detail) || this.autoApprove;
+        if (!silent) {
+          try {
+            const abs = await api.obsidianResolve(note);
+            const d = await api.fsPreview(abs, content);
+            req.diff = { before: d.before, after: d.after, added: d.added, removed: d.removed, existed: d.existed };
+          } catch {
+            /* preview failure must not block the flow */
+          }
+        }
+        const ok = await this.gate(req);
+        result = ok ? (await api.obsidianWrite(note, content), `updated ${note}`) : "denied by user";
       } else if (name.startsWith("mcp__")) {
         const parts = name.split("__");
         const server = parts[1] ?? "";
