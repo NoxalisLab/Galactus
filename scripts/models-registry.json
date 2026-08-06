@@ -1,0 +1,584 @@
+{
+  "registry_version": 1,
+  "reference_machine": "MacBook Pro M5 Max, 128 GB, internal SSD",
+  "models": [
+    {
+      "id": "gpt-oss-120b",
+      "name": "OpenAI gpt-oss-120b",
+      "arch": "gpt-oss",
+      "gguf_bytes": 65400000000,
+      "expert_bytes_total": 60926459904,
+      "non_expert_bytes": 4500000000,
+      "layers_moe": 36,
+      "experts": 128,
+      "experts_used": 4,
+      "record_bytes": 13221888,
+      "min_cache_bytes": 7616207616,
+      "status": "certified_bit_transparent",
+      "certified_date": "2026-08-05",
+      "native_fit_ram_gb": 80,
+      "measured": [
+        {
+          "cache_gb": 7,
+          "gen_tps": 4.6,
+          "prompt_tps": 4.6,
+          "mac_gb": 16
+        },
+        {
+          "cache_gb": 8,
+          "gen_tps": 4.9,
+          "prompt_tps": 4.8
+        },
+        {
+          "cache_gb": 12,
+          "gen_tps": 6.3,
+          "prompt_tps": 6.0
+        },
+        {
+          "cache_gb": 15,
+          "gen_tps": 7.2,
+          "prompt_tps": 6.4,
+          "mac_gb": 24
+        },
+        {
+          "cache_gb": 16,
+          "gen_tps": 7.7,
+          "prompt_tps": 6.8
+        },
+        {
+          "cache_gb": 23,
+          "gen_tps": 10.7,
+          "prompt_tps": 8.1,
+          "mac_gb": 32
+        },
+        {
+          "cache_gb": 24,
+          "gen_tps": 11.3,
+          "prompt_tps": 8.2
+        },
+        {
+          "cache_gb": 27,
+          "gen_tps": 12.7,
+          "prompt_tps": 8.6,
+          "mac_gb": 36
+        },
+        {
+          "cache_gb": 32,
+          "gen_tps": 15.1,
+          "prompt_tps": 9.1
+        },
+        {
+          "cache_gb": 39,
+          "gen_tps": 17.6,
+          "prompt_tps": 9.5,
+          "mac_gb": 48
+        },
+        {
+          "cache_gb": 48,
+          "gen_tps": 16.1,
+          "prompt_tps": 9.8
+        },
+        {
+          "cache_gb": 55,
+          "gen_tps": 18.7,
+          "prompt_tps": 9.9,
+          "mac_gb": 64
+        },
+        {
+          "cache_gb": 61,
+          "gen_tps": 19.4,
+          "prompt_tps": 10.0,
+          "mac_gb": 128
+        }
+      ],
+      "measured_note": "M5 Max reference, ubatch 1, quality path (CPU experts+biases), benches 2026-08-05; mac_gb = official Mac tier (cache = RAM-9)",
+      "download": {
+        "base": "https://huggingface.co/unsloth/gpt-oss-120b-GGUF/resolve/main",
+        "files": [
+          "gpt-oss-120b-F16.gguf"
+        ]
+      },
+      "tasks": [
+        "reasoning",
+        "general"
+      ]
+    },
+    {
+      "id": "glm-5.2-744b",
+      "name": "GLM-5.2 744B (UD-IQ1_S)",
+      "arch": "glm",
+      "gguf_bytes": 202000000000,
+      "expert_bytes_total": 190000000000,
+      "layers_moe": 75,
+      "experts": 256,
+      "experts_used": 8,
+      "status": "certified",
+      "certified_date": "2026-08-04",
+      "native_fit_ram_gb": 256,
+      "requires": "128 GB RAM minimum, dual SSD recommended",
+      "measured": [
+        {
+          "cache_gb": 92,
+          "gen_tps": 5.9,
+          "prompt_tps": 8.8
+        }
+      ],
+      "tasks": [
+        "max"
+      ]
+    },
+    {
+      "id": "qwen3-30b-a3b",
+      "name": "Qwen3-30B-A3B-Instruct-2507 (Q8_0)",
+      "arch": "qwen3moe",
+      "gguf_bytes": 32483932576,
+      "layers_moe": 48,
+      "experts": 128,
+      "experts_used": 8,
+      "status": "certified_bit_transparent",
+      "measured": [
+        {
+          "cache_gb": 9,
+          "gen_tps": 24.0,
+          "prompt_tps": 19.4,
+          "mac_gb": 16
+        },
+        {
+          "cache_gb": 17,
+          "gen_tps": 29.2,
+          "prompt_tps": 18.4,
+          "mac_gb": 24
+        },
+        {
+          "cache_gb": 25,
+          "gen_tps": 29.1,
+          "prompt_tps": 18.1,
+          "mac_gb": 32
+        },
+        {
+          "cache_gb": 29,
+          "gen_tps": 29.8,
+          "prompt_tps": 18.4,
+          "mac_gb": 36
+        },
+        {
+          "cache_gb": 31,
+          "gen_tps": 29.5,
+          "prompt_tps": 18.2,
+          "mac_gb": 48
+        }
+      ],
+      "certified_date": "2026-08-05",
+      "certified_ppl": 4.5839,
+      "expert_bytes_total": 30802968576,
+      "non_expert_bytes": 1700000000,
+      "record_bytes": 5013504,
+      "min_cache_bytes": 7700744192,
+      "native_fit_ram_gb": 40,
+      "measured_note": "M5 Max reference, ubatch 1, quality path, bench 2026-08-05; full residency from cache 31 GB",
+      "download": {
+        "base": "https://huggingface.co/unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF/resolve/main",
+        "files": [
+          "Qwen3-30B-A3B-Instruct-2507-Q8_0.gguf"
+        ]
+      },
+      "tasks": [
+        "general",
+        "writing",
+        "scripting"
+      ]
+    },
+    {
+      "id": "llama4-scout",
+      "name": "Llama-4 Scout 17B-16E Instruct (Q4_K_M)",
+      "arch": "llama4",
+      "gguf_bytes": 65359900352,
+      "expert_bytes_total": 58510540800,
+      "non_expert_bytes": 6900000000,
+      "layers_moe": 48,
+      "experts": 16,
+      "experts_used": 1,
+      "record_bytes": 76186642,
+      "record_classes": 2,
+      "min_cache_bytes": 7313917632,
+      "status": "certified_bit_transparent",
+      "certified_date": "2026-08-05",
+      "certified_ppl": 6.1562,
+      "native_fit_ram_gb": 80,
+      "measured": [
+        {
+          "cache_gb": 12,
+          "gen_tps": 3.7,
+          "prompt_tps": 3.0,
+          "mac_gb": 24
+        },
+        {
+          "cache_gb": 20,
+          "gen_tps": 5.4,
+          "prompt_tps": 4.0,
+          "mac_gb": 32
+        },
+        {
+          "cache_gb": 24,
+          "gen_tps": 6.6,
+          "prompt_tps": 4.2,
+          "mac_gb": 36
+        },
+        {
+          "cache_gb": 33,
+          "gen_tps": 9.4,
+          "prompt_tps": 4.7
+        },
+        {
+          "cache_gb": 36,
+          "gen_tps": 10.1,
+          "prompt_tps": 3.4,
+          "mac_gb": 48
+        },
+        {
+          "cache_gb": 52,
+          "gen_tps": 10.7,
+          "prompt_tps": 3.3,
+          "mac_gb": 64
+        },
+        {
+          "cache_gb": 59,
+          "gen_tps": 14.4,
+          "prompt_tps": 5.5,
+          "mac_gb": 128
+        }
+      ],
+      "measured_note": "M5 Max reference, ubatch 1; top-1, 76 MB records: SSD-bound until high residency; Mac 16 GB refused (quota<2)",
+      "min_ram_gb": 19,
+      "download": {
+        "base": "https://huggingface.co/unsloth/Llama-4-Scout-17B-16E-Instruct-GGUF/resolve/main/Q4_K_M",
+        "files": [
+          "Llama-4-Scout-17B-16E-Instruct-Q4_K_M-00001-of-00002.gguf",
+          "Llama-4-Scout-17B-16E-Instruct-Q4_K_M-00002-of-00002.gguf"
+        ]
+      },
+      "tasks": [
+        "general",
+        "longcontext"
+      ]
+    },
+    {
+      "id": "qwen3-235b-a22b",
+      "name": "Qwen3-235B-A22B-Instruct-2507 (Q4_K_M)",
+      "arch": "qwen3moe",
+      "gguf_bytes": 142154074880,
+      "expert_bytes_total": 137292152832,
+      "non_expert_bytes": 4900000000,
+      "layers_moe": 94,
+      "experts": 128,
+      "experts_used": 8,
+      "record_bytes": 11410916,
+      "record_classes": 2,
+      "status": "certified_by_composition",
+      "certified_date": "2026-08-05",
+      "certified_ppl": 3.6605,
+      "certification_chain": "GGUF->pack: fixture+manifest sha256; arch qwen3moe: bit-certified on 30B (same code path); pack->arena: in-situ autoverif 48/48 IDENTIQUE on this model. Native stock reference impossible on any Mac (142 GB > 128 GB max, Bus error confirmed).",
+      "native_fit_ram_gb": null,
+      "runs_nowhere_natively": true,
+      "min_cache_bytes": 12000000000,
+      "min_ram_gb": 24,
+      "measured": [
+        {
+          "cache_gb": 14,
+          "gen_tps": 1.1,
+          "prompt_tps": 1.1,
+          "mac_gb": 24,
+          "protected": 0.25
+        },
+        {
+          "cache_gb": 26,
+          "gen_tps": 1.6,
+          "prompt_tps": 1.6,
+          "mac_gb": 36,
+          "protected": 0.5
+        },
+        {
+          "cache_gb": 38,
+          "gen_tps": 2.2,
+          "prompt_tps": 1.8,
+          "mac_gb": 48,
+          "protected": 0.75
+        },
+        {
+          "cache_gb": 54,
+          "gen_tps": 3.5,
+          "prompt_tps": 2.1,
+          "mac_gb": 64,
+          "protected": 0.75
+        },
+        {
+          "cache_gb": 67,
+          "gen_tps": 5.2,
+          "prompt_tps": 2.4,
+          "mac_gb": 96,
+          "protected": 0.75
+        },
+        {
+          "cache_gb": 89,
+          "gen_tps": 7.0,
+          "prompt_tps": 2.5,
+          "mac_gb": 128,
+          "protected": 0.75
+        }
+      ],
+      "measured_note": "M5 Max reference, ubatch 1, adaptive protected fraction; arena capped at 70% of simulated RAM (macOS memory compressor); 24-64 tiers measured at 96 predicted tokens (slightly cold-biased), 96/128 at 192",
+      "download": {
+        "base": "https://huggingface.co/unsloth/Qwen3-235B-A22B-Instruct-2507-GGUF/resolve/main/Q4_K_M",
+        "files": [
+          "Qwen3-235B-A22B-Instruct-2507-Q4_K_M-00001-of-00003.gguf",
+          "Qwen3-235B-A22B-Instruct-2507-Q4_K_M-00002-of-00003.gguf",
+          "Qwen3-235B-A22B-Instruct-2507-Q4_K_M-00003-of-00003.gguf"
+        ]
+      },
+      "tasks": [
+        "max",
+        "reasoning",
+        "writing"
+      ]
+    },
+    {
+      "id": "glm-4.5-air",
+      "name": "GLM-4.5-Air 106B-A12B (Q4_K_M)",
+      "arch": "glm4moe",
+      "gguf_bytes": 72975748384,
+      "expert_bytes_total": 66022539264,
+      "non_expert_bytes": 7000000000,
+      "layers_moe": 45,
+      "first_layer": 1,
+      "experts": 128,
+      "experts_used": 8,
+      "record_bytes": 11462246,
+      "record_classes": 2,
+      "status": "certified_bit_transparent",
+      "certified_date": "2026-08-06",
+      "certified_ppl": 3.6481,
+      "native_fit_ram_gb": 96,
+      "min_ram_gb": 24,
+      "measured": [
+        {
+          "cache_gb": 14,
+          "gen_tps": 2.7,
+          "prompt_tps": 2.7,
+          "mac_gb": 24,
+          "protected": 0.5
+        },
+        {
+          "cache_gb": 25,
+          "gen_tps": 3.7,
+          "prompt_tps": 3.0,
+          "mac_gb": 36
+        },
+        {
+          "cache_gb": 33,
+          "gen_tps": 4.8,
+          "prompt_tps": 3.4,
+          "mac_gb": 48
+        },
+        {
+          "cache_gb": 44,
+          "gen_tps": 6.6,
+          "prompt_tps": 2.8,
+          "mac_gb": 64
+        },
+        {
+          "cache_gb": 67,
+          "gen_tps": 8.2,
+          "prompt_tps": 3.9,
+          "mac_gb": 96
+        }
+      ],
+      "measured_note": "M5 Max reference; thinking model, quality tier",
+      "download": {
+        "base": "https://huggingface.co/unsloth/GLM-4.5-Air-GGUF/resolve/main/Q4_K_M",
+        "files": [
+          "GLM-4.5-Air-Q4_K_M-00001-of-00002.gguf",
+          "GLM-4.5-Air-Q4_K_M-00002-of-00002.gguf"
+        ]
+      },
+      "tasks": [
+        "writing",
+        "reasoning"
+      ]
+    },
+    {
+      "id": "qwen3-next-80b",
+      "name": "Qwen3-Next-80B-A3B-Instruct (Q4_K_M)",
+      "arch": "qwen3next",
+      "gguf_bytes": 48500000000,
+      "expert_bytes_total": 46909095936,
+      "non_expert_bytes": 1600000000,
+      "layers_moe": 48,
+      "experts": 512,
+      "experts_used": 10,
+      "record_bytes": 1908594,
+      "record_classes": 2,
+      "status": "certified_bit_transparent",
+      "certified_date": "2026-08-06",
+      "certified_ppl": 4.0523,
+      "native_fit_ram_gb": 64,
+      "min_ram_gb": 16,
+      "measured": [
+        {
+          "cache_gb": 9,
+          "gen_tps": 17.7,
+          "prompt_tps": 13.6,
+          "mac_gb": 16
+        },
+        {
+          "cache_gb": 16,
+          "gen_tps": 17.7,
+          "prompt_tps": 14.0,
+          "mac_gb": 24
+        },
+        {
+          "cache_gb": 22,
+          "gen_tps": 24.8,
+          "prompt_tps": 14.5,
+          "mac_gb": 32
+        },
+        {
+          "cache_gb": 25,
+          "gen_tps": 25.8,
+          "prompt_tps": 14.6,
+          "mac_gb": 36
+        },
+        {
+          "cache_gb": 33,
+          "gen_tps": 26.4,
+          "prompt_tps": 14.5,
+          "mac_gb": 48
+        }
+      ],
+      "measured_note": "M5 Max reference; 512 experts (first 10-bit-key model), 1.9 MB records, hybrid attention; daily-driver tier",
+      "download": {
+        "base": "https://huggingface.co/unsloth/Qwen3-Next-80B-A3B-Instruct-GGUF/resolve/main",
+        "files": [
+          "Qwen3-Next-80B-A3B-Instruct-Q4_K_M.gguf"
+        ]
+      },
+      "tasks": [
+        "general",
+        "writing"
+      ]
+    },
+    {
+      "id": "qwen3-coder-30b",
+      "name": "Qwen3-Coder-30B-A3B-Instruct (Q8_0)",
+      "arch": "qwen3moe",
+      "tasks": [
+        "code",
+        "scripting"
+      ],
+      "gguf_bytes": 32483935392,
+      "layers_moe": 48,
+      "experts": 128,
+      "experts_used": 8,
+      "status": "pending_certification",
+      "min_ram_gb": 16,
+      "native_fit_ram_gb": 40,
+      "measured": [],
+      "download": {
+        "base": "https://huggingface.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF/resolve/main",
+        "files": [
+          "Qwen3-Coder-30B-A3B-Instruct-Q8_0.gguf"
+        ]
+      }
+    }
+  ],
+  "mac_lineup": {
+    "verified": "2026-08-05, support.apple.com",
+    "tiers_gb": [
+      16,
+      24,
+      32,
+      36,
+      48,
+      64,
+      128
+    ],
+    "models": {
+      "MacBook Pro 14 M5": [
+        16,
+        24,
+        32
+      ],
+      "MacBook Pro M5 Pro": [
+        24,
+        48,
+        64,
+        128
+      ],
+      "MacBook Pro M5 Max": [
+        36,
+        48,
+        64,
+        128
+      ]
+    },
+    "cache_rule": "expert_cache_gb = min(ram_gb - 9, full_residency_gb)"
+  },
+  "task_models": {
+    "code": [
+      "qwen3-coder-30b",
+      "qwen3-next-80b",
+      "qwen3-30b-a3b"
+    ],
+    "scripting": [
+      "qwen3-coder-30b",
+      "qwen3-30b-a3b",
+      "qwen3-next-80b"
+    ],
+    "writing": [
+      "glm-4.5-air",
+      "qwen3-next-80b",
+      "qwen3-30b-a3b"
+    ],
+    "reasoning": [
+      "gpt-oss-120b",
+      "glm-4.5-air",
+      "qwen3-235b-a22b"
+    ],
+    "general": [
+      "qwen3-next-80b",
+      "qwen3-30b-a3b",
+      "gpt-oss-120b"
+    ]
+  },
+  "task_personas": {
+    "code": {
+      "label_fr": "Code",
+      "label_en": "Code",
+      "temp": 0.2,
+      "system": "You are a precise senior software engineer. Write correct, idiomatic, well-structured code. Explain briefly, prefer diffs and complete files. Follow the project's conventions."
+    },
+    "scripting": {
+      "label_fr": "Scripting",
+      "label_en": "Scripting",
+      "temp": 0.2,
+      "system": "You are an expert at shell, automation and glue scripts. Produce robust, portable scripts with clear error handling. Show the exact commands."
+    },
+    "writing": {
+      "label_fr": "Rédaction",
+      "label_en": "Writing",
+      "temp": 0.7,
+      "system": "You are a sharp, natural writer. Clear structure, human tone, no filler, no AI clichés. Match the requested register and language."
+    },
+    "reasoning": {
+      "label_fr": "Analyse",
+      "label_en": "Reasoning",
+      "temp": 0.4,
+      "system": "You reason carefully step by step, weigh alternatives, and state assumptions before concluding."
+    },
+    "general": {
+      "label_fr": "Général",
+      "label_en": "General",
+      "temp": 0.6,
+      "system": "You are Galactus, a helpful local assistant. Be concise, warm and useful."
+    }
+  }
+}
