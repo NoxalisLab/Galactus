@@ -1123,10 +1123,37 @@ fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -> Resu
                 .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "200")
                 .unwrap_or(false);
             if ok {
-                let mut s = server_state().lock().unwrap_or_else(|e| e.into_inner());
-                if s.generation == generation {
-                    s.phase = "ready".into();
+                // /health goes 200 once the non-expert weights are up, but the
+                // real load (graph + Metal pipelines + first experts) only
+                // happens on the first inference. Force it NOW with a tiny
+                // generation so "ready" means actually ready, instead of the
+                // first user message eating the whole warmup.
+                {
+                    let s = server_state().lock().unwrap_or_else(|e| e.into_inner());
+                    if s.generation != generation {
+                        return;
+                    }
                 }
+                let _ = Command::new("curl")
+                    .args([
+                        "-s",
+                        "-o",
+                        "/dev/null",
+                        "--max-time",
+                        "600",
+                        "-H",
+                        "Content-Type: application/json",
+                        "-d",
+                        r#"{"model":"galactus-local","messages":[{"role":"user","content":"ok"}],"max_tokens":4,"stream":false}"#,
+                    ])
+                    .arg(format!("http://127.0.0.1:{port}/v1/chat/completions"))
+                    .output();
+                let mut s = server_state().lock().unwrap_or_else(|e| e.into_inner());
+                // Stopped or swapped during the warmup: stay silent.
+                if s.generation != generation || s.child.is_none() {
+                    return;
+                }
+                s.phase = "ready".into();
                 drop(s);
                 let _ = app.emit("galactus://server", json!({"phase": "ready"}));
                 return;
