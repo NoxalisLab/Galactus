@@ -108,6 +108,32 @@ fn bundled_engine() -> Option<PathBuf> {
     Some(bin)
 }
 
+/// The isolated Python runtime shipped in the bundle. A virgin macOS has no
+/// /usr/bin/python3 (it is a Command Line Tools shim that pops an install
+/// dialog): the app must never depend on it.
+fn bundled_python() -> Option<PathBuf> {
+    let bin = resource_dir()?.join("python/bin/python3");
+    if bin.is_file() {
+        Some(bin)
+    } else {
+        None
+    }
+}
+
+/// A ready-to-use python3 invocation: bundled interpreter in isolated mode
+/// (-I: ignores PYTHON* env vars and user site-packages, a local sandbox),
+/// falling back to the system python3 for developer checkouts.
+fn python3_cmd() -> Command {
+    match bundled_python() {
+        Some(bin) => {
+            let mut c = Command::new(bin);
+            c.arg("-I");
+            c
+        }
+        None => Command::new("python3"),
+    }
+}
+
 /// Self-contained mode: data lives in Application Support/Galactus/data,
 /// seeded from the registry and scripts bundled with the app. No checkout,
 /// no third-party install: plug and play.
@@ -735,7 +761,7 @@ fn install_pipeline(
 
     // 2. Profile.
     emit_progress(app, id, "profile", 62.0, "profiling", false);
-    let out = Command::new("python3")
+    let out = python3_cmd()
         .current_dir(root)
         .args([
             "scripts/moe-profile.py",
@@ -752,7 +778,7 @@ fn install_pipeline(
 
     // 3. Plan.
     emit_progress(app, id, "plan", 65.0, "planning", false);
-    let out = Command::new("python3")
+    let out = python3_cmd()
         .current_dir(root)
         .args([
             "scripts/galactus-pack-plan.py",
@@ -787,7 +813,7 @@ fn install_pipeline(
     std::fs::create_dir_all(pack.parent().unwrap()).map_err(|e| e.to_string())?;
 
     emit_progress(app, id, "pack", 68.0, "building pack", false);
-    let mut child = Command::new("python3")
+    let mut child = python3_cmd()
         .current_dir(root)
         .args([
             "scripts/galactus-pack-write.py",
@@ -1115,9 +1141,17 @@ fn tool_fs_list(path: String) -> Result<String, String> {
 
 #[tauri::command]
 fn tool_shell_run(command: String, timeout_secs: u64) -> Result<String, String> {
-    let child = Command::new("/bin/zsh")
-        .arg("-lc")
-        .arg(&command)
+    let mut cmd = Command::new("/bin/zsh");
+    cmd.arg("-lc").arg(&command);
+    // The model's shell commands must find python3 even on a Mac without the
+    // Command Line Tools: the bundled runtime's bin dir leads the PATH.
+    if let Some(py) = bundled_python() {
+        if let Some(dir) = py.parent() {
+            let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into());
+            cmd.env("PATH", format!("{}:{}", dir.display(), path));
+        }
+    }
+    let child = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -1741,6 +1775,25 @@ fn sanitize_id(id: &str) -> String {
 /// It only needs the Command Line Tools, which any machine building llama.cpp
 /// already has. Everything it does (PDFKit text, Vision OCR) is offline.
 fn doc_helper() -> Result<PathBuf, String> {
+    // Precompiled helper shipped in the bundle: works on Macs without the
+    // Command Line Tools (no swiftc needed at runtime).
+    if let Some(res) = resource_dir() {
+        let prebuilt = res.join("packaged/galactus-doc");
+        if prebuilt.is_file() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Ok(meta) = std::fs::metadata(&prebuilt) {
+                    let mut perm = meta.permissions();
+                    if perm.mode() & 0o111 == 0 {
+                        perm.set_mode(0o755);
+                        let _ = std::fs::set_permissions(&prebuilt, perm);
+                    }
+                }
+            }
+            return Ok(prebuilt);
+        }
+    }
     let bin = app_support().join("galactus-doc");
     let src_candidates = [
         std::env::current_dir()
@@ -1871,7 +1924,7 @@ with zipfile.ZipFile(p) as z:
             parts.append(t)
 print('\n\n'.join(parts))
 "#;
-            let out = Command::new("python3")
+            let out = python3_cmd()
                 .arg("-c")
                 .arg(script)
                 .arg(path)

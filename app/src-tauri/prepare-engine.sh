@@ -84,3 +84,36 @@ if [ -d "$ROOT/app/skills" ]; then
   cp -R "$ROOT/app/skills" "$HERE/packaged/skills"
   echo "Skills embarquees : $(ls "$HERE/packaged/skills" | tr '\n' ' ')"
 fi
+
+# Runtime Python isole (sandbox locale) : CPython autonome embarque dans le
+# bundle. Sur un macOS vierge, /usr/bin/python3 n'existe pas sans les Command
+# Line Tools ; l'app doit fonctionner sans rien installer.
+PY_URL="https://github.com/astral-sh/python-build-standalone/releases/download/20250723/cpython-3.12.11+20250723-aarch64-apple-darwin-install_only_stripped.tar.gz"
+PY_SHA="ba814d8d611898aee3c6daed53a535a93345a6b4984ebe62f9aa38646255a5bf"
+PY_CACHE="$ROOT/.tmp-python-cache/py.tar.gz"
+if [ ! -d "$HERE/python/bin" ]; then
+  mkdir -p "$(dirname "$PY_CACHE")"
+  [ -f "$PY_CACHE" ] || curl -sL "$PY_URL" -o "$PY_CACHE"
+  echo "$PY_SHA  $PY_CACHE" | shasum -a 256 -c - >/dev/null || { echo "ECHEC: empreinte Python inattendue"; exit 1; }
+  rm -rf "$HERE/python" "$HERE/.py-unpack"
+  mkdir -p "$HERE/.py-unpack"
+  tar -xzf "$PY_CACHE" -C "$HERE/.py-unpack"
+  mv "$HERE/.py-unpack/python" "$HERE/python"
+  rm -rf "$HERE/.py-unpack"
+  # Allegement : modules inutiles au pipeline (stdlib pure suffit).
+  PYLIB="$HERE/python/lib/python3.12"
+  rm -rf "$PYLIB/test" "$PYLIB/idlelib" "$PYLIB/tkinter" "$PYLIB/turtledemo" \
+         "$PYLIB/ensurepip" "$PYLIB/pydoc_data" 2>/dev/null || true
+fi
+"$HERE/python/bin/python3" -I -c "import json,hashlib,struct,zipfile;print('ok')" >/dev/null || { echo "ECHEC: python embarque ne demarre pas"; exit 1; }
+echo "Python embarque : $("$HERE/python/bin/python3" -V) ($(du -sh "$HERE/python" | cut -f1))"
+
+# Helper documents precompile : sur un Mac sans swiftc (pas de CLT), la
+# compilation a la volee est impossible — on livre le binaire.
+if command -v swiftc >/dev/null 2>&1; then
+  swiftc -O -o "$HERE/packaged/galactus-doc" "$HERE/helpers/galactus-doc.swift"
+  codesign -f -s - "$HERE/packaged/galactus-doc" >/dev/null 2>&1 || true
+  echo "Helper documents precompile"
+else
+  echo "AVERTISSEMENT: swiftc absent, helper documents non precompile"
+fi

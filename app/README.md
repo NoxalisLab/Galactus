@@ -25,11 +25,14 @@ gated access to your files and shell so it can actually get work done.
 ## Requirements
 
 The app is self-contained: the Galactus llama-server (with its dylibs and
-OpenSSL, fully relocated) plus the model registry and install scripts ship
-inside the bundle. Without any checkout, data lives in
-`~/Library/Application Support/Galactus/data`.
+OpenSSL, fully relocated), an isolated Python 3.12 runtime, the precompiled
+document helper (PDF text + OCR), the model registry, the install scripts
+and the curated skills all ship inside the bundle. Without any checkout,
+data lives in `~/Library/Application Support/Galactus/data`.
 
-Only stock macOS tools are used at runtime: `python3`, `curl`, `shasum`.
+No Command Line Tools, no Homebrew, no system Python required: the only
+external tools used are the ones every macOS ships (`curl`, `shasum`,
+`zsh`, `textutil`, `osascript`).
 
 Developers can still point **Settings → Galactus folder** at a checkout: a
 `third_party/llama.cpp/build/bin/llama-server` built there takes precedence
