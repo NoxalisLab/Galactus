@@ -59,6 +59,30 @@ let dictBase = "";
 let ttsPlaying = false;
 /** Honest generation stats: streamed chars / elapsed time (~4 chars per token). */
 let genStats: { convId: string; chars: number; startMs: number; endMs: number | null } | null = null;
+/** Live header metrics: engine RSS + generation speed. */
+let liveRss = 0;
+let liveTps: number | null = null;
+
+function paintLive(): void {
+  const box = document.getElementById("livebar");
+  if (!box) return;
+  const parts: string[] = [];
+  if (server.running && liveRss > 0) {
+    parts.push(
+      `<span class="lv" title="${esc(t("live.ram"))}"><span class="k">RAM</span><b>${(liveRss / 1e9).toFixed(1)} Go</b></span>`
+    );
+  }
+  const tps =
+    generating && genStats && genStats.chars > 40
+      ? genStats.chars / 4 / Math.max((Date.now() - genStats.startMs) / 1000, 0.25)
+      : liveTps;
+  if (tps && Number.isFinite(tps) && tps > 0) {
+    parts.push(
+      `<span class="lv ${generating ? "hot" : ""}" title="${esc(t("live.tps"))}"><span class="k">tok/s</span><b>${tps.toFixed(1)}</b></span>`
+    );
+  }
+  box.innerHTML = parts.join("");
+}
 
 // ---------- agent activity bar (PixelViz) ----------
 let pixel: PixelViz | null = null;
@@ -456,6 +480,7 @@ function chatView(): HTMLElement {
     <div class="topbar" data-tauri-drag-region>
       <span class="ttl">${esc(t("nav.chat"))}</span>
       <div class="right">
+        <div class="livebar" id="livebar"></div>
         ${taskBarHtml()}
         ${running ? `<div class="mpill" title="${esc(engineModeLabel(server.mode))}"><span class="d"></span><span class="n">${esc(running.name.split(" ")[0])}</span>${server.mode === "resident-bit-exact" ? `<span class="s">${esc(t("engine.residentShort"))}</span>` : ""}${tps ? `<span class="s">~${tps.toFixed(0)} tok/s</span>` : ""}</div>` : ""}
         <div class="iconbtn" id="newchat" title="${esc(t("nav.newchat"))}">${I.plus}</div>
@@ -778,7 +803,7 @@ let paintPending = false;
 function schedulePaint(): void {
   if (paintPending) return;
   paintPending = true;
-  requestAnimationFrame(() => { paintPending = false; paintChat(); scrollChatDown(); });
+  requestAnimationFrame(() => { paintPending = false; paintChat(); scrollChatDown(); paintLive(); });
 }
 
 function setSendState(busy: boolean): void {
@@ -812,7 +837,13 @@ async function ensureAgent(): Promise<void> {
         if (agent !== inst) return;
         store.trimEmptyTail();
         generating = false;
-        if (genStats) genStats.endMs = Date.now();
+        if (genStats) {
+          genStats.endMs = Date.now();
+          // Keep the last real speed visible in the header between turns.
+          if (genStats.chars > 40) {
+            liveTps = genStats.chars / 4 / Math.max((genStats.endMs - genStats.startMs) / 1000, 0.25);
+          }
+        }
         hideActivity();
         setSendState(false);
         store.syncHistory(inst.history());
@@ -1742,6 +1773,21 @@ async function boot() {
     if (e.detail >= 2) win.toggleMaximize().catch(() => {});
     else win.startDragging().catch(() => {});
   });
+
+  // Live header metrics: engine RSS every 2 s while a model runs, and the
+  // tok/s chip refreshed even between deltas.
+  setInterval(async () => {
+    if (server.running) {
+      try {
+        const m = await api.serverMetrics();
+        liveRss = m.running && m.rss_bytes ? m.rss_bytes : 0;
+      } catch { liveRss = 0; }
+    } else {
+      liveRss = 0;
+      liveTps = null;
+    }
+    paintLive();
+  }, 2000);
 
   // Keyboard shortcuts: ⌘N new chat, ⌘1..6 navigation.
   const NAV_ORDER: View[] = ["chat", "models", "connectors", "memory", "agent", "settings"];

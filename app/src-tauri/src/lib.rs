@@ -2304,6 +2304,25 @@ fn notify(title: String, body: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Live engine metrics: resident memory of the llama-server process.
+#[tauri::command]
+fn server_metrics() -> Value {
+    let pid = {
+        let s = server_state().lock().unwrap_or_else(|e| e.into_inner());
+        match s.child.as_ref() {
+            Some(c) => c.id(),
+            None => return json!({ "running": false }),
+        }
+    };
+    let rss_kb = Command::new("ps")
+        .args(["-o", "rss=", "-p", &pid.to_string()])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u64>().ok())
+        .unwrap_or(0);
+    json!({ "running": true, "rss_bytes": rss_kb * 1024 })
+}
+
 #[tauri::command]
 fn server_log() -> String {
     std::fs::read_to_string(app_support().join("llama-server.log")).unwrap_or_default()
@@ -2346,6 +2365,7 @@ pub fn run() {
             tool_shell_run,
             notify,
             server_log,
+            server_metrics,
             settings_get,
             settings_set,
             mcp_reload,

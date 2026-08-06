@@ -89,6 +89,7 @@ export const api = {
   notify: (title: string, body: string) =>
     invoke<void>("notify", { title, body }),
   serverLog: () => invoke<string>("server_log"),
+  serverMetrics: () => invoke<{ running: boolean; rss_bytes?: number }>("server_metrics"),
   fsList: (path: string) => invoke<string>("tool_fs_list", { path }),
   shellRun: (command: string, timeoutSecs: number) =>
     invoke<string>("tool_shell_run", { command, timeoutSecs }),

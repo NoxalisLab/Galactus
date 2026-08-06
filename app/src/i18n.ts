@@ -79,6 +79,8 @@ const dict: Record<string, { en: string; fr: string }> = {
     fr: "Moteur Galactus : experts Metal via le chemin de parité bit-exact (numérique certifiée)",
   },
   "engine.residentShort": { en: "resident", fr: "résident" },
+  "live.ram": { en: "Engine resident memory, live", fr: "Mémoire résidente du moteur, en direct" },
+  "live.tps": { en: "Generation speed, live (chars / 4 per second)", fr: "Vitesse de génération en direct (caractères / 4 par seconde)" },
   "models.hwNote": {
     en: "Speeds are estimated for this Mac from measured benchmarks.",
     fr: "Vitesses estimées pour ce Mac à partir de mesures réelles.",

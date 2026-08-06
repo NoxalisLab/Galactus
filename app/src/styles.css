@@ -129,6 +129,12 @@ svg { display: block; }
 .topbar .ttl { font-size: 14px; font-weight: 600; letter-spacing: -0.01em; }
 .topbar .right { display: flex; align-items: center; gap: 10px; -webkit-app-region: no-drag; }
 .topbar .sub { font-size: 12px; color: var(--dim); }
+.livebar { display: flex; align-items: center; gap: 6px; }
+.livebar .lv { display: flex; align-items: baseline; gap: 5px; padding: 4px 9px; border-radius: 8px; background: rgba(255, 255, 255, 0.04); border: 1px solid var(--bd); }
+.livebar .lv .k { font-size: 9.5px; font-weight: 600; letter-spacing: 0.5px; color: var(--dim3); text-transform: uppercase; }
+.livebar .lv b { font-family: var(--mono); font-size: 11.5px; font-weight: 500; color: var(--tx2); font-variant-numeric: tabular-nums; }
+.livebar .lv.hot { border-color: rgba(138, 124, 255, 0.35); background: rgba(138, 124, 255, 0.08); }
+.livebar .lv.hot b { color: var(--acc-tx); }
 .mpill { display: flex; align-items: center; gap: 8px; padding: 5px 11px; border-radius: 20px; background: rgba(138, 124, 255, 0.1); border: 1px solid rgba(138, 124, 255, 0.22); }
 .mpill .d { width: 6px; height: 6px; border-radius: 50%; background: var(--acc); }
 .mpill .n { font-size: 12px; color: var(--acc-tx2); }
