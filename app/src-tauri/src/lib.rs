@@ -271,6 +271,8 @@ struct ServerState {
     generation: u64,
     /// Port actually bound by the running server (0 when stopped).
     port: u16,
+    /// Engine regime: resident-metal | streamed-metal | cpu-bit-exact.
+    mode: String,
 }
 
 static SERVER: OnceLock<Mutex<ServerState>> = OnceLock::new();
@@ -284,6 +286,7 @@ fn server_state() -> &'static Mutex<ServerState> {
             phase: "stopped".into(),
             generation: 0,
             port: 0,
+            mode: String::new(),
         })
     })
 }
@@ -294,6 +297,7 @@ struct ServerStatus {
     model_id: Option<String>,
     port: u16,
     phase: String,
+    mode: String,
 }
 
 #[tauri::command]
@@ -304,6 +308,7 @@ fn server_status() -> ServerStatus {
         model_id: s.model_id.clone(),
         port: if s.port == 0 { SERVER_PORT_BASE } else { s.port },
         phase: s.phase.clone(),
+        mode: s.mode.clone(),
     }
 }
 
@@ -451,17 +456,37 @@ fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -> Resu
     let log_out = std::fs::File::create(&log_path).map_err(|e| e.to_string())?;
     let log_err = log_out.try_clone().map_err(|e| e.to_string())?;
 
-    let child = Command::new(&server_bin)
-        .env("GALACTUS_H4", "1")
+    // Engine regime — ALWAYS the H4 wiring, tuned to the machine:
+    //
+    // * Experts on Metal by default: this is the interactive optimum the
+    //   LANCER-CHAT launcher uses daily. CPU experts (bit-transparent, the
+    //   certification methodology behind the registry's measured curves) stay
+    //   available per model ("cpu_moe": true in the registry) or globally
+    //   (setting cpu_moe=1) for accuracy-critical work.
+    // * Full cache residency (every expert fits in the planned cache — e.g.
+    //   a 61 GB expert set on a 128 GB Mac): the probation fail-closed guard
+    //   can never trigger, so the physical micro-batch opens up to 512 and
+    //   prompt processing runs at full speed. Partial residency keeps the
+    //   planner's guarded micro-batch.
+    let expert_total = entry["expert_bytes_total"].as_u64().unwrap_or(u64::MAX);
+    let full_residency = cache_bytes >= expert_total;
+    let cpu_moe = entry["cpu_moe"].as_bool().unwrap_or(false)
+        || settings.get("cpu_moe").map(|v| v == "1").unwrap_or(false);
+    let eff_ubatch: u32 = if full_residency && !cpu_moe { 512 } else { ubatch };
+
+    let mut cmd = Command::new(&server_bin);
+    cmd.env("GALACTUS_H4", "1")
         .env("GALACTUS_PROFILE", &profile)
         .env("GALACTUS_H4_INTERNAL", &pack)
         .env("GALACTUS_H4_EXTERNAL", &pack)
-        .env("GALACTUS_H4_CPU_MOE", "1")
         .env("GALACTUS_H4_CACHE_BYTES", cache_bytes.to_string())
         .env("GALACTUS_H4_PROTECTED", format!("{fraction:.2}"))
         .env("GALACTUS_H4_QD", "32")
-        .env("LC_ALL", "C")
-        .arg("--model")
+        .env("LC_ALL", "C");
+    if cpu_moe {
+        cmd.env("GALACTUS_H4_CPU_MOE", "1");
+    }
+    cmd.arg("--model")
         .arg(&gguf)
         .arg("--host")
         .arg("127.0.0.1")
@@ -474,24 +499,24 @@ fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -> Resu
         .arg("--no-repack")
         .arg("--fit")
         .arg("off")
-        .arg("--no-mmap")
-        .arg("--n-cpu-moe")
-        .arg("99")
-        // Logical batch stays normal (the server sizes its output buffers from
-        // it — a tiny value asserts in output_reserve). Only the PHYSICAL
-        // micro-batch is constrained by the expert-cache probation guard.
-        .arg("--batch-size")
+        .arg("--no-mmap");
+    if cpu_moe {
+        cmd.arg("--n-cpu-moe").arg("99");
+    }
+    // Logical batch stays normal (the server sizes its output buffers from
+    // it — a tiny value asserts in output_reserve). Only the PHYSICAL
+    // micro-batch is constrained by the expert-cache probation guard.
+    cmd.arg("--batch-size")
         .arg("512")
         .arg("--ubatch-size")
-        .arg(ubatch.to_string())
+        .arg(eff_ubatch.to_string())
         // One slot: the arena serves a single decode stream.
         .arg("--parallel")
         .arg("1")
         .arg("--jinja")
         .stdout(Stdio::from(log_out))
-        .stderr(Stdio::from(log_err))
-        .spawn()
-        .map_err(|e| format!("spawn llama-server: {e}"))?;
+        .stderr(Stdio::from(log_err));
+    let child = cmd.spawn().map_err(|e| format!("spawn llama-server: {e}"))?;
 
     // Watchdog: the engine must die WITH the app in every death mode (crash,
     // force quit, kill -9), not only on the clean RunEvent::Exit path. A tiny
@@ -519,6 +544,13 @@ fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -> Resu
         let mut s = server_state().lock().unwrap_or_else(|e| e.into_inner());
         s.child = Some(child);
         s.model_id = Some(model_id.clone());
+        s.mode = if cpu_moe {
+            "cpu-bit-exact".into()
+        } else if full_residency {
+            "resident-metal".into()
+        } else {
+            "streamed-metal".into()
+        };
         s.phase = "starting".into();
         s.generation = generation;
         s.port = port;
@@ -617,6 +649,7 @@ fn server_stop() -> Result<(), String> {
         let _ = child.wait();
     }
     s.model_id = None;
+    s.mode = String::new();
     s.phase = "stopped".into();
     s.port = 0;
     Ok(())

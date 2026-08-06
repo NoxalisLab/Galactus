@@ -40,6 +40,7 @@ export interface ServerStatus {
   model_id?: string;
   port: number;
   phase: string; // stopped | starting | ready
+  mode?: string; // resident-metal | streamed-metal | cpu-bit-exact
 }
 
 export interface McpToolInfo {

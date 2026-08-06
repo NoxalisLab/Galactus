@@ -153,6 +153,13 @@ function verdict(m: ModelEntry): { ok: boolean; note: string } {
   return { ok: true, note: "" };
 }
 
+function engineModeLabel(mode?: string): string {
+  if (mode === "resident-metal") return t("engine.resident");
+  if (mode === "streamed-metal") return t("engine.streamed");
+  if (mode === "cpu-bit-exact") return t("engine.cpu");
+  return "";
+}
+
 function applyAutonomy() {
   if (!agent) return;
   agent.setMode(autonomy === "manual" ? "chat" : "agent");
@@ -419,7 +426,7 @@ function chatView(): HTMLElement {
       <span class="ttl">${esc(t("nav.chat"))}</span>
       <div class="right">
         ${taskBarHtml()}
-        ${running ? `<div class="mpill"><span class="d"></span><span class="n">${esc(running.name.split(" ")[0])}</span>${tps ? `<span class="s">~${tps.toFixed(0)} tok/s</span>` : ""}</div>` : ""}
+        ${running ? `<div class="mpill" title="${esc(engineModeLabel(server.mode))}"><span class="d"></span><span class="n">${esc(running.name.split(" ")[0])}</span>${server.mode === "resident-metal" ? `<span class="s">${esc(t("engine.residentShort"))}</span>` : ""}${tps ? `<span class="s">~${tps.toFixed(0)} tok/s</span>` : ""}</div>` : ""}
         <div class="iconbtn" id="newchat" title="${esc(t("nav.newchat"))}">${I.plus}</div>
       </div>
     </div>
