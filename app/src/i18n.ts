@@ -178,6 +178,14 @@ const dict: Record<string, { en: string; fr: string }> = {
   "settings.cache": { en: "Expert cache", fr: "Cache experts" },
   "settings.cacheHint": { en: "Sized automatically for this Mac", fr: "Dimensionné automatiquement pour ce Mac" },
   "settings.auto": { en: "Auto", fr: "Auto" },
+  "settings.ram": { en: "Memory footprint", fr: "Empreinte mémoire" },
+  "settings.ramHint": {
+    en: "How much RAM the expert cache takes. Eco streams more from SSD and frees the machine; Performance caches the most.",
+    fr: "Combien de RAM prend le cache d'experts. Éco streame plus depuis le SSD et libère la machine ; Performance met le maximum en cache.",
+  },
+  "settings.ramEco": { en: "Eco", fr: "Éco" },
+  "settings.ramBalanced": { en: "Balanced", fr: "Équilibré" },
+  "settings.ramPerf": { en: "Performance", fr: "Performance" },
   "settings.api": { en: "Local API (OpenAI-compatible)", fr: "API locale (compatible OpenAI)" },
   "settings.apiHint": {
     en: "The running model serves this endpoint on your Mac only. Point Cursor, Claude Code, aider or any OpenAI client at it.",

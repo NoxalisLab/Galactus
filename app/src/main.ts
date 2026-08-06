@@ -34,6 +34,7 @@ let generating = false;
 let enabled: EnabledConnector[] = [];
 let mcpCount = 0;
 let autonomy: Autonomy = "assisted";
+let ramMode: "eco" | "balanced" | "perf" = "balanced";
 let skillsOff: Set<string> = new Set();
 let serverFail: { kind: "failed" | "timeout"; code?: number; log: string } | null = null;
 const installProgress = new Map<string, { pct: number; label: string }>();
@@ -133,8 +134,18 @@ function fmtGb(b?: number): string { return b ? (b / 1e9).toFixed(0) + " GB" : "
 function expectedTps(m: ModelEntry): number | null {
   if (!hw || !m.measured || !m.measured.length) return null;
   const overhead = ((m.non_expert_bytes ?? 5e9) + 4.5e9) / 1e9;
-  let cache = Math.min(hw.ram_gb - overhead, hw.ram_gb * 0.7, (m.expert_bytes_total ?? Infinity) / 1e9);
+  const maxCache = Math.min(hw.ram_gb - overhead, hw.ram_gb * 0.7, (m.expert_bytes_total ?? Infinity) / 1e9);
   const pts = [...m.measured].sort((a, b) => a.cache_gb - b.cache_gb);
+  // Mirror the backend's memory-footprint policy so the shown estimate
+  // matches what a start would actually plan.
+  let cache = maxCache;
+  if (ramMode === "eco") {
+    cache = Math.min(pts[0].cache_gb, maxCache);
+  } else if (ramMode === "balanced") {
+    const reachable = Math.max(...pts.filter((p) => p.cache_gb <= maxCache).map((p) => p.gen_tps), pts[0].gen_tps);
+    const knee = pts.find((p) => p.gen_tps >= 0.9 * reachable);
+    cache = Math.min(knee ? knee.cache_gb : maxCache, maxCache);
+  }
   if (cache <= pts[0].cache_gb) return pts[0].gen_tps;
   const last = pts[pts.length - 1];
   if (cache >= last.cache_gb) return last.gen_tps;
@@ -1366,6 +1377,13 @@ function settingsView(): HTMLElement {
       <div class="set-row"><div class="grow"><b>${esc(t("settings.cache"))}</b><span>${esc(t("settings.cacheHint"))}</span></div>
         <span class="badge-auto">${esc(t("settings.auto"))}</span>
       </div>
+      <div class="set-row"><div class="grow"><b>${esc(t("settings.ram"))}</b><span>${esc(t("settings.ramHint"))}</span></div>
+        <div class="seg" id="ramseg">
+          <button data-rm="eco">${esc(t("settings.ramEco"))}</button>
+          <button data-rm="balanced">${esc(t("settings.ramBalanced"))}</button>
+          <button data-rm="perf">${esc(t("settings.ramPerf"))}</button>
+        </div>
+      </div>
       <div class="set-row"><div class="grow"><b>${esc(t("auto.title"))}</b><span>${esc(t("auto.hint"))}</span></div>
         <div class="seg" id="autoseg">
           <button data-am="off">${esc(t("auto.off"))}</button>
@@ -1396,6 +1414,20 @@ function settingsView(): HTMLElement {
         paint(m);
       });
     }
+  }
+  {
+    const seg = wrap.querySelector<HTMLElement>("#ramseg")!;
+    const paint = (m: string) =>
+      seg.querySelectorAll("button").forEach((b) => b.classList.toggle("on", (b as HTMLElement).dataset.rm === m));
+    api.settingsGet().then((s) => paint(s["ram_mode"] === "eco" || s["ram_mode"] === "perf" ? s["ram_mode"] : "balanced"));
+    seg.addEventListener("click", async (e) => {
+      const b = (e.target as HTMLElement).closest("[data-rm]") as HTMLElement | null;
+      if (!b) return;
+      paint(b.dataset.rm!);
+      ramMode = b.dataset.rm as typeof ramMode;
+      await api.settingsSet("ram_mode", b.dataset.rm!);
+      // Applied on the next model start; a running server keeps its cache.
+    });
   }
   wrap.querySelector<HTMLButtonElement>("#apicopy")?.addEventListener("click", async (e) => {
     const b = e.currentTarget as HTMLButtonElement;
@@ -1636,6 +1668,7 @@ async function boot() {
   const s = await api.settingsGet().catch(() => ({} as Record<string, string>));
   if (s["root"]) { root = s["root"]; try { registry = await api.registry(); if (!registry.length) root = null; } catch { root = null; } }
   if (s["autonomy"]) autonomy = s["autonomy"] as Autonomy;
+  if (s["ram_mode"] === "eco" || s["ram_mode"] === "perf") ramMode = s["ram_mode"];
   try { skillsOff = new Set(JSON.parse(s["skills_off"] ?? "[]")); } catch {}
   for (const [k, val] of Object.entries(s)) {
     if (!k.startsWith("bench_")) continue;

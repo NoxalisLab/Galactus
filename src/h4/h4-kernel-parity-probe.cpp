@@ -33,8 +33,11 @@ constexpr int64_t n_expert     = 8;
 constexpr int64_t experts_used = 8;
 constexpr int64_t n_tokens     = 2;
 
-// Les 6 types des tenseurs d'experts du pack GLM-5.2 + le temoin Q8_0.
-constexpr std::array<ggml_type, 7> probe_types = {
+// Les 6 types des tenseurs d'experts du pack GLM-5.2, puis les 5 types couvrant
+// les experts de tous les modeles certifies du registre :
+// gpt-oss = MXFP4, qwen3-30b/coder = Q8_0, glm-4.5-air = Q8_0+Q4_K+Q5_0,
+// llama4/qwen3-235b/qwen3-next/olmoe = Q4_K+Q6_K.
+constexpr std::array<ggml_type, 11> probe_types = {
     GGML_TYPE_IQ1_S,
     GGML_TYPE_IQ2_XXS,
     GGML_TYPE_IQ3_XXS,
@@ -42,6 +45,10 @@ constexpr std::array<ggml_type, 7> probe_types = {
     GGML_TYPE_Q2_K,
     GGML_TYPE_Q3_K,
     GGML_TYPE_Q8_0,
+    GGML_TYPE_Q5_0,
+    GGML_TYPE_Q4_K,
+    GGML_TYPE_Q6_K,
+    GGML_TYPE_MXFP4,
 };
 
 struct Comparison {

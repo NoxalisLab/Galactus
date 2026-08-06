@@ -316,7 +316,7 @@ fn server_status() -> ServerStatus {
 /// 70% of RAM and at full expert residency. The SLRU protected fraction is
 /// then chosen as the largest of 0.75/0.50/0.25 whose probation segment can
 /// hold one token's distinct experts (micro-batch 1).
-fn plan_cache(entry: &Value, ram_gb: u64, override_gb: Option<u64>) -> Result<(u64, f64, u32), String> {
+fn plan_cache(entry: &Value, ram_gb: u64, override_gb: Option<u64>, ram_mode: &str) -> Result<(u64, f64, u32), String> {
     let non_expert = entry["non_expert_bytes"].as_u64().unwrap_or(5_000_000_000);
     let expert_total = entry["expert_bytes_total"].as_u64().unwrap_or(u64::MAX);
     let layers = entry["layers_moe"].as_u64().unwrap_or(1).max(1);
@@ -325,13 +325,62 @@ fn plan_cache(entry: &Value, ram_gb: u64, override_gb: Option<u64>) -> Result<(u
     let experts = entry["experts"].as_u64().unwrap_or(256).max(1);
 
     let ram = ram_gb * 1_000_000_000;
+    // Ceiling: what the machine can afford at most.
+    let max_cache = ram
+        .saturating_sub(non_expert + 4_500_000_000)
+        .min(ram * 7 / 10)
+        .min(expert_total);
+
+    // Memory-footprint policy over the registry's MEASURED curve. The point
+    // of Galactus on a machine where the model would fit natively is to run
+    // it in a FRACTION of the RAM, not to hoard it:
+    // - eco:      smallest measured cache (minimum viable footprint)
+    // - balanced: the knee — smallest measured cache reaching >= 90% of the
+    //             best throughput this machine could get
+    // - perf:     the full planning ceiling
+    let measured: Vec<(f64, f64)> = entry["measured"]
+        .as_array()
+        .map(|a| {
+            let mut v: Vec<(f64, f64)> = a
+                .iter()
+                .filter_map(|p| {
+                    Some((p["cache_gb"].as_f64()?, p["gen_tps"].as_f64()?))
+                })
+                .collect();
+            v.sort_by(|x, y| x.0.total_cmp(&y.0));
+            v
+        })
+        .unwrap_or_default();
+    let policy_cache = |mode: &str| -> u64 {
+        if measured.is_empty() {
+            return max_cache;
+        }
+        match mode {
+            "eco" => (measured[0].0 * 1e9) as u64,
+            "perf" => max_cache,
+            _ => {
+                // Best throughput reachable within the ceiling, then the
+                // smallest cache reaching 90% of it.
+                let reachable = measured
+                    .iter()
+                    .filter(|(c, _)| (*c * 1e9) as u64 <= max_cache)
+                    .map(|(_, t)| *t)
+                    .fold(measured[0].1, f64::max);
+                for (c, t) in &measured {
+                    if *t >= 0.9 * reachable {
+                        return (*c * 1e9) as u64;
+                    }
+                }
+                max_cache
+            }
+        }
+    };
+
     let mut cache = match override_gb {
         Some(gb) => gb * 1_000_000_000,
-        None => ram
-            .saturating_sub(non_expert + 4_500_000_000)
-            .min(ram * 7 / 10),
+        None => policy_cache(ram_mode),
     };
-    cache = cache.min(expert_total);
+    cache = cache.min(max_cache).min(expert_total);
 
     let quota = ((cache / (layers * record)).min(experts)) as u64;
     if quota < 2 {
@@ -423,7 +472,13 @@ fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -> Resu
             .and_then(|s| s.trim().parse::<u64>().ok())
     });
     let ram_gb = hw_info().ram_gb.max(8);
-    let (cache_bytes, fraction, ubatch) = plan_cache(&entry, ram_gb, override_gb)?;
+    let ram_mode = settings
+        .get("ram_mode")
+        .map(|s| s.as_str())
+        .filter(|s| matches!(*s, "eco" | "balanced" | "perf"))
+        .unwrap_or("balanced")
+        .to_string();
+    let (cache_bytes, fraction, ubatch) = plan_cache(&entry, ram_gb, override_gb, &ram_mode)?;
 
     // Engine resolution: a developer checkout build wins (always freshest);
     // otherwise the fully relocated llama-server shipped INSIDE the app
@@ -472,9 +527,15 @@ fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -> Resu
     // bit-exactness for prompt speed silently.
     let expert_total = entry["expert_bytes_total"].as_u64().unwrap_or(u64::MAX);
     let full_residency = cache_bytes >= expert_total;
-    let metal_experts = entry["metal_experts"].as_bool().unwrap_or(false)
-        || settings.get("metal_experts").map(|v| v == "1").unwrap_or(false);
-    let cpu_moe = !metal_experts;
+    // The Metal parity path (patches 0002-0004) now covers EVERY expert quant
+    // type of the certified registry (iq1_s..q3_K, q8_0, q5_0, q4_K, q6_K,
+    // mxfp4), verified 32768/32768 identical bits by the parity probe: Metal
+    // experts ARE the certified numerics, and the default everywhere. CPU
+    // experts stay as an explicit cross-check regime ("cpu_moe": true per
+    // model, or setting cpu_moe=1).
+    let cpu_moe = entry["cpu_moe"].as_bool().unwrap_or(false)
+        || settings.get("cpu_moe").map(|v| v == "1").unwrap_or(false);
+    let metal_experts = !cpu_moe;
     let eff_ubatch: u32 = ubatch;
 
     let mut cmd = Command::new(&server_bin);
