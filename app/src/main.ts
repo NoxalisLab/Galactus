@@ -32,6 +32,8 @@ let registry: ModelEntry[] = [];
 let server: ServerStatus = { running: false, port: 8737, phase: "stopped" };
 let agent: Agent | null = null;
 let generating = false;
+/** Messages typed while the model is writing: shown at once, sent next turn. */
+let queuedMsgs: string[] = [];
 let enabled: EnabledConnector[] = [];
 let mcpCount = 0;
 let autonomy: Autonomy = "assisted";
@@ -118,7 +120,19 @@ function hideActivity() {
   pixelHost = null;
 }
 function onAgentActivity(mode: PixelMode, label?: string) {
-  if (mode === "done" || !generating) { hideActivity(); return; }
+  if (mode === "done") {
+    // Laisser les confettis jouer avant de ranger la scene; une nouvelle
+    // activite (message en file) recree simplement un PixelViz.
+    if (pixel) {
+      pixel.setMode("done");
+      const px = pixel;
+      setTimeout(() => { if (pixel === px) hideActivity(); }, 2600);
+    } else {
+      hideActivity();
+    }
+    return;
+  }
+  if (!generating) { hideActivity(); return; }
   const bar = document.getElementById("actbar");
   const host = document.getElementById("pixelhost");
   if (!bar || !host) return;
@@ -248,6 +262,7 @@ function newChat() {
   agent = null;              // a fresh thread gets a fresh context
   store.startNew();
   generating = false;
+  queuedMsgs = [];
   genStats = null;
   hideActivity();
   view = "chat";
@@ -259,6 +274,7 @@ async function openConversation(id: string) {
   agent = null;
   await store.open(id);
   generating = false;
+  queuedMsgs = [];
   genStats = null;
   hideActivity();
   view = "chat";
@@ -317,6 +333,7 @@ async function acceptTaskSwitch(): Promise<void> {
   agent?.stop();
   agent = null;
   generating = false;
+  queuedMsgs = [];
   hideActivity();
   try {
     serverFail = null;
@@ -637,7 +654,12 @@ function chatView(): HTMLElement {
     }
     // ⇧Tab cycles Manual → Assisted → Autonomous without leaving the keyboard.
     if (e.key === "Tab" && e.shiftKey) { e.preventDefault(); cycleAutonomy(); return; }
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (!generating) submitChat(); }
+    // Enter always submits: during generation a typed message is queued for
+    // the next turn (an empty Enter stays inert, never an accidental stop).
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      if (!generating || input.value.trim()) void submitChat();
+    }
     if (e.key === "Escape" && generating) { agent?.stop(); }
   });
   input.addEventListener("input", () => {
@@ -645,6 +667,16 @@ function chatView(): HTMLElement {
     input.style.height = Math.min(input.scrollHeight, 200) + "px";
     slashSel = 0;
     paintSlash();
+    // During generation the button follows the composer: text = send (queued
+    // for the next turn), empty = stop.
+    if (generating) {
+      const b = document.getElementById("send");
+      if (b) {
+        const hasText = input.value.trim().length > 0;
+        b.innerHTML = hasText ? I.up : STOP_ICON;
+        b.classList.toggle("stop", !hasText);
+      }
+    }
   });
   setTimeout(() => { if (!input.disabled) input.focus(); }, 40);
   return wrap;
@@ -873,13 +905,14 @@ async function ensureAgent(): Promise<void> {
             liveTps = genStats.chars / 4 / Math.max((genStats.endMs - genStats.startMs) / 1000, 0.25);
           }
         }
-        hideActivity();
+        onAgentActivity("done");
         setSendState(false);
         store.syncHistory(inst.history());
         store.save(true);
         store.refreshList().then(() => { if (view === "chat") renderSidebarOnly(); });
         paintChat();
         scrollChatDown();
+        dispatchQueued();
       },
       onToolStart: (name, detail) => {
         if (agent !== inst) return;
@@ -913,6 +946,9 @@ async function ensureAgent(): Promise<void> {
         setSendState(false);
         paintChat();
         scrollChatDown();
+        // Queued messages still run, one per turn: each gets its answer or
+        // its own error, and the queue always drains.
+        dispatchQueued();
       },
       askPermission: (req) => {
         // A stale agent must not pop dialogs over the new thread.
@@ -1011,9 +1047,26 @@ async function waitServerReady(seconds: number): Promise<void> {
 let submitting = false;
 
 async function submitChat(): Promise<void> {
-  if (generating) { agent?.stop(); return; }
-  if (submitting) return; // autoRouteTask below can await a model swap for minutes
   const input = document.getElementById("ci") as HTMLTextAreaElement | null;
+  if (generating) {
+    // While the model writes, a typed message queues for the next turn and
+    // shows in the log right away; with an empty composer the button stays
+    // the stop control.
+    const queued = input?.value.trim() ?? "";
+    if (queued && input) {
+      input.value = "";
+      input.style.height = "";
+      input.dispatchEvent(new Event("input"));
+      queuedMsgs.push(queued);
+      store.pushUser(queued);
+      paintChat();
+      scrollChatDown();
+    } else {
+      agent?.stop();
+    }
+    return;
+  }
+  if (submitting) return; // autoRouteTask below can await a model swap for minutes
   if (!input) return;
   const text = input.value.trim();
   if (!text || !(server.running && server.phase === "ready")) return;
@@ -1033,9 +1086,17 @@ async function submitChat(): Promise<void> {
     if (fresh) { fresh.value = text; fresh.dispatchEvent(new Event("input")); }
     return;
   }
+  await dispatchTurn(text, true);
+}
+
+/**
+ * Run one user turn. `show` pushes the user bubble; queued messages were
+ * already shown when they entered the queue.
+ */
+async function dispatchTurn(text: string, show: boolean): Promise<void> {
   generating = true;
   setSendState(true);
-  store.pushUser(text);
+  if (show) store.pushUser(text);
   genStats = { convId: store.current().id, chars: 0, startMs: Date.now(), endMs: null };
   paintChat();
   scrollChatDown();
@@ -1055,6 +1116,12 @@ async function submitChat(): Promise<void> {
   } else {
     await inst.send(text);
   }
+}
+
+/** After a turn ends (done or error), a queued message starts the next one. */
+function dispatchQueued(): void {
+  const next = queuedMsgs.shift();
+  if (next) void dispatchTurn(next, false);
 }
 
 function argPreview(detail: string): string {
@@ -2006,6 +2073,7 @@ function convRowEl(m: ConvMeta, activeId: string): HTMLElement {
         agent?.stop();
         agent = null;
         generating = false;
+        queuedMsgs = [];
         genStats = null;
         hideActivity();
       }

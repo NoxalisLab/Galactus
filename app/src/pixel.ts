@@ -20,6 +20,9 @@ const GRID = 16; // sprite 16x16
 const STAGE = 30; // largeur de scene (planetes, satellite) en pixels logiques
 const CANVAS_H = GRID * SCALE; // 48px
 const STEP_MS = 1000 / 12; // ~12 fps assumes
+// Duree minimale d'une scene d'action (~2 s a 12 fps) : les outils locaux
+// finissent en millisecondes, sans plancher la scene serait invisible.
+const MIN_SCENE_FRAMES = 24;
 
 // Scene "recherche" : centres des planetes visitees.
 const PLANET_X = [4, 13, 22];
@@ -49,6 +52,12 @@ export class PixelViz {
 
   private mode: PixelMode = "idle";
   private label = "";
+  /**
+   * Retour a "thinking" mis en attente : un outil local finit souvent en
+   * quelques dizaines de millisecondes et la scene d'action serait invisible.
+   * Elle est tenue au moins MIN_SCENE_FRAMES avant d'etre remplacee.
+   */
+  private pending: { mode: PixelMode; label: string } | null = null;
 
   private frame = 0; // frame globale (12 fps)
   private modeFrame = 0; // frames depuis le dernier setMode
@@ -91,13 +100,29 @@ export class PixelViz {
 
   setMode(mode: PixelMode, label?: string): void {
     if (this.destroyed) return;
-    if (mode !== this.mode) {
-      this.mode = mode;
-      this.modeFrame = 0;
-      if (mode === "done") this.spawnConfetti();
-      if (mode !== "writing") this.sparks.length = 0;
+    if (mode === this.mode) {
+      this.pending = null;
+      this.label = label ?? "";
+      return;
     }
-    this.label = label ?? "";
+    // Une scene d'action fraiche n'est pas ecrasee par le "thinking" de
+    // l'iteration suivante : elle reste visible MIN_SCENE_FRAMES, puis le
+    // retour attendu s'applique. Une autre action ou "done" passe direct.
+    const inAction = this.mode !== "idle" && this.mode !== "thinking" && this.mode !== "done";
+    if (mode === "thinking" && inAction && this.modeFrame < MIN_SCENE_FRAMES) {
+      this.pending = { mode, label: label ?? "" };
+      return;
+    }
+    this.applyMode(mode, label ?? "");
+  }
+
+  private applyMode(mode: PixelMode, label: string): void {
+    this.pending = null;
+    this.mode = mode;
+    this.modeFrame = 0;
+    if (mode === "done") this.spawnConfetti();
+    if (mode !== "writing") this.sparks.length = 0;
+    this.label = label;
   }
 
   destroy(): void {
@@ -137,6 +162,12 @@ export class PixelViz {
   private step(): void {
     this.frame++;
     this.modeFrame++;
+
+    // La scene d'action a ete vue assez longtemps : le retour differe passe.
+    if (this.pending && this.modeFrame >= MIN_SCENE_FRAMES) {
+      const p = this.pending;
+      this.applyMode(p.mode, p.label);
+    }
 
     // "done" : confetti bref puis retour idle automatique.
     if (this.mode === "done" && this.modeFrame > 26 && this.confetti.length === 0) {
