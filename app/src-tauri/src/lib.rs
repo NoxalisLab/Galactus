@@ -737,6 +737,16 @@ fn server_status() -> ServerStatus {
 /// then chosen as the largest of 0.75/0.50/0.25 whose probation segment can
 /// hold one token's distinct experts (micro-batch 1).
 fn plan_cache(entry: &Value, ram_gb: u64, override_gb: Option<u64>, ram_mode: &str) -> Result<(u64, f64, u32), String> {
+    // Hard gate, mirrored by the UI card: below the registry minimum the
+    // engine cannot hold the non-expert weights plus a viable cache, so the
+    // model is refused everywhere (app start, CLI serve), not just greyed out.
+    if let Some(min) = entry["min_ram_gb"].as_u64() {
+        if ram_gb < min {
+            return Err(format!(
+                "this model needs at least {min} GB of RAM, this Mac has {ram_gb} GB"
+            ));
+        }
+    }
     let non_expert = entry["non_expert_bytes"].as_u64().unwrap_or(5_000_000_000);
     let expert_total = entry["expert_bytes_total"].as_u64().unwrap_or(u64::MAX);
     let layers = entry["layers_moe"].as_u64().unwrap_or(1).max(1);
@@ -1347,6 +1357,18 @@ fn install_pipeline_with(
     cancel: &AtomicBool,
     progress: &dyn Fn(&str, f64, &str),
 ) -> Result<(), String> {
+    // Same RAM gate as serving: downloading 200 GB for a model this Mac can
+    // never start is a trap, refuse up front with the reason.
+    if let Ok(entry) = registry_entry(root, id) {
+        if let Some(min) = entry["min_ram_gb"].as_u64() {
+            let ram = hw_info().ram_gb;
+            if ram < min {
+                return Err(format!(
+                    "this model needs at least {min} GB of RAM, this Mac has {ram} GB"
+                ));
+            }
+        }
+    }
     let (model_dir, default_pack, _profile) = model_paths(root, id);
     std::fs::create_dir_all(&model_dir).map_err(|e| e.to_string())?;
 

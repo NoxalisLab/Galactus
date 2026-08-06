@@ -101,7 +101,8 @@
       "tasks": [
         "reasoning",
         "general"
-      ]
+      ],
+      "min_ram_gb": 16
     },
     {
       "id": "glm-5.2-744b",
@@ -128,7 +129,8 @@
       "tasks": [
         "max"
       ],
-      "metal_experts": true
+      "metal_experts": true,
+      "min_ram_gb": 96
     },
     {
       "id": "qwen3-30b-a3b",
@@ -189,7 +191,8 @@
         "general",
         "writing",
         "scripting"
-      ]
+      ],
+      "min_ram_gb": 16
     },
     {
       "id": "llama4-scout",
