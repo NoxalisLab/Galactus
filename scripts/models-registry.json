@@ -125,7 +125,8 @@
       ],
       "tasks": [
         "max"
-      ]
+      ],
+      "metal_experts": true
     },
     {
       "id": "qwen3-30b-a3b",

@@ -156,7 +156,7 @@ function verdict(m: ModelEntry): { ok: boolean; note: string } {
 function engineModeLabel(mode?: string): string {
   if (mode === "resident-bit-exact") return t("engine.resident");
   if (mode === "streamed-bit-exact") return t("engine.streamed");
-  if (mode === "metal-experts") return t("engine.metal");
+  if (mode === "metal-bitexact") return t("engine.metal");
   return "";
 }
 

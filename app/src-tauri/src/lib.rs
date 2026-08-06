@@ -488,6 +488,12 @@ fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -> Resu
         .env("LC_ALL", "C");
     if cpu_moe {
         cmd.env("GALACTUS_H4_CPU_MOE", "1");
+    } else {
+        // Metal experts run through the bit-exact parity path (patches 0002 +
+        // 0003): the Metal mul_mat_id replays the CPU algorithm bit for bit
+        // for every expert quant type of the flagged models. Certified
+        // numerics AND GPU speed, no trade-off.
+        cmd.env("GALACTUS_METAL_BITEXACT", "1");
     }
     cmd.arg("--model")
         .arg(&gguf)
@@ -548,7 +554,7 @@ fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -> Resu
         s.child = Some(child);
         s.model_id = Some(model_id.clone());
         s.mode = if metal_experts {
-            "metal-experts".into()
+            "metal-bitexact".into()
         } else if full_residency {
             "resident-bit-exact".into()
         } else {
