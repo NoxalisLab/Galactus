@@ -1331,6 +1331,49 @@ fn mcp_notify(proc_: &mut McpServerProc, method: &str, params: Value) -> Result<
     proc_.stdin.flush().map_err(|e| e.to_string())
 }
 
+/// A GUI app on macOS inherits a bare PATH (/usr/bin:/bin): npx, node, uvx
+/// and friends live in Homebrew or user dirs and would never be found.
+fn augmented_path() -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let mut path = std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin:/usr/sbin:/sbin".into());
+    let extras = [
+        "/opt/homebrew/bin".to_string(),
+        "/opt/homebrew/sbin".to_string(),
+        "/usr/local/bin".to_string(),
+        format!("{home}/.local/bin"),
+        format!("{home}/.bun/bin"),
+        format!("{home}/.cargo/bin"),
+        format!("{home}/.volta/bin"),
+    ];
+    for extra in extras {
+        if !path.split(':').any(|p| p == extra) {
+            path.push(':');
+            path.push_str(&extra);
+        }
+    }
+    path
+}
+
+/// Resolve a connector command against the augmented PATH, with a clear
+/// error instead of a silent ENOENT swallowed by the UI.
+fn resolve_command(cmd: &str, path: &str) -> Result<PathBuf, String> {
+    if cmd.contains('/') {
+        let p = PathBuf::from(cmd);
+        return if p.is_file() {
+            Ok(p)
+        } else {
+            Err(format!("command not found: {cmd}"))
+        };
+    }
+    for dir in path.split(':') {
+        let cand = Path::new(dir).join(cmd);
+        if cand.is_file() {
+            return Ok(cand);
+        }
+    }
+    Err(format!("command '{cmd}' not found (PATH searched, Homebrew included). Install it or use an absolute path."))
+}
+
 #[tauri::command]
 fn mcp_reload() -> Result<Vec<McpToolInfo>, String> {
     // Tear down previous servers.
@@ -1356,8 +1399,12 @@ fn mcp_reload() -> Result<Vec<McpToolInfo>, String> {
             .as_array()
             .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
             .unwrap_or_default();
-        let mut cmd = Command::new(command);
+        let search_path = augmented_path();
+        let bin = resolve_command(command, &search_path).map_err(|e| format!("{name}: {e}"))?;
+        let mut cmd = Command::new(bin);
         cmd.args(&args)
+            // The child needs the full PATH too: npx must find node.
+            .env("PATH", &search_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
@@ -1640,6 +1687,42 @@ fn parse_frontmatter(md: &str) -> (String, String) {
     (name, desc)
 }
 
+/// Full write of a vault note (the constellation editor's save). Same
+/// traversal hardening as every obsidian_* command.
+#[tauri::command]
+fn obsidian_write(note: String, text: String) -> Result<(), String> {
+    let vault = settings_load()
+        .get("obsidian_vault")
+        .cloned()
+        .filter(|s| !s.is_empty())
+        .ok_or("no Obsidian vault configured")?;
+    let p = resolve_note(Path::new(&vault), &note)?;
+    if let Some(dir) = p.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&p, text.as_bytes()).map_err(|e| e.to_string())
+}
+
+/// Turn a picked folder into an Obsidian vault (idempotent on an existing
+/// one) and make it the configured vault.
+#[tauri::command]
+fn obsidian_create_vault(path: String) -> Result<String, String> {
+    let root = PathBuf::from(&path);
+    std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(root.join(".obsidian")).map_err(|e| e.to_string())?;
+    let welcome = root.join("Bienvenue.md");
+    if !welcome.exists() {
+        let _ = std::fs::write(
+            &welcome,
+            "# Bienvenue\n\nCe coffre a ete cree par Galactus. Les notes liees par des [[wikilinks]] apparaissent dans la Constellation.\n",
+        );
+    }
+    let mut map = settings_load();
+    map.insert("obsidian_vault".into(), path.clone());
+    settings_store(&map)?;
+    Ok(path)
+}
+
 /// Graph of the Obsidian vault for the 3D constellation view: notes as
 /// nodes, wikilinks as edges. Bounded walk, resilient to weird files.
 #[tauri::command]
@@ -1679,12 +1762,18 @@ fn obsidian_graph() -> Result<Value, String> {
     // Index by stem (lowercased), first occurrence wins like Obsidian.
     let mut index: HashMap<String, usize> = HashMap::new();
     let mut names: Vec<String> = Vec::new();
+    let mut rels: Vec<String> = Vec::new();
     for f in &files {
         let stem = f.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
         let key = stem.to_lowercase();
         if !index.contains_key(&key) {
             index.insert(key, names.len());
             names.push(stem);
+            rels.push(
+                f.strip_prefix(&root)
+                    .map(|r| r.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+            );
         }
     }
 
@@ -1724,8 +1813,9 @@ fn obsidian_graph() -> Result<Value, String> {
 
     let nodes: Vec<Value> = names
         .iter()
+        .zip(rels.iter())
         .zip(degree.iter())
-        .map(|(n, d)| json!({ "n": n, "d": d }))
+        .map(|((n, p), d)| json!({ "n": n, "p": p, "d": d }))
         .collect();
     let edge_list: Vec<Value> = edges.iter().map(|(a, b)| json!([a, b])).collect();
     Ok(json!({ "nodes": nodes, "edges": edge_list }))
@@ -2471,6 +2561,8 @@ pub fn run() {
             obsidian_read,
             obsidian_append,
             obsidian_graph,
+            obsidian_write,
+            obsidian_create_vault,
             skills_list,
             skill_read,
             conv_list,

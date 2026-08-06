@@ -105,6 +105,8 @@ const dict: Record<string, { en: string; fr: string }> = {
   "conn.customArgs": { en: "Arguments", fr: "Arguments" },
   "conn.add": { en: "Add", fr: "Ajouter" },
   "conn.cancel": { en: "Cancel", fr: "Annuler" },
+  "conn.connected": { en: "%s connected", fr: "%s connecté" },
+  "conn.failed": { en: "Connector failed: %s", fr: "Échec du connecteur : %s" },
 
   "mem.subtitle": { en: "What Galactus keeps in mind", fr: "Ce que Galactus garde en tête" },
   "mem.enable": { en: "Persistent memory", fr: "Mémoire persistante" },
@@ -124,6 +126,10 @@ const dict: Record<string, { en: string; fr: string }> = {
   "mem.vaultNone": { en: "Connect a vault to read and write notes", fr: "Connecte un coffre pour lire et écrire des notes" },
   "mem.chooseVault": { en: "Choose vault", fr: "Choisir le coffre" },
   "mem.cosmos": { en: "Constellation", fr: "Constellation" },
+  "mem.newVault": { en: "New vault", fr: "Créer un coffre" },
+  "mem.vaultCreated": { en: "Vault created and connected", fr: "Coffre créé et connecté" },
+  "cosmos.save": { en: "Save", fr: "Enregistrer" },
+  "cosmos.saved": { en: "%s saved", fr: "%s enregistrée" },
   "cosmos.title": { en: "Constellation", fr: "Constellation" },
   "cosmos.sub": { en: "%n notes · %e links", fr: "%n notes · %e liens" },
   "cosmos.hint": {

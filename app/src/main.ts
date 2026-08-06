@@ -1212,11 +1212,29 @@ function connectorRow(p: ConnectorPreset, lang: Lang): HTMLElement {
     box.querySelector("[data-pick]")?.addEventListener("click", async () => { const p2 = await api.pickFolder(); if (p2) { inp.value = p2; active.values[fld.key] = p2; mcpCount = await saveEnabled(enabled); } });
     f.appendChild(box);
   }
-  row.querySelector("[data-t]")!.addEventListener("click", async () => {
-    if (active) enabled = enabled.filter((e) => e.id !== p.id);
-    else enabled.push({ id: p.id, values: {} });
-    mcpCount = await saveEnabled(enabled);
-    render();
+  row.querySelector("[data-t]")!.addEventListener("click", async (e) => {
+    const tgl = e.currentTarget as HTMLElement;
+    if (tgl.classList.contains("busy")) return;
+    const activating = !active;
+    // Optimistic visual + busy state: connecting an MCP server can take a
+    // minute (first npx run downloads the package) and MUST show it.
+    tgl.classList.add("busy");
+    tgl.classList.toggle("on", activating);
+    const previous = enabled;
+    enabled = activating
+      ? [...enabled, { id: p.id, values: {} }]
+      : enabled.filter((x) => x.id !== p.id);
+    try {
+      mcpCount = await saveEnabled(enabled);
+      if (activating) toast(t("conn.connected").replace("%s", p.name), "ok");
+      render();
+    } catch (err: any) {
+      // Roll back both the state and the persisted config, and SAY IT.
+      enabled = previous;
+      await saveEnabled(enabled).catch(() => {});
+      toast(t("conn.failed").replace("%s", String(err?.message ?? err)));
+      render();
+    }
   });
   return row;
 }
@@ -1271,7 +1289,7 @@ function memoryView(): HTMLElement {
         <div id="kbfolders" style="display:flex;flex-direction:column;gap:6px"></div>
       </div>
       <div class="card">
-        <div class="hd"><div class="cico">◈</div><div class="grow"><b>Obsidian</b><span class="d" id="vaultline">${esc(t("mem.vaultNone"))}</span></div><button class="bs" id="vcosmos">${esc(t("mem.cosmos"))}</button><button class="bs" id="vpick">${esc(t("mem.chooseVault"))}</button></div>
+        <div class="hd"><div class="cico">◈</div><div class="grow"><b>Obsidian</b><span class="d" id="vaultline">${esc(t("mem.vaultNone"))}</span></div><button class="bs" id="vcosmos">${esc(t("mem.cosmos"))}</button><button class="bs" id="vnew">${esc(t("mem.newVault"))}</button><button class="bs" id="vpick">${esc(t("mem.chooseVault"))}</button></div>
       </div>
     </div></div></div>`);
 
@@ -1311,6 +1329,17 @@ function memoryView(): HTMLElement {
   }
   wrap.querySelector("#vpick")!.addEventListener("click", async () => { const p = await api.pickFolder(); if (p) { vaultline.textContent = p; await api.settingsSet("obsidian_vault", p); } });
   wrap.querySelector("#vcosmos")!.addEventListener("click", () => { openCosmos(); });
+  wrap.querySelector("#vnew")!.addEventListener("click", async () => {
+    const p = await api.pickFolder();
+    if (!p) return;
+    try {
+      const created = await api.obsidianCreateVault(p);
+      vaultline.textContent = created;
+      toast(t("mem.vaultCreated"), "ok");
+    } catch (e: any) {
+      toast(String(e?.message ?? e));
+    }
+  });
 
   // ---- knowledge folders ----
   {
@@ -1388,12 +1417,53 @@ async function openCosmos(): Promise<void> {
       <button class="bs" data-close>${esc(t("common.close"))}</button>
     </div>
     <div class="cosmos-body"></div>
+    <div class="cosmos-note" id="cnote" style="display:none">
+      <div class="cn-head"><b id="cntitle"></b><span class="grow"></span>
+        <button class="bp" id="cnsave">${esc(t("cosmos.save"))}</button>
+        <button class="bs" id="cnclose">×</button>
+      </div>
+      <textarea id="cntext" spellcheck="false"></textarea>
+    </div>
   </div>`);
   document.body.appendChild(overlay);
   const body = overlay.querySelector<HTMLElement>(".cosmos-body")!;
+
+  // ---- panneau note : lecture + édition + sauvegarde ----
+  const notePanel = overlay.querySelector<HTMLElement>("#cnote")!;
+  const noteTitle = overlay.querySelector<HTMLElement>("#cntitle")!;
+  const noteText = overlay.querySelector<HTMLTextAreaElement>("#cntext")!;
+  const noteSave = overlay.querySelector<HTMLButtonElement>("#cnsave")!;
+  let notePath: string | null = null;
+  const openNote = async (name: string, path: string) => {
+    try {
+      const content = await api.obsidianRead(path);
+      notePath = path;
+      noteTitle.textContent = name;
+      noteText.value = content;
+      notePanel.style.display = "flex";
+    } catch (e: any) {
+      toast(String(e?.message ?? e));
+    }
+  };
+  noteSave.addEventListener("click", async () => {
+    if (!notePath) return;
+    noteSave.disabled = true;
+    try {
+      await api.obsidianWrite(notePath, noteText.value);
+      toast(t("cosmos.saved").replace("%s", noteTitle.textContent ?? ""), "ok");
+    } catch (e: any) {
+      toast(String(e?.message ?? e));
+    }
+    noteSave.disabled = false;
+  });
+  overlay.querySelector("#cnclose")!.addEventListener("click", () => {
+    notePanel.style.display = "none";
+    notePath = null;
+  });
+
   let viz: Cosmos | null = null;
   try {
-    viz = new Cosmos(body, data);
+    viz = new Cosmos(body, data, (name, path) => { void openNote(name, path); });
   } catch (e: any) {
     overlay.remove();
     toast(String(e?.message ?? e));
@@ -1404,7 +1474,16 @@ async function openCosmos(): Promise<void> {
     overlay.remove();
     window.removeEventListener("keydown", onKey);
   };
-  const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") close(); };
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key !== "Escape") return;
+    // Échap ferme d'abord la note, puis la constellation.
+    if (notePanel.style.display !== "none") {
+      notePanel.style.display = "none";
+      notePath = null;
+    } else {
+      close();
+    }
+  };
   window.addEventListener("keydown", onKey);
   overlay.querySelector("[data-close]")!.addEventListener("click", close);
 }

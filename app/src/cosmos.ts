@@ -7,7 +7,7 @@
 // répulsion douce), calculée une fois au chargement.
 
 export interface CosmosData {
-  nodes: { n: string; d: number }[];
+  nodes: { n: string; p: string; d: number }[];
   edges: [number, number][];
 }
 
@@ -15,6 +15,7 @@ const MAX_NODES = 500;
 
 interface Star {
   name: string;
+  path: string;
   degree: number;
   x: number; y: number; z: number;
   // projeté (recalculé chaque frame)
@@ -40,7 +41,11 @@ export class Cosmos {
   private destroyed = false;
   private dust: { x: number; y: number; r: number; a: number }[] = [];
 
-  constructor(private host: HTMLElement, data: CosmosData) {
+  constructor(
+    private host: HTMLElement,
+    data: CosmosData,
+    private onSelect?: (name: string, path: string) => void
+  ) {
     this.canvas = document.createElement("canvas");
     this.canvas.className = "cosmos-canvas";
     const ctx = this.canvas.getContext("2d");
@@ -82,6 +87,7 @@ export class Cosmos {
       const r = 190;
       return {
         name: entry.node.n,
+        path: entry.node.p,
         degree: entry.node.d,
         x: r * Math.sin(inc) * Math.cos(az),
         y: r * Math.sin(inc) * Math.sin(az),
@@ -140,12 +146,21 @@ export class Cosmos {
 
   private wire(): void {
     window.addEventListener("resize", this.resize);
+    let downX = 0, downY = 0;
     this.canvas.addEventListener("mousedown", (e) => {
       this.dragging = true;
       this.autoSpin = false;
       this.lastMx = e.clientX; this.lastMy = e.clientY;
+      downX = e.clientX; downY = e.clientY;
     });
-    window.addEventListener("mouseup", () => { this.dragging = false; });
+    window.addEventListener("mouseup", (e) => {
+      const wasDragging = this.dragging;
+      this.dragging = false;
+      // Un vrai clic (pas un glisser) sur une etoile ouvre la note.
+      if (wasDragging && Math.hypot(e.clientX - downX, e.clientY - downY) < 4 && this.hovered && this.onSelect) {
+        this.onSelect(this.hovered.name, this.hovered.path);
+      }
+    });
     this.canvas.addEventListener("mousemove", (e) => {
       const rect = this.canvas.getBoundingClientRect();
       this.mouseX = e.clientX - rect.left;
