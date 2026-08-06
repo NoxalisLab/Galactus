@@ -437,9 +437,10 @@ function activityModeFor(tool: string): import("./pixel").PixelMode {
     case "obsidian_read":
     case "obsidian_search":
     case "use_skill":
-    case "fetch_url":
     case "search_knowledge":
       return "reading";
+    case "fetch_url":
+      return "web";
     case "write_file":
     case "obsidian_append":
     case "obsidian_update":

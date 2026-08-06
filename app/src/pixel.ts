@@ -9,12 +9,18 @@ export type PixelMode =
   | "writing"
   | "running"
   | "connector"
+  | "web"
   | "done";
 
 const SCALE = 3;
 const GRID = 16; // sprite 16x16
+const STAGE = 30; // largeur de scene (planetes, satellite) en pixels logiques
 const CANVAS_H = GRID * SCALE; // 48px
 const STEP_MS = 1000 / 12; // ~12 fps assumes
+
+// Scene "recherche" : centres des planetes visitees.
+const PLANET_X = [4, 13, 22];
+const HOP_FRAMES = 22; // duree d'un saut de planete a planete
 
 // Palette (cf. src/styles.css : --acc / --acc2)
 const ACC = "#8a7cff";
@@ -55,7 +61,7 @@ export class PixelViz {
 
     const canvas = document.createElement("canvas");
     canvas.height = CANVAS_H;
-    canvas.width = Math.max(container.clientWidth, GRID * SCALE + 8);
+    canvas.width = Math.max(container.clientWidth, STAGE * SCALE + 8);
     canvas.style.display = "block";
     canvas.style.width = "100%";
     canvas.style.height = `${CANVAS_H}px`;
@@ -169,7 +175,7 @@ export class PixelViz {
   // ------------------------------------------------------------------ rendu
 
   private syncSize(): void {
-    const w = Math.max(this.container.clientWidth, GRID * SCALE + 8);
+    const w = Math.max(this.container.clientWidth, STAGE * SCALE + 8);
     if (w !== this.canvas.width) {
       this.canvas.width = w;
       this.ctx.imageSmoothingEnabled = false;
@@ -206,6 +212,7 @@ export class PixelViz {
     }
 
     // ---- parametres d'animation du robot
+    let ox = 0; // deplacement horizontal (scenes)
     let oy = 0; // respiration (bob vertical)
     let headDx = 0; // balancement de la tete
     let eyeDx = 0; // regard
@@ -225,10 +232,31 @@ export class PixelViz {
         eyeDx = f % 24 < 12 ? -1 : 1; // regarde en l'air, pensif
         break;
       case "reading": {
-        arms = "hold";
-        const scan = [-1, -1, 0, 1, 1, 0];
-        eyeDx = scan[Math.floor(f / 3) % scan.length];
-        oy = f % 20 < 10 ? 0 : 1;
+        // Exploration : le robot saute de planete en planete.
+        const seq = [0, 1, 2, 1];
+        const k = Math.floor(mf / HOP_FRAMES) % seq.length;
+        const t = (mf % HOP_FRAMES) / HOP_FRAMES;
+        const from = PLANET_X[seq[k]];
+        const to = PLANET_X[seq[(k + 1) % seq.length]];
+        const ease = t * t * (3 - 2 * t); // smoothstep
+        ox = Math.round(from + (to - from) * ease) - 7;
+        oy = -2 - Math.round(4.5 * Math.sin(Math.PI * t));
+        const airborne = t > 0.12 && t < 0.88;
+        arms = airborne ? "up" : "down";
+        eyeDx = to > from ? 1 : -1;
+        // Poussiere d'atterrissage.
+        if (mf % HOP_FRAMES === 0 && mf > 0) {
+          for (let i = 0; i < 4; i++) {
+            this.sparks.push({
+              x: from - 7 + ox + 7.5 + (Math.random() - 0.5) * 3,
+              y: 13.5,
+              vx: (Math.random() - 0.5) * 1.4,
+              vy: -0.3 - Math.random() * 0.4,
+              color: Math.random() < 0.5 ? WHITE : ACC2,
+              life: 4,
+            });
+          }
+        }
         break;
       }
       case "writing":
@@ -244,6 +272,13 @@ export class PixelViz {
         eyeDx = 1; // regarde la prise
         oy = f % 12 < 6 ? 0 : 1;
         break;
+      case "web":
+        // Appel des satellites : telephone en main, regard vers le ciel.
+        arms = "hold";
+        eyeDx = 1;
+        oy = f % 16 < 8 ? 0 : 1;
+        headDx = f % 32 < 16 ? 0 : 1;
+        break;
       case "done":
         arms = "up";
         mouthWide = true;
@@ -252,35 +287,42 @@ export class PixelViz {
         break;
     }
 
-    this.drawRobot(oy, headDx, eyeDx, blink, mouthWide, arms);
+    // ---- decors derriere le robot
+    if (mode === "reading") this.drawPlanets(ox);
+    if (mode === "web") this.drawSatellite(f, oy);
+
+    this.drawRobot(ox, oy, headDx, eyeDx, blink, mouthWide, arms);
 
     // ---- extras par mode (au-dessus du robot)
     if (mode === "thinking") {
-      // Points de suspension au-dessus de la tete, apparition sequentielle.
-      const n = Math.floor(f / 4) % 4; // 0..3 points visibles
+      // Points de suspension + petite etoile en orbite autour de la tete.
+      const n = Math.floor(f / 4) % 4;
       const xs = [10, 12, 14];
-      const ys = [1, 0, 1]; // le point du milieu flotte un peu plus haut
+      const ys = [1, 0, 1];
       for (let i = 0; i < 3; i++) {
         if (i < n) this.px(xs[i], ys[i], i === 2 ? WHITE : ACC, 0.95);
       }
+      const a = (f / 9) % (Math.PI * 2);
+      this.px(7.5 + 6 * Math.cos(a), 5 + 2.6 * Math.sin(a), WHITE, 0.85);
     }
 
-    if (mode === "reading") this.drawPage(oy, f);
     if (mode === "connector") this.drawBolt(f);
 
     // ---- particules
     for (const p of this.confetti) this.px(p.x, p.y, p.color, Math.min(1, p.life / 4));
     for (const s of this.sparks) this.px(s.x, s.y, s.color, s.life / 3);
 
-    // ---- label a droite du sprite
+    // ---- label a droite de la scene
     if (this.label) {
+      const wide = mode === "reading" || mode === "web";
+      const labelX = (wide ? STAGE : GRID) * SCALE + 10;
       c.font = '11px "IBM Plex Mono", ui-monospace, monospace';
       c.fillStyle = LABEL_COLOR;
       c.textBaseline = "middle";
       c.textAlign = "left";
-      const maxW = this.canvas.width - (GRID * SCALE + 10) - 4;
+      const maxW = this.canvas.width - labelX - 4;
       if (maxW > 12) {
-        c.fillText(this.ellipsize(this.label, maxW), GRID * SCALE + 10, CANVAS_H / 2 + 1);
+        c.fillText(this.ellipsize(this.label, maxW), labelX, CANVAS_H / 2 + 1);
       }
     }
   }
@@ -296,6 +338,7 @@ export class PixelViz {
   // ------------------------------------------------------------ dessin sprite
 
   private drawRobot(
+    ox: number,
     oy: number,
     headDx: number,
     eyeDx: number,
@@ -304,7 +347,7 @@ export class PixelViz {
     arms: "down" | "typeL" | "typeR" | "up" | "reach" | "hold",
   ): void {
     const f = this.frame;
-    const P = (x: number, y: number, col: string, a = 1): void => this.px(x, y + oy, col, a);
+    const P = (x: number, y: number, col: string, a = 1): void => this.px(x + ox, y + oy, col, a);
 
     // Antenne (le corps porte l'antenne ; la tete balance avec headDx)
     P(7 + headDx, 2, ACC2);
@@ -384,21 +427,59 @@ export class PixelViz {
     P(9, 14, ACC2); P(10, 14, ACC2);
   }
 
-  /** Page tenue devant le robot (mode reading). */
-  private drawPage(oy: number, f: number): void {
-    const P = (x: number, y: number, col: string, a = 1): void => this.px(x, y + oy, col, a);
-    for (let y = 8; y <= 13; y++) {
-      for (let x = 1; x <= 5; x++) P(x, y, WHITE, 0.92);
+  /** Chapelet de planetes que le robot explore (mode reading/recherche). */
+  private drawPlanets(robotOx: number): void {
+    const robotCenter = robotOx + 7.5;
+    for (const cx of PLANET_X) {
+      const near = Math.abs(robotCenter - cx) < 3.5; // planete visitee : eclairee
+      const body = near ? ACC2 : ACC;
+      const glow = near ? 0.95 : 0.55;
+      // Dome
+      this.px(cx - 1, 13, body, glow);
+      this.px(cx, 13, body, glow);
+      this.px(cx + 1, 13, body, glow);
+      this.px(cx - 2, 14, body, glow * 0.85);
+      this.px(cx - 1, 14, body, glow);
+      this.px(cx, 14, near ? WHITE : body, glow);
+      this.px(cx + 1, 14, body, glow);
+      this.px(cx + 2, 14, body, glow * 0.85);
+      // Anneau
+      this.px(cx - 3, 14.5, ACC2, near ? 0.7 : 0.3);
+      this.px(cx + 3, 14.5, ACC2, near ? 0.7 : 0.3);
+      // Base
+      this.px(cx - 1, 15, body, glow * 0.7);
+      this.px(cx, 15, body, glow * 0.7);
+      this.px(cx + 1, 15, body, glow * 0.7);
     }
-    P(5, 8, ACC, 0.35); // coin corne
-    // Lignes de texte ; celle "en cours de lecture" est accentuee
-    const cur = Math.floor(f / 6) % 4;
+    // Quelques etoiles fixes au-dessus de la scene
+    const stars: [number, number][] = [[2, 1], [9, 3], [17, 1], [25, 2], [28, 5]];
+    for (let i = 0; i < stars.length; i++) {
+      const tw = (this.frame + i * 5) % 22 < 11 ? 0.5 : 0.2;
+      this.px(stars[i][0], stars[i][1], WHITE, tw);
+    }
+  }
+
+  /** Satellite en transit + liaison radio depuis le telephone (mode web). */
+  private drawSatellite(f: number, robotOy: number): void {
+    // Telephone dans la main droite du robot
+    this.px(12, 10 + robotOy, WHITE, 0.95);
+    this.px(12, 11 + robotOy, f % 8 < 4 ? ACC2 : WHITE, 0.9); // ecran qui clignote
+    // Satellite qui traverse le ciel (droite vers gauche, en boucle)
+    const sx = 27 - ((f / 2) % 16);
+    this.px(sx, 2, ACC2); // corps
+    this.px(sx + 1, 2, ACC2);
+    this.px(sx - 2, 2, ACC, 0.85); // panneau gauche
+    this.px(sx - 3, 2, ACC, 0.6);
+    this.px(sx + 3, 2, ACC, 0.85); // panneau droit
+    this.px(sx + 4, 2, ACC, 0.6);
+    this.px(sx, 1, WHITE, f % 10 < 5 ? 0.95 : 0.4); // antenne clignotante
+    // Ondes radio : pointilles du telephone vers le satellite
+    const x0 = 13, y0 = 9 + robotOy;
+    const dx = sx - x0, dy = 2 - y0;
     for (let i = 0; i < 4; i++) {
-      const y = 9 + i;
-      const on = i === cur;
-      P(2, y, on ? ACC2 : ACC, on ? 0.95 : 0.4);
-      P(3, y, on ? ACC2 : ACC, on ? 0.95 : 0.4);
-      if (i % 2 === 0) P(4, y, on ? ACC2 : ACC, on ? 0.95 : 0.4);
+      const t = 0.2 + i * 0.2;
+      const on = (f + i * 2) % 8 < 4;
+      this.px(x0 + dx * t, y0 + dy * t + (i % 2 === 0 ? -0.5 : 0.5), on ? WHITE : ACC2, on ? 0.85 : 0.35);
     }
   }
 
