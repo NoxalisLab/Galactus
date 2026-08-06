@@ -349,6 +349,15 @@ const dict: Record<string, { en: string; fr: string }> = {
   "models.benchRunning": { en: "Measuring…", fr: "Mesure…" },
   "models.benchDone": { en: "Measured on this Mac: %s tok/s", fr: "Mesuré sur ce Mac : %s tok/s" },
   "models.measured": { en: "measured, tok/s", fr: "mesuré, tok/s" },
+  "models.benchReset": {
+    en: "Clear the measurement and show the estimate again",
+    fr: "Effacer la mesure et réafficher l'estimation",
+  },
+  "models.benchResetDone": { en: "Measurement cleared", fr: "Mesure effacée" },
+  "models.benchResetFail": {
+    en: "Could not clear the measurement: %s",
+    fr: "Impossible d'effacer la mesure : %s",
+  },
 
   // deep research
   "chat.deep": { en: "Deep research", fr: "Recherche approfondie" },

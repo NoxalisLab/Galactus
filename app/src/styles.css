@@ -282,6 +282,11 @@ svg { display: block; }
 .bs { padding: 6px 13px; border-radius: 8px; font-size: 12.5px; font-weight: 500; cursor: default; background: rgba(255, 255, 255, 0.05); color: var(--tx); border: 1px solid var(--bd3); transition: background 0.15s, transform 0.1s; white-space: nowrap; }
 .bs:hover { background: rgba(255, 255, 255, 0.09); }
 .bs:active { transform: scale(0.97); }
+/* Glyph-only variant of .bs: same frame, squared padding, dimmed until hover
+   so a secondary action sits next to a labelled one without competing. */
+.bs.bglyph { padding: 6px 9px; font-size: 13px; line-height: 1; color: var(--dim2); }
+.bs.bglyph:hover { color: var(--tx); }
+.bs.bglyph:disabled { opacity: 0.5; }
 .bd { padding: 6px 13px; border-radius: 8px; font-size: 12.5px; font-weight: 600; cursor: default; background: var(--bad); color: #fff; border: none; transition: filter 0.15s, transform 0.1s; }
 .bd:hover { filter: brightness(1.1); }
 .bd:active { transform: scale(0.97); }

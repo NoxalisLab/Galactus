@@ -3439,11 +3439,63 @@ fn server_log() -> String {
     std::fs::read_to_string(app_support().join("llama-server.log")).unwrap_or_default()
 }
 
+// ------------------------------------------------------- preview protocol
+//
+// The live preview renders model-written HTML. Feeding it through an iframe
+// `srcdoc` made it inherit the APP's content policy, which allows nothing
+// external: every previewed page lost its images, fonts, stylesheets and
+// scripts, and looked broken for a reason that had nothing to do with the
+// page. A document served over its own scheme carries its own policy instead
+// of inheriting ours, so the preview finally shows what a browser would show.
+//
+// The isolation is unchanged and does not rely on the policy: the frame keeps
+// `sandbox="allow-scripts"` WITHOUT `allow-same-origin`, so the page lives in
+// an opaque origin with no access to the app, no IPC, and no way to navigate
+// it. That is the same exposure as the "open in browser" button next to it.
+
+fn preview_slot() -> &'static Mutex<(u64, String)> {
+    static SLOT: OnceLock<Mutex<(u64, String)>> = OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new((0, String::new())))
+}
+
+/// Publish HTML for the preview frame and return the URL to point it at. The
+/// id changes on every call so the webview reloads instead of serving a
+/// cached document; only the latest page is kept.
+#[tauri::command]
+fn preview_publish(html: String) -> String {
+    let mut slot = preview_slot().lock().unwrap_or_else(|e| e.into_inner());
+    slot.0 += 1;
+    slot.1 = html;
+    format!("gxpreview://localhost/p/{}", slot.0)
+}
+
 // ---------------------------------------------------------------- entry
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .register_uri_scheme_protocol("gxpreview", |_app, _request| {
+            let html = preview_slot()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .1
+                .clone();
+            tauri::http::Response::builder()
+                .status(200)
+                .header("Content-Type", "text/html; charset=utf-8")
+                // The preview's own policy, deliberately permissive: a preview
+                // that cannot load a stylesheet is not a preview. Framing is
+                // denied so the page cannot re-embed the app.
+                .header(
+                    "Content-Security-Policy",
+                    "default-src * data: blob: 'unsafe-inline' 'unsafe-eval'; frame-ancestors 'self'",
+                )
+                .header("Cache-Control", "no-store")
+                .body(html.into_bytes())
+                .unwrap_or_else(|_| {
+                    tauri::http::Response::builder().status(500).body(Vec::new()).unwrap()
+                })
+        })
         .setup(|app| {
             let _ = app.get_webview_window("main");
             seed_bundled_skills();
@@ -3513,7 +3565,8 @@ pub fn run() {
             knowledge::kb_set_folders,
             knowledge::kb_reindex,
             knowledge::kb_stats,
-            knowledge::kb_search
+            knowledge::kb_search,
+            preview_publish
         ])
         .build(tauri::generate_context!())
         .expect("error while running Galactus")

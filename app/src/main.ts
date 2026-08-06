@@ -1393,6 +1393,34 @@ async function showInstallModal(m: ModelEntry): Promise<void> {
 }
 
 // ---------- models ----------
+
+/**
+ * Discreet control that drops the measured tok/s of a model so its card falls
+ * back to the estimate. Returns null when the model carries no measurement.
+ *
+ * settings.json exposes no key removal, so the key is blanked instead: boot()
+ * only keeps a bench_* entry whose JSON holds a finite tps, and an empty value
+ * fails that parse the same way a missing key would.
+ */
+function benchResetBtn(m: ModelEntry): HTMLButtonElement | null {
+  if (!Number.isFinite(benchResults[m.id])) return null;
+  const b = el(`<button class="bs bglyph" title="${esc(t("models.benchReset"))}">↺</button>`) as HTMLButtonElement;
+  b.addEventListener("click", async () => {
+    b.disabled = true;
+    try {
+      await api.settingsSet("bench_" + m.id, "");
+    } catch (e: any) {
+      b.disabled = false;
+      toast(t("models.benchResetFail").replace("%s", String(e?.message ?? e)));
+      return;
+    }
+    delete benchResults[m.id];
+    toast(t("models.benchResetDone"), "ok");
+    render();
+  });
+  return b;
+}
+
 function modelsView(): HTMLElement {
   const wrap = el(`<div class="main">
     <div class="topbar" data-tauri-drag-region><span class="ttl">${esc(t("nav.models"))}</span><span class="sub">${esc(t("models.subtitle"))}</span></div>
@@ -1489,7 +1517,9 @@ function modelsView(): HTMLElement {
         await refreshServer();
         render();
       });
-      box.append(bench, b);
+      const reset = benchResetBtn(m);
+      if (reset) box.append(bench, reset, b);
+      else box.append(bench, b);
       slot.replaceWith(box);
     } else {
       const box = el(`<span style="display:flex;gap:10px;align-items:center"></span>`);
@@ -1536,7 +1566,11 @@ function modelsView(): HTMLElement {
           toast(String(e?.message ?? e));
         }
       });
-      box.append(del, b);
+      // Also offered when the model is stopped: a measurement outlives the run
+      // that produced it, so it must be clearable without restarting the model.
+      const reset = benchResetBtn(m);
+      if (reset) box.append(del, reset, b);
+      else box.append(del, b);
       slot.replaceWith(box);
     }
     grid.appendChild(card);

@@ -76,6 +76,10 @@ export interface SkillInfo {
 }
 
 export const api = {
+  // Hands the preview document to the app's own scheme and returns its URL:
+  // served that way it carries its own content policy instead of inheriting
+  // the app's, which blocks everything external.
+  previewPublish: (html: string) => invoke<string>("preview_publish", { html }),
   hwInfo: () => invoke<HwInfo>("hw_info"),
   registry: () => invoke<ModelEntry[]>("load_registry"),
   detectRoot: () => invoke<string | null>("detect_root"),

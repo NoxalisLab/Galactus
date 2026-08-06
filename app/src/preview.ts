@@ -69,6 +69,14 @@
 
 import { renderMarkdown, wireCodeCopy } from "./markdown";
 import { t } from "./i18n";
+import { api } from "./api";
+
+/** Publish through the app scheme; rejects outside Tauri so srcdoc takes over. */
+async function publishPreview(html: string): Promise<string> {
+  const url = await api.previewPublish(html);
+  if (!url) throw new Error("preview scheme unavailable");
+  return url;
+}
 
 // ---------------------------------------------------------------- detection
 
@@ -342,20 +350,43 @@ export class PreviewPanel {
     }
   }
 
-  /** HTML only ever renders inside a sandboxed iframe fed by srcdoc. */
+  /**
+   * HTML only ever renders inside a sandboxed iframe. The document is served
+   * by the app's own preview scheme rather than written into `srcdoc`: a
+   * srcdoc document INHERITS the app's content policy, which allows nothing
+   * external, so every previewed page silently lost its images, fonts,
+   * stylesheets and scripts. Served over its own scheme it carries its own
+   * policy and renders like a browser would.
+   *
+   * The isolation never depended on that policy: allow-scripts WITHOUT
+   * allow-same-origin keeps the frame in an opaque origin with no access to
+   * the app and no IPC. srcdoc stays as the fallback outside Tauri (dev
+   * harness) or if publishing fails.
+   */
   private renderHtml(): void {
     if (!this.frame || this.frame.parentElement !== this.body) {
       this.body.innerHTML = "";
       const f = document.createElement("iframe");
       f.className = "pvw-frame";
-      // allow-scripts WITHOUT allow-same-origin: scripts run, but the frame
-      // is a unique opaque origin with no access to the app.
       f.setAttribute("sandbox", "allow-scripts");
       f.setAttribute("referrerpolicy", "no-referrer");
       this.body.appendChild(f);
       this.frame = f;
     }
-    if (this.frame.srcdoc !== this.code) this.frame.srcdoc = this.code;
+    const frame = this.frame;
+    const token = ++this.renderToken;
+    const code = this.code;
+    publishPreview(code)
+      .then((url) => {
+        // A newer render (or a destroy) won the race: leave its document up.
+        if (this.destroyed || token !== this.renderToken || this.frame !== frame) return;
+        frame.removeAttribute("srcdoc");
+        frame.src = url;
+      })
+      .catch(() => {
+        if (this.destroyed || token !== this.renderToken || this.frame !== frame) return;
+        if (frame.srcdoc !== code) frame.srcdoc = code;
+      });
   }
 
   private renderSvg(): void {

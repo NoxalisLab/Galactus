@@ -79,6 +79,50 @@ fn configured_folders() -> Vec<String> {
         .collect()
 }
 
+/// Configured list minus every folder nested inside another configured one.
+///
+/// The user can pick ~/Documents and later ~/Documents/Notes: walking both
+/// indexes the nested files twice, which duplicates chunks, inflates the BM25
+/// df/avg_len statistics and returns the same file twice in the results. The
+/// stored setting is left untouched (kb_folders keeps showing what the user
+/// picked); only what indexing walks is reduced.
+fn dedup_nested(folders: Vec<String>) -> Vec<String> {
+    // Canonicalized so symlinks and "." / ".." spellings of the same folder
+    // compare equal. A folder that cannot be canonicalized (does not exist
+    // yet, unreadable) keeps its raw path and simply never matches.
+    let canon: Vec<(String, PathBuf)> = folders
+        .into_iter()
+        .map(|f| {
+            let p = PathBuf::from(&f);
+            let c = std::fs::canonicalize(&p).unwrap_or(p);
+            (f, c)
+        })
+        .collect();
+    let mut out = Vec::with_capacity(canon.len());
+    for (i, (raw, path)) in canon.iter().enumerate() {
+        // Same folder listed twice: keep the first spelling only.
+        if canon[..i].iter().any(|(_, other)| other == path) {
+            continue;
+        }
+        // Path::starts_with matches whole path components, so /a/bc is not
+        // reported as living inside /a/b (a raw string prefix test would).
+        let nested = canon
+            .iter()
+            .any(|(_, other)| other != path && path.starts_with(other));
+        if !nested {
+            out.push(raw.clone());
+        }
+    }
+    out
+}
+
+/// The folder list every indexing path walks. Everything downstream (built
+/// index, persisted index, KbStats.folders) carries this reduced list, so the
+/// disk-index freshness check in `load_persisted` compares like for like.
+fn indexing_folders() -> Vec<String> {
+    dedup_nested(configured_folders())
+}
+
 // ---------------------------------------------------------------- types
 
 #[derive(Serialize, Clone)]
@@ -425,6 +469,122 @@ fn snippet_of(text: &str, max: usize) -> String {
     text[..end].to_string()
 }
 
+/// Folded copy of `text` (same lowercasing and accent folding as `tokenize`)
+/// plus, for every byte of it, the byte offset of the source char it came
+/// from. Folding can change a char's byte length, so an offset found in the
+/// folded copy has to be translated back before slicing `text`. The map holds
+/// one extra entry so `map[folded.len()]` is `text.len()`.
+fn folded_with_offsets(text: &str) -> (String, Vec<usize>) {
+    let mut folded = String::with_capacity(text.len());
+    let mut map: Vec<usize> = Vec::with_capacity(text.len() + 1);
+    for (i, c) in text.char_indices() {
+        let before = folded.len();
+        for lc in c.to_lowercase() {
+            folded.push(fold_char(lc));
+        }
+        for _ in before..folded.len() {
+            map.push(i);
+        }
+    }
+    map.push(text.len());
+    (folded, map)
+}
+
+/// First byte offset at or after `from` that starts a word, capped at `limit`
+/// so the window never swallows the match it is supposed to show.
+fn snap_word_start(text: &str, from: usize, limit: usize) -> usize {
+    if from == 0 {
+        return 0;
+    }
+    let mut prev_alnum = false;
+    for (i, c) in text.char_indices() {
+        if i >= limit {
+            return limit;
+        }
+        if i >= from && !prev_alnum {
+            return i;
+        }
+        prev_alnum = c.is_alphanumeric();
+    }
+    limit
+}
+
+/// Last byte offset at or before `to` that ends a word, never below `min_end`
+/// (the end of the match). Falls back to a plain char-boundary cut when the
+/// span holds no separator at all.
+fn snap_word_end(text: &str, to: usize, min_end: usize) -> usize {
+    if to >= text.len() {
+        return text.len();
+    }
+    let mut best: Option<usize> = None;
+    for (i, c) in text.char_indices() {
+        if i > to {
+            break;
+        }
+        if i >= min_end && !c.is_alphanumeric() {
+            best = Some(i);
+        }
+    }
+    if let Some(i) = best {
+        return i;
+    }
+    let mut end = to;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    end.max(min_end)
+}
+
+/// Snippet of at most ~`max` bytes centred on the first query term found in
+/// `text`, edges snapped to word boundaries and marked with an ellipsis when
+/// they are not the chunk boundaries.
+///
+/// `terms` are the folded tokens of the query, so the search runs on a folded
+/// copy of the chunk. A chunk can rank without holding any term literally
+/// (folding, or a hit driven by another term of the query), and then the
+/// original from-the-start truncation is kept.
+fn snippet_centered(text: &str, terms: &[String], max: usize) -> String {
+    if text.len() <= max {
+        return text.to_string();
+    }
+    let (folded, map) = folded_with_offsets(text);
+    let mut hit: Option<(usize, usize)> = None; // (start, end) in source bytes
+    for term in terms {
+        let f = match folded.find(term.as_str()) {
+            Some(f) => f,
+            None => continue,
+        };
+        let start = map[f];
+        let end = map[(f + term.len()).min(map.len() - 1)];
+        if hit.map_or(true, |(s, _)| start < s) {
+            hit = Some((start, end));
+        }
+    }
+    let (m_start, m_end) = match hit {
+        Some(h) => h,
+        None => return snippet_of(text, max),
+    };
+    // Centre on the match, then slide the window back inside the chunk so the
+    // full budget is used when the match sits near the end.
+    let lead = max.saturating_sub(m_end - m_start) / 2;
+    let mut start = m_start.saturating_sub(lead);
+    let end = (start + max).min(text.len());
+    if end == text.len() {
+        start = text.len().saturating_sub(max).min(m_start);
+    }
+    let start = snap_word_start(text, start, m_start);
+    let end = snap_word_end(text, end, m_end);
+    let mut out = String::new();
+    if start > 0 {
+        out.push('…');
+    }
+    out.push_str(text[start..end].trim());
+    if end < text.len() {
+        out.push('…');
+    }
+    out
+}
+
 fn bm25_search(index: &Index, query: &str, k: usize) -> Vec<KbHit> {
     if index.chunks.is_empty() {
         return Vec::new();
@@ -462,7 +622,7 @@ fn bm25_search(index: &Index, query: &str, k: usize) -> Vec<KbHit> {
             let chunk = &index.chunks[i];
             KbHit {
                 path: chunk.path.clone(),
-                snippet: snippet_of(&chunk.text, SNIPPET_MAX),
+                snippet: snippet_centered(&chunk.text, &terms, SNIPPET_MAX),
                 score,
                 line: chunk.line,
             }
@@ -495,7 +655,7 @@ pub fn kb_set_folders(folders: Vec<String>) -> Result<(), String> {
 /// (Re)build the index from the configured folders and persist it.
 #[tauri::command]
 pub async fn kb_reindex() -> Result<KbStats, String> {
-    let folders = configured_folders();
+    let folders = indexing_folders();
     if folders.is_empty() {
         return Err("no knowledge folders configured".to_string());
     }
@@ -506,7 +666,9 @@ pub async fn kb_reindex() -> Result<KbStats, String> {
     Ok(stats)
 }
 
-/// Stats of the last built index: memory first, disk otherwise.
+/// Stats of the last built index: memory first, disk otherwise. The reported
+/// folders are the ones indexing actually walked, so a folder dropped as
+/// nested is absent here and its files are counted once.
 #[tauri::command]
 pub fn kb_stats() -> Option<KbStats> {
     if let Some(index) = kb_state()
@@ -528,7 +690,7 @@ pub fn kb_stats() -> Option<KbStats> {
 /// for the current folders), then a fresh reindex.
 #[tauri::command]
 pub async fn kb_search(query: String, k: Option<usize>) -> Result<Vec<KbHit>, String> {
-    let folders = configured_folders();
+    let folders = indexing_folders();
     if folders.is_empty() {
         return Err("no knowledge folders configured".to_string());
     }
@@ -545,3 +707,4 @@ pub async fn kb_search(query: String, k: Option<usize>) -> Result<Vec<KbHit>, St
     let index = guard.as_ref().expect("index resolved above");
     Ok(bm25_search(index, &query, k))
 }
+
