@@ -63,20 +63,20 @@ const dict: Record<string, { en: string; fr: string }> = {
   "models.installed": { en: "Installed", fr: "Installé" },
   "models.tooSmall": { en: "Below the minimum for this Mac", fr: "Sous le minimum pour ce Mac" },
   "models.nativeFit": {
-    en: "Fully cache-resident on this Mac: full-speed engine",
-    fr: "Résidence totale en cache sur ce Mac : moteur pleine vitesse",
+    en: "Fully cache-resident on this Mac, bit-exact",
+    fr: "Résidence totale en cache sur ce Mac, bit-exact",
   },
   "engine.resident": {
-    en: "Galactus engine: every expert cache-resident, Metal compute, full micro-batch",
-    fr: "Moteur Galactus : tous les experts résidents en cache, calcul Metal, micro-batch complet",
+    en: "Galactus engine: every expert cache-resident, bit-exact (certified numerics)",
+    fr: "Moteur Galactus : tous les experts résidents en cache, bit-exact (numérique certifiée)",
   },
   "engine.streamed": {
-    en: "Galactus engine: experts streamed from SSD into the Metal arena",
-    fr: "Moteur Galactus : experts streamés du SSD vers l'arène Metal",
+    en: "Galactus engine: experts streamed from SSD, bit-exact (certified numerics)",
+    fr: "Moteur Galactus : experts streamés du SSD, bit-exact (numérique certifiée)",
   },
-  "engine.cpu": {
-    en: "Galactus engine: bit-exact CPU experts (certification mode)",
-    fr: "Moteur Galactus : experts CPU bit-exacts (mode certification)",
+  "engine.metal": {
+    en: "Galactus engine: Metal experts (opt-in, OUTSIDE the certification envelope)",
+    fr: "Moteur Galactus : experts Metal (opt-in, HORS enveloppe de certification)",
   },
   "engine.residentShort": { en: "resident", fr: "résident" },
   "models.hwNote": {

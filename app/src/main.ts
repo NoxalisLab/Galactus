@@ -154,9 +154,9 @@ function verdict(m: ModelEntry): { ok: boolean; note: string } {
 }
 
 function engineModeLabel(mode?: string): string {
-  if (mode === "resident-metal") return t("engine.resident");
-  if (mode === "streamed-metal") return t("engine.streamed");
-  if (mode === "cpu-bit-exact") return t("engine.cpu");
+  if (mode === "resident-bit-exact") return t("engine.resident");
+  if (mode === "streamed-bit-exact") return t("engine.streamed");
+  if (mode === "metal-experts") return t("engine.metal");
   return "";
 }
 
@@ -164,6 +164,26 @@ function applyAutonomy() {
   if (!agent) return;
   agent.setMode(autonomy === "manual" ? "chat" : "agent");
   agent.setAutoApprove(autonomy === "autonomous");
+}
+
+const AUTONOMY_ORDER: Autonomy[] = ["manual", "assisted", "autonomous"];
+
+/**
+ * Switch autonomy WITHOUT rebuilding the view: a full render would wipe the
+ * draft typed in the composer. Only the segment buttons repaint.
+ */
+async function setAutonomy(a: Autonomy): Promise<void> {
+  autonomy = a;
+  applyAutonomy();
+  document
+    .querySelectorAll<HTMLElement>("#modeseg [data-a]")
+    .forEach((b) => b.classList.toggle("on", b.dataset.a === a));
+  await api.settingsSet("autonomy", a);
+}
+
+function cycleAutonomy(): void {
+  const next = AUTONOMY_ORDER[(AUTONOMY_ORDER.indexOf(autonomy) + 1) % AUTONOMY_ORDER.length];
+  void setAutonomy(next);
 }
 
 function newChat() {
@@ -426,7 +446,7 @@ function chatView(): HTMLElement {
       <span class="ttl">${esc(t("nav.chat"))}</span>
       <div class="right">
         ${taskBarHtml()}
-        ${running ? `<div class="mpill" title="${esc(engineModeLabel(server.mode))}"><span class="d"></span><span class="n">${esc(running.name.split(" ")[0])}</span>${server.mode === "resident-metal" ? `<span class="s">${esc(t("engine.residentShort"))}</span>` : ""}${tps ? `<span class="s">~${tps.toFixed(0)} tok/s</span>` : ""}</div>` : ""}
+        ${running ? `<div class="mpill" title="${esc(engineModeLabel(server.mode))}"><span class="d"></span><span class="n">${esc(running.name.split(" ")[0])}</span>${server.mode === "resident-bit-exact" ? `<span class="s">${esc(t("engine.residentShort"))}</span>` : ""}${tps ? `<span class="s">~${tps.toFixed(0)} tok/s</span>` : ""}</div>` : ""}
         <div class="iconbtn" id="newchat" title="${esc(t("nav.newchat"))}">${I.plus}</div>
       </div>
     </div>
@@ -475,13 +495,10 @@ function chatView(): HTMLElement {
       toast(t("voice.error").replace("%s", String(e?.message ?? e)));
     }
   });
-  wrap.querySelector("#modeseg")!.addEventListener("click", async (e) => {
+  wrap.querySelector("#modeseg")!.addEventListener("click", (e) => {
     const b = (e.target as HTMLElement).closest("[data-a]") as HTMLElement | null;
     if (!b) return;
-    autonomy = b.dataset.a as Autonomy;
-    await api.settingsSet("autonomy", autonomy);
-    applyAutonomy();
-    render();
+    void setAutonomy(b.dataset.a as Autonomy);
   });
   wrap.querySelector("#taskbar")?.addEventListener("click", (e) => {
     const b = (e.target as HTMLElement).closest("[data-task]") as HTMLElement | null;
@@ -557,6 +574,8 @@ function chatView(): HTMLElement {
       if (e.key === "Tab" || e.key === "Enter") { e.preventDefault(); pickSlash(list[slashSel].name); return; }
       if (e.key === "Escape") { slashBox.style.display = "none"; return; }
     }
+    // ⇧Tab cycles Manual → Assisted → Autonomous without leaving the keyboard.
+    if (e.key === "Tab" && e.shiftKey) { e.preventDefault(); cycleAutonomy(); return; }
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (!generating) submitChat(); }
     if (e.key === "Escape" && generating) { agent?.stop(); }
   });
@@ -1443,8 +1462,16 @@ async function setRoot(p: string) {
 // ---------- shell ----------
 async function refreshServer() { try { server = await api.serverStatus(); } catch {} }
 
+let composerDraft = "";
+
 function render() {
   pixel?.destroy(); pixel = null; pixelHost = null;
+  // A rebuild must never eat a draft: whatever is typed in the composer
+  // survives every render (server events, install progress, view switches).
+  {
+    const ci = document.getElementById("ci") as HTMLTextAreaElement | null;
+    if (ci) composerDraft = ci.value;
+  }
   // The whole DOM is rebuilt: tear down anything attached to the old tree.
   previewPanel?.destroy(); previewPanel = null;
   dropUnsub?.(); dropUnsub = null;
@@ -1490,7 +1517,17 @@ function render() {
     : settingsView()
   );
   app.appendChild(layout);
-  if (view === "chat") { paintChat(); scrollChatDown(); }
+  if (view === "chat") {
+    if (composerDraft) {
+      const ci = document.getElementById("ci") as HTMLTextAreaElement | null;
+      if (ci && !ci.value) {
+        ci.value = composerDraft;
+        ci.dispatchEvent(new Event("input"));
+      }
+    }
+    paintChat();
+    scrollChatDown();
+  }
 }
 
 /** Repaint only the sidebar (conversation list) without touching the thread. */

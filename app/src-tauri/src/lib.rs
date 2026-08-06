@@ -456,23 +456,26 @@ fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -> Resu
     let log_out = std::fs::File::create(&log_path).map_err(|e| e.to_string())?;
     let log_err = log_out.try_clone().map_err(|e| e.to_string())?;
 
-    // Engine regime — ALWAYS the H4 wiring, tuned to the machine:
+    // Engine regime — ALWAYS the H4 wiring, ALWAYS the certified numerics.
     //
-    // * Experts on Metal by default: this is the interactive optimum the
-    //   LANCER-CHAT launcher uses daily. CPU experts (bit-transparent, the
-    //   certification methodology behind the registry's measured curves) stay
-    //   available per model ("cpu_moe": true in the registry) or globally
-    //   (setting cpu_moe=1) for accuracy-critical work.
-    // * Full cache residency (every expert fits in the planned cache — e.g.
-    //   a 61 GB expert set on a 128 GB Mac): the probation fail-closed guard
-    //   can never trigger, so the physical micro-batch opens up to 512 and
-    //   prompt processing runs at full speed. Partial residency keeps the
-    //   planner's guarded micro-batch.
+    // Certification rule (product law): a certified model runs BIT-EXACT.
+    // That is the CPU-experts regime the certification benches validated:
+    // the upstream Metal mv_id kernels diverge from CPU truth on iq quants
+    // (patch comment, probe v4: 1-2% relative per layer; ppl 8.89 vs 2.67 on
+    // GLM at 1.58 bpw), so Metal experts are OPT-IN and explicitly outside
+    // the certification envelope ("metal_experts": true in the registry
+    // entry, or setting metal_experts=1).
+    //
+    // The physical micro-batch stays at the planner's guarded value: the
+    // certified curves were measured in this envelope, and a different batch
+    // shape changes kernel paths and accumulation order — do not trade
+    // bit-exactness for prompt speed silently.
     let expert_total = entry["expert_bytes_total"].as_u64().unwrap_or(u64::MAX);
     let full_residency = cache_bytes >= expert_total;
-    let cpu_moe = entry["cpu_moe"].as_bool().unwrap_or(false)
-        || settings.get("cpu_moe").map(|v| v == "1").unwrap_or(false);
-    let eff_ubatch: u32 = if full_residency && !cpu_moe { 512 } else { ubatch };
+    let metal_experts = entry["metal_experts"].as_bool().unwrap_or(false)
+        || settings.get("metal_experts").map(|v| v == "1").unwrap_or(false);
+    let cpu_moe = !metal_experts;
+    let eff_ubatch: u32 = ubatch;
 
     let mut cmd = Command::new(&server_bin);
     cmd.env("GALACTUS_H4", "1")
@@ -544,12 +547,12 @@ fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -> Resu
         let mut s = server_state().lock().unwrap_or_else(|e| e.into_inner());
         s.child = Some(child);
         s.model_id = Some(model_id.clone());
-        s.mode = if cpu_moe {
-            "cpu-bit-exact".into()
+        s.mode = if metal_experts {
+            "metal-experts".into()
         } else if full_residency {
-            "resident-metal".into()
+            "resident-bit-exact".into()
         } else {
-            "streamed-metal".into()
+            "streamed-bit-exact".into()
         };
         s.phase = "starting".into();
         s.generation = generation;
