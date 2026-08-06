@@ -60,13 +60,6 @@ fn settings_load() -> HashMap<String, String> {
         .unwrap_or_default()
 }
 
-fn settings_store(map: &HashMap<String, String>) -> Result<(), String> {
-    let p = settings_path();
-    if let Some(dir) = p.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    }
-    std::fs::write(&p, serde_json::to_string_pretty(map).unwrap()).map_err(|e| e.to_string())
-}
 
 fn app_support() -> PathBuf {
     settings_path().parent().unwrap().to_path_buf()
@@ -489,12 +482,12 @@ pub fn kb_folders() -> Vec<String> {
 /// rejected at load time because its folder list no longer matches).
 #[tauri::command]
 pub fn kb_set_folders(folders: Vec<String>) -> Result<(), String> {
-    let mut map = settings_load();
-    map.insert(
-        SETTINGS_KEY.to_string(),
-        serde_json::to_string(&folders).map_err(|e| e.to_string())?,
-    );
-    settings_store(&map)?;
+    // Through the shared serialized update: settings.json has writers on three
+    // threads, and a private read-modify-write here would drop their keys.
+    let encoded = serde_json::to_string(&folders).map_err(|e| e.to_string())?;
+    crate::settings_update(|map| {
+        map.insert(SETTINGS_KEY.to_string(), encoded);
+    })?;
     *kb_state().lock().unwrap_or_else(|e| e.into_inner()) = None;
     Ok(())
 }

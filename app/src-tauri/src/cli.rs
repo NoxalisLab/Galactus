@@ -56,9 +56,14 @@ fn serve(root: &Path, model_id: &str, args: &[String]) -> Result<(), String> {
         return Err("pack introuvable : lance `galactus install` d'abord".into());
     }
     let ram_mode = ram_mode_from_args(args);
-    let ram_gb = hw_info().ram_gb.max(8);
+    let ram_gb = hw_info_impl().ram_gb.max(8);
     let (cache_bytes, fraction, ubatch) = plan_cache(&entry, ram_gb, None, &ram_mode)?;
-    let cpu_moe = args.iter().any(|a| a == "--cpu-moe") || entry["cpu_moe"].as_bool().unwrap_or(false);
+    // Same opt-in surface as the app: flag, registry entry, or the shared
+    // setting — otherwise `galactus serve` would silently contradict the
+    // regime the user picked in the app.
+    let cpu_moe = args.iter().any(|a| a == "--cpu-moe")
+        || entry["cpu_moe"].as_bool().unwrap_or(false)
+        || settings_load().get("cpu_moe").map(|v| v == "1").unwrap_or(false);
     let port: u16 = args
         .windows(2)
         .find(|w| w[0] == "--port")
@@ -67,6 +72,10 @@ fn serve(root: &Path, model_id: &str, args: &[String]) -> Result<(), String> {
 
     let checkout = root.join("third_party/llama.cpp/build/bin/llama-server");
     let bin = if checkout.exists() { checkout } else { bundled_engine().ok_or("llama-server introuvable")? };
+    // Un binaire llama.cpp d'origine accepte tous les drapeaux et ignore les
+    // variables GALACTUS_H4_* : il servirait le modele en natif. Verifier le
+    // cablage avant de lancer quoi que ce soit.
+    engine_is_wired(&bin)?;
 
     let expert_total = entry["expert_bytes_total"].as_u64().unwrap_or(u64::MAX);
     let regime = if cpu_moe { "cpu-bit-exact" } else if cache_bytes >= expert_total { "resident-bit-exact" } else { "streamed-bit-exact" };

@@ -117,6 +117,8 @@ let pixelHost: HTMLElement | null = null;
  * bar stayed hidden for the rest of a tool-less turn.
  */
 let lastActivity: { mode: PixelMode; label?: string } | null = null;
+/** Pending "done" confetti hide; a queued turn reuses the same PixelViz. */
+let doneHideTimer: number | null = null;
 
 function hideActivity() {
   lastActivity = null;
@@ -134,12 +136,19 @@ function onAgentActivity(mode: PixelMode, label?: string) {
     if (pixel) {
       pixel.setMode("done");
       const px = pixel;
-      setTimeout(() => { if (pixel === px) hideActivity(); }, 2600);
+      if (doneHideTimer !== null) clearTimeout(doneHideTimer);
+      doneHideTimer = window.setTimeout(() => {
+        doneHideTimer = null;
+        if (pixel === px) hideActivity();
+      }, 2600);
     } else {
       hideActivity();
     }
     return;
   }
+  // A "done" hide armed by the previous turn must not fire during the NEXT
+  // queued turn and blank the bar mid-activity.
+  if (doneHideTimer !== null) { clearTimeout(doneHideTimer); doneHideTimer = null; }
   if (!generating) { hideActivity(); return; }
   if (mode === "thinking" && !label) label = t("px.thinking");
   lastActivity = { mode, label };
@@ -237,7 +246,7 @@ function verdict(m: ModelEntry): { ok: boolean; note: string } {
 function engineModeLabel(mode?: string): string {
   if (mode === "resident-bit-exact") return t("engine.resident");
   if (mode === "streamed-bit-exact") return t("engine.streamed");
-  if (mode === "metal-bitexact") return t("engine.metal");
+  if (mode === "cpu-bit-exact") return t("engine.cpu");
   return "";
 }
 
@@ -267,7 +276,44 @@ function cycleAutonomy(): void {
   void setAutonomy(next);
 }
 
+/**
+ * Purging the queue must also remove the user bubbles submitChat pushed 1:1
+ * when the messages were queued: the model never received them, and a
+ * transcript keeping them would show an exchange that never happened.
+ * Matched from the tail because streaming can interleave assistant items
+ * after a queued bubble.
+ */
+function dropQueuedBubbles(): void {
+  if (!queuedMsgs.length) return;
+  const items = store.current().items;
+  for (let q = queuedMsgs.length - 1; q >= 0; q--) {
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      if (it.kind === "user" && it.text === queuedMsgs[q]) {
+        items.splice(i, 1);
+        break;
+      }
+    }
+  }
+  queuedMsgs = [];
+}
+
+/**
+ * Leaving a thread mid-generation: persist what the model context really
+ * holds, or reopening the thread would replay a history missing the last
+ * exchange (the transcript and the context would diverge permanently).
+ */
+function syncBeforeLeaving(): void {
+  if (generating && agent) {
+    store.syncHistory(agent.history());
+    store.trimEmptyTail();
+  }
+  dropQueuedBubbles();
+  store.save(true);
+}
+
 function newChat() {
+  syncBeforeLeaving();
   agent?.stop();
   agent = null;              // a fresh thread gets a fresh context
   store.startNew();
@@ -280,6 +326,7 @@ function newChat() {
 }
 
 async function openConversation(id: string) {
+  syncBeforeLeaving();
   agent?.stop();
   agent = null;
   await store.open(id);
@@ -340,10 +387,12 @@ async function acceptTaskSwitch(): Promise<void> {
   const offer = taskOffer;
   taskOffer = null;
   if (!offer) return;
+  syncBeforeLeaving();
   agent?.stop();
   agent = null;
   generating = false;
   queuedMsgs = [];
+  genStats = null;
   hideActivity();
   try {
     serverFail = null;
@@ -1426,7 +1475,20 @@ function modelsView(): HTMLElement {
         render();
       });
       const b = el(`<button class="bd">${esc(t("models.stop"))}</button>`);
-      b.addEventListener("click", async () => { await api.serverStop(); agent = null; await refreshServer(); render(); });
+      b.addEventListener("click", async () => {
+        // A turn may be streaming: nulling the agent without resetting the
+        // generating state would leave the chat locked on a dead stop control.
+        syncBeforeLeaving();
+        agent?.stop();
+        agent = null;
+        generating = false;
+        queuedMsgs = [];
+        genStats = null;
+        hideActivity();
+        await api.serverStop();
+        await refreshServer();
+        render();
+      });
       box.append(bench, b);
       slot.replaceWith(box);
     } else {
@@ -1455,7 +1517,25 @@ function modelsView(): HTMLElement {
         render();
       });
       const b = el(`<button class="bp">${esc(t("models.start"))}</button>`);
-      b.addEventListener("click", async () => { try { serverFail = null; await api.serverStart(m.id, null); agent = null; await refreshServer(); render(); } catch (e: any) { toast(String(e?.message ?? e)); } });
+      b.addEventListener("click", async () => {
+        // Same reset as Stop: starting another model while a turn streams
+        // must not strand `generating` on a dead agent.
+        syncBeforeLeaving();
+        agent?.stop();
+        agent = null;
+        generating = false;
+        queuedMsgs = [];
+        genStats = null;
+        hideActivity();
+        try {
+          serverFail = null;
+          await api.serverStart(m.id, null);
+          await refreshServer();
+          render();
+        } catch (e: any) {
+          toast(String(e?.message ?? e));
+        }
+      });
       box.append(del, b);
       slot.replaceWith(box);
     }
@@ -1966,6 +2046,30 @@ async function refreshServer() { try { server = await api.serverStatus(); } catc
 
 let composerDraft = "";
 
+/** Sidebar server pill state, shared by render() and the targeted repaint. */
+function serverPillState(): { pill: string; text: string } {
+  const running = registry.find((m) => m.id === server.model_id);
+  const pill = serverFail ? "failed" : server.phase === "ready" ? "ready" : server.phase === "starting" ? "starting" : "";
+  const text = serverFail
+    ? (serverFail.kind === "timeout" ? t("server.timeout") : t("server.failed"))
+    : server.phase === "ready" ? (running?.name ?? t("server.ready")) : server.phase === "starting" ? t("server.starting") : t("server.stopped");
+  return { pill, text };
+}
+
+/**
+ * Repaint ONLY the sidebar server pill. Used for background server events
+ * while the Memory or Connectors view is open: a full rebuild there wipes
+ * unsaved edits (memory textarea, custom-connector form), and those views
+ * surface server state through the pill alone.
+ */
+function renderServerPill(): void {
+  const srv = document.querySelector<HTMLElement>(".side .srv");
+  if (!srv) return;
+  const { pill, text } = serverPillState();
+  srv.className = `srv ${pill}`;
+  srv.innerHTML = `<span class="dot"></span><div class="t"><b>${esc(t("server.label"))}</b><span>${esc(text)}</span></div>`;
+}
+
 function render() {
   pixel?.destroy(); pixel = null; pixelHost = null;
   // A rebuild must never eat a draft: whatever is typed in the composer
@@ -1980,11 +2084,7 @@ function render() {
   app.innerHTML = "";
   if (!root) { const l = el(`<div class="layout"></div>`); l.appendChild(onboardView()); app.appendChild(l); return; }
 
-  const running = registry.find((m) => m.id === server.model_id);
-  const pill = serverFail ? "failed" : server.phase === "ready" ? "ready" : server.phase === "starting" ? "starting" : "";
-  const srvText = serverFail
-    ? (serverFail.kind === "timeout" ? t("server.timeout") : t("server.failed"))
-    : server.phase === "ready" ? (running?.name ?? t("server.ready")) : server.phase === "starting" ? t("server.starting") : t("server.stopped");
+  const { pill, text: srvText } = serverPillState();
   const nav = (v: View, ic: string, label: string) => `<div class="nav-item ${view === v ? "on" : ""}" data-v="${v}">${ic}<span>${esc(label)}</span></div>`;
 
   const layout = el(`<div class="layout">
@@ -2205,7 +2305,12 @@ async function boot() {
     } else {
       loadStartMs = null;
     }
-    render();
+    // A model start fires this event repeatedly for minutes. A full rebuild
+    // while the user types in the Memory textarea or the custom-connector
+    // form would wipe their edits; those views only show server state in
+    // the sidebar pill, so repaint just that.
+    if (view === "memory" || view === "connectors") renderServerPill();
+    else render();
   });
 
   // Loading elapsed ticker: refresh the counter without repainting the view.

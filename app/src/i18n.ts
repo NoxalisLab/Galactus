@@ -77,9 +77,9 @@ const dict: Record<string, { en: string; fr: string }> = {
     en: "Galactus engine: experts streamed from SSD, bit-exact (certified numerics)",
     fr: "Moteur Galactus : experts streamés du SSD, bit-exact (numérique certifiée)",
   },
-  "engine.metal": {
-    en: "Galactus engine: Metal experts through the bit-exact parity path (certified numerics)",
-    fr: "Moteur Galactus : experts Metal via le chemin de parité bit-exact (numérique certifiée)",
+  "engine.cpu": {
+    en: "Galactus engine: CPU experts, bit-exact cross-check regime (certified numerics)",
+    fr: "Moteur Galactus : experts CPU, régime de contre-vérification bit-exact (numérique certifiée)",
   },
   "engine.residentShort": { en: "resident", fr: "résident" },
   "load.title": { en: "Loading %m", fr: "Chargement de %m" },

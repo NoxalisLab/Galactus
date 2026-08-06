@@ -41,7 +41,24 @@ fn settings_store(map: &HashMap<String, String>) -> Result<(), String> {
     if let Some(dir) = p.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    std::fs::write(&p, serde_json::to_string_pretty(map).unwrap()).map_err(|e| e.to_string())
+    // Write-then-rename (atomic on APFS): a plain overwrite has a truncate
+    // window during which a concurrent settings_load reads an empty map, and
+    // the next store would then wipe every key.
+    let tmp = p.with_extension(format!("tmp.{}", std::process::id()));
+    std::fs::write(&tmp, serde_json::to_string_pretty(map).unwrap()).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &p).map_err(|e| e.to_string())
+}
+
+/// Serialized load-modify-store on the settings map. Several threads update
+/// settings.json (install pipeline thread, main-thread commands, tokio
+/// commands): without one lock two concurrent updates drop each other's keys.
+pub(crate) fn settings_update<T>(f: impl FnOnce(&mut HashMap<String, String>) -> T) -> Result<T, String> {
+    static SETTINGS_LOCK: Mutex<()> = Mutex::new(());
+    let _guard = SETTINGS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut map = settings_load();
+    let out = f(&mut map);
+    settings_store(&map)?;
+    Ok(out)
 }
 
 #[tauri::command]
@@ -51,9 +68,9 @@ fn settings_get() -> HashMap<String, String> {
 
 #[tauri::command]
 fn settings_set(key: String, value: String) -> Result<(), String> {
-    let mut map = settings_load();
-    map.insert(key, value);
-    settings_store(&map)
+    settings_update(|map| {
+        map.insert(key, value);
+    })
 }
 
 fn galactus_root() -> Result<PathBuf, String> {
@@ -181,8 +198,14 @@ fn run_capture(cmd: &str, args: &[&str]) -> String {
         .unwrap_or_default()
 }
 
+// Async so the probe (df on a possibly sleeping external volume) runs off the
+// main thread; the sync impl stays for internal and CLI callers.
 #[tauri::command]
-fn hw_info() -> HwInfo {
+async fn hw_info() -> HwInfo {
+    hw_info_impl()
+}
+
+fn hw_info_impl() -> HwInfo {
     let ram: u64 = run_capture("sysctl", &["-n", "hw.memsize"])
         .parse()
         .unwrap_or(0);
@@ -232,8 +255,10 @@ fn model_paths(root: &Path, id: &str) -> (PathBuf, PathBuf, PathBuf) {
     (model_dir, pack, profile)
 }
 
+// Async: resolve_packs can glob over external volumes, which stalls when a
+// disk has to spin up. The main thread must never wait on that.
 #[tauri::command]
-fn load_registry() -> Result<Vec<Value>, String> {
+async fn load_registry() -> Result<Vec<Value>, String> {
     let root = galactus_root()?;
     let raw = std::fs::read_to_string(root.join("scripts/models-registry.json"))
         .map_err(|e| e.to_string())?;
@@ -736,6 +761,54 @@ fn server_status() -> ServerStatus {
 /// 70% of RAM and at full expert residency. The SLRU protected fraction is
 /// then chosen as the largest of 0.75/0.50/0.25 whose probation segment can
 /// hold one token's distinct experts (micro-batch 1).
+/// Routed-expert geometry: (non_expert, expert_total, moe_layers, record, used,
+/// experts). Prefers the profile measured from the real GGUF at install time
+/// (models/<id>/profile.json), falls back to the registry, refuses to guess.
+///
+/// The record size used is the LARGEST class: the layer with the biggest
+/// records is the binding constraint on the per-layer slot quota, so planning
+/// on it is fail-closed.
+fn measured_geometry(entry: &Value) -> Option<(u64, u64, u64, u64, u64, u64)> {
+    let id = entry["id"].as_str().unwrap_or_default();
+    let profile: Option<Value> = galactus_root()
+        .ok()
+        .map(|r| r.join("models").join(id).join("profile.json"))
+        .filter(|p| p.is_file())
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str(&t).ok());
+
+    if let Some(p) = profile {
+        let record = p["layers"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|l| l["record_bytes_padded"].as_u64())
+                    .max()
+                    .unwrap_or(0)
+            })
+            .unwrap_or(0);
+        let non_expert = p["totals"]["non_routed_bytes"].as_u64().unwrap_or(0);
+        let expert_total = p["totals"]["routed_bytes_padded_pack"].as_u64().unwrap_or(0);
+        let layers = p["moe_layer_count"].as_u64().unwrap_or(0);
+        let used = p["expert_used_count"].as_u64().unwrap_or(0);
+        let experts = p["expert_count"].as_u64().unwrap_or(0);
+        if record > 0 && expert_total > 0 && layers > 0 && used > 0 && experts > 0 {
+            return Some((non_expert, expert_total, layers, record, used, experts));
+        }
+    }
+
+    let record = entry["record_bytes"].as_u64()?;
+    let expert_total = entry["expert_bytes_total"].as_u64()?;
+    let layers = entry["layers_moe"].as_u64()?;
+    let used = entry["experts_used"].as_u64()?;
+    let experts = entry["experts"].as_u64()?;
+    let non_expert = entry["non_expert_bytes"].as_u64()?;
+    if record == 0 || expert_total == 0 || layers == 0 || used == 0 || experts == 0 {
+        return None;
+    }
+    Some((non_expert, expert_total, layers, record, used, experts))
+}
+
 fn plan_cache(entry: &Value, ram_gb: u64, override_gb: Option<u64>, ram_mode: &str) -> Result<(u64, f64, u32), String> {
     // Hard gate, mirrored by the UI card: below the registry minimum the
     // engine cannot hold the non-expert weights plus a viable cache, so the
@@ -747,12 +820,23 @@ fn plan_cache(entry: &Value, ram_gb: u64, override_gb: Option<u64>, ram_mode: &s
             ));
         }
     }
-    let non_expert = entry["non_expert_bytes"].as_u64().unwrap_or(5_000_000_000);
-    let expert_total = entry["expert_bytes_total"].as_u64().unwrap_or(u64::MAX);
-    let layers = entry["layers_moe"].as_u64().unwrap_or(1).max(1);
-    let record = entry["record_bytes"].as_u64().unwrap_or(1).max(1);
-    let used = entry["experts_used"].as_u64().unwrap_or(8).max(1);
-    let experts = entry["experts"].as_u64().unwrap_or(256).max(1);
+    // Physical geometry. The install pipeline measures it from the actual GGUF
+    // (moe-profile.py writes models/<id>/profile.json), so that file is the
+    // truth and the registry only a pre-install estimate. Missing everywhere is
+    // a hard error: the old defaults (record 1 byte, experts 256) made the
+    // probation guard below fictional and the engine aborted at the first
+    // micro-batch with "free list a sec".
+    let geo = measured_geometry(entry);
+    let (non_expert, expert_total, layers, record, used, experts) = match geo {
+        Some(g) => g,
+        None => {
+            return Err(
+                "this model has no measured geometry yet (record size, expert bytes): \
+                 install it so the engine profile is generated before starting it"
+                    .into(),
+            )
+        }
+    };
 
     let ram = ram_gb * 1_000_000_000;
     // Ceiling: what the machine can afford at most.
@@ -783,7 +867,12 @@ fn plan_cache(entry: &Value, ram_gb: u64, override_gb: Option<u64>, ram_mode: &s
         .unwrap_or_default();
     let policy_cache = |mode: &str| -> u64 {
         if measured.is_empty() {
-            return max_cache;
+            // No benchmark curve for this entry: eco/balanced would silently
+            // become "take the whole ceiling", the exact opposite of the
+            // footprint promise. Fall back to the registry's minimum viable
+            // cache, and only perf climbs to the ceiling.
+            let floor = entry["min_cache_bytes"].as_u64().unwrap_or(0);
+            return if mode == "perf" || floor == 0 { max_cache } else { floor.min(max_cache) };
         }
         match mode {
             "eco" => (measured[0].0 * 1e9) as u64,
@@ -882,9 +971,64 @@ fn pick_free_port() -> Result<u16, String> {
     ))
 }
 
+/// Last lines of llama-server.log, attached to failure events so the UI can
+/// show why the engine died.
+fn server_log_tail(lines: usize) -> String {
+    std::fs::read_to_string(app_support().join("llama-server.log"))
+        .map(|t| {
+            t.lines()
+                .rev()
+                .take(lines)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
+}
+
+// Async: pack resolution and the port scan touch disks and sockets, which
+/// Proof that a llama-server carries the Galactus engine, not just its flags.
+///
+/// The engine code is linked into the llama library, so the marker is looked up
+/// in the binary AND in the llama/ggml dylibs beside it. A stock upstream build
+/// silently ignores every GALACTUS_H4_* variable and would serve the model
+/// natively, which is exactly what the product forbids: fail closed instead.
+fn engine_is_wired(bin: &Path) -> Result<(), String> {
+    const MARKER: &[u8] = b"galactus_h4:";
+    let mut candidates: Vec<PathBuf> = vec![bin.to_path_buf()];
+    if let Some(dir) = bin.parent() {
+        for probe in [dir.to_path_buf(), dir.join("../lib")] {
+            if let Ok(entries) = std::fs::read_dir(&probe) {
+                for e in entries.flatten() {
+                    let p = e.path();
+                    let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+                    if name.ends_with(".dylib") && (name.contains("llama") || name.contains("ggml")) {
+                        candidates.push(p);
+                    }
+                }
+            }
+        }
+    }
+    for path in candidates {
+        let Ok(bytes) = std::fs::read(&path) else { continue };
+        if bytes.windows(MARKER.len()).any(|w| w == MARKER) {
+            return Ok(());
+        }
+    }
+    Err(format!(
+        "this llama-server has no Galactus engine ({}): it would run the model natively, \
+         without the expert cache and without the certified numerics. Rebuild it with the patch:\n  \
+         patches/appliquer.sh third_party/llama.cpp && cmake --build third_party/llama.cpp/build --target llama-server -j",
+        bin.display()
+    ))
+}
+
+// must not run on the main thread.
 #[tauri::command]
-fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -> Result<(), String> {
-    server_stop()?;
+async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -> Result<(), String> {
+    server_stop_impl()?;
     let root = galactus_root()?;
     reap_orphan_servers(&root);
     let port = pick_free_port()?;
@@ -905,7 +1049,7 @@ fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -> Resu
             .get("cache_gb")
             .and_then(|s| s.trim().parse::<u64>().ok())
     });
-    let ram_gb = hw_info().ram_gb.max(8);
+    let ram_gb = hw_info_impl().ram_gb.max(8);
     let ram_mode = settings
         .get("ram_mode")
         .map(|s| s.as_str())
@@ -919,25 +1063,17 @@ fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -> Resu
     // bundle is used — no Homebrew, no checkout, plug and play.
     let checkout_bin = root.join("third_party/llama.cpp/build/bin/llama-server");
     let server_bin = if checkout_bin.exists() {
-        // A checkout binary must be at least as new as the engine sources,
-        // otherwise it runs without the Galactus wiring and dies on startup.
-        let engine = root.join("src/h4/h4-expert-store.cpp");
-        if let (Ok(bin_meta), Ok(src_meta)) = (std::fs::metadata(&checkout_bin), std::fs::metadata(&engine)) {
-            if let (Ok(bin_t), Ok(src_t)) = (bin_meta.modified(), src_meta.modified()) {
-                if bin_t < src_t {
-                    return Err(
-                        "llama-server is older than the Galactus engine. Rebuild it:\n  cmake --build third_party/llama.cpp/build --target llama-server -j"
-                            .into(),
-                    );
-                }
-            }
-        }
         checkout_bin
     } else if let Some(bundled) = bundled_engine() {
         bundled
     } else {
         return Err("llama-server binary not found — build it: cmake --build third_party/llama.cpp/build --target llama-server -j".into());
     };
+    // Product law: a certified model NEVER runs as a plain native llama.cpp.
+    // A stock build accepts every flag and ignores every GALACTUS_H4_* var, so
+    // it would serve the model natively while the app reported the engine
+    // regime. Prove the wiring is linked in before spawning anything.
+    engine_is_wired(&server_bin)?;
 
     // Keep the server's output so failures are visible instead of hanging.
     let log_path = app_support().join("llama-server.log");
@@ -1052,8 +1188,12 @@ fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -> Resu
         let mut s = server_state().lock().unwrap_or_else(|e| e.into_inner());
         s.child = Some(child);
         s.model_id = Some(model_id.clone());
-        s.mode = if metal_experts {
-            "metal-bitexact".into()
+        // Both expert paths are bit-exact, so the regime worth showing is the
+        // residency one: it is what tells the user the model runs in a
+        // fraction of its own size. CPU experts stay named, being the
+        // cross-check regime rather than the default.
+        s.mode = if !metal_experts {
+            "cpu-bit-exact".into()
         } else if full_residency {
             "resident-bit-exact".into()
         } else {
@@ -1083,18 +1223,7 @@ fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -> Resu
                 // Did it exit already? Then it failed to load.
                 if let Some(child) = s.child.as_mut() {
                     if let Ok(Some(status)) = child.try_wait() {
-                        let tail = std::fs::read_to_string(app_support().join("llama-server.log"))
-                            .map(|t| {
-                                t.lines()
-                                    .rev()
-                                    .take(12)
-                                    .collect::<Vec<_>>()
-                                    .into_iter()
-                                    .rev()
-                                    .collect::<Vec<_>>()
-                                    .join("\n")
-                            })
-                            .unwrap_or_default();
+                        let tail = server_log_tail(12);
                         s.child = None;
                         s.phase = "failed".into();
                         drop(s);
@@ -1153,6 +1282,23 @@ fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -> Resu
                 if s.generation != generation || s.child.is_none() {
                     return;
                 }
+                // A crash during the warmup leaves the child unreaped, so
+                // is_none() alone would still declare ready on a dead server.
+                if let Some(child) = s.child.as_mut() {
+                    if let Ok(Some(status)) = child.try_wait() {
+                        let tail = server_log_tail(12);
+                        s.child = None;
+                        s.phase = "failed".into();
+                        drop(s);
+                        let _ = app.emit(
+                            "galactus://server",
+                            json!({"phase": "failed",
+                                   "code": status.code(),
+                                   "log": tail}),
+                        );
+                        return;
+                    }
+                }
                 s.phase = "ready".into();
                 drop(s);
                 let _ = app.emit("galactus://server", json!({"phase": "ready"}));
@@ -1176,8 +1322,13 @@ fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -> Resu
     Ok(())
 }
 
+// Async: child.wait() can block for the whole engine teardown.
 #[tauri::command]
-fn server_stop() -> Result<(), String> {
+async fn server_stop() -> Result<(), String> {
+    server_stop_impl()
+}
+
+fn server_stop_impl() -> Result<(), String> {
     let mut s = server_state().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(mut child) = s.child.take() {
         let _ = child.kill();
@@ -1222,6 +1373,15 @@ fn delete_model_impl(model_id: &str) -> Result<String, String> {
         if s.child.is_some() && s.model_id.as_deref() == Some(model_id) {
             return Err("model is running — stop it first".into());
         }
+    }
+    // Symmetric guard: an install in flight is writing the very files this
+    // delete would remove from under it.
+    if install_cancels()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains_key(model_id)
+    {
+        return Err("an install is running for this model — cancel it first".into());
     }
     let entry = registry_entry(&root, &model_id)?;
     let mut removed: Vec<String> = Vec::new();
@@ -1269,16 +1429,11 @@ fn delete_model_impl(model_id: &str) -> Result<String, String> {
     }
 
     // Per-model settings: pack placement and bench result.
-    {
-        let mut map = settings_load();
-        let before = map.len();
+    settings_update(|map| {
         map.remove(&format!("pack_internal_{model_id}"));
         map.remove(&format!("pack_external_{model_id}"));
         map.remove(&format!("bench_{model_id}"));
-        if map.len() != before {
-            settings_store(&map)?;
-        }
-    }
+    })?;
 
     let mut summary = if removed.is_empty() {
         "nothing to remove".to_string()
@@ -1388,7 +1543,7 @@ fn install_pipeline_with(
     // never start is a trap, refuse up front with the reason.
     if let Ok(entry) = registry_entry(root, id) {
         if let Some(min) = entry["min_ram_gb"].as_u64() {
-            let ram = hw_info().ram_gb;
+            let ram = hw_info_impl().ram_gb;
             if ram < min {
                 return Err(format!(
                     "this model needs at least {min} GB of RAM, this Mac has {ram} GB"
@@ -1628,20 +1783,20 @@ fn install_pipeline_with(
     // 5. Custom placement: remember the pack paths so resolve_packs (serve,
     //    registry, CLI) finds them. The default location needs no settings.
     if vols.is_some() {
-        let mut map = settings_load();
-        map.insert(
-            format!("pack_internal_{id}"),
-            pack_internal.display().to_string(),
-        );
-        map.insert(
-            format!("pack_external_{id}"),
-            pack_external
-                .as_ref()
-                .unwrap_or(&pack_internal)
-                .display()
-                .to_string(),
-        );
-        settings_store(&map)?;
+        settings_update(|map| {
+            map.insert(
+                format!("pack_internal_{id}"),
+                pack_internal.display().to_string(),
+            );
+            map.insert(
+                format!("pack_external_{id}"),
+                pack_external
+                    .as_ref()
+                    .unwrap_or(&pack_internal)
+                    .display()
+                    .to_string(),
+            );
+        })?;
     }
     Ok(())
 }
@@ -1706,20 +1861,27 @@ fn floor_char_boundary(s: &str, max: usize) -> usize {
     i
 }
 
+// Async and streamed: reading a 200 GB GGUF whole would allocate it all and
+// freeze the main thread. Only the requested window ever touches RAM.
 #[tauri::command]
-fn tool_fs_read(path: String, max_bytes: usize, offset: Option<u64>) -> Result<String, String> {
-    let data = std::fs::read(&path).map_err(|e| e.to_string())?;
-    let start = (offset.unwrap_or(0) as usize).min(data.len());
-    let cap = max_bytes.min(TOOL_MAX_OUTPUT);
-    let end = (start + cap).min(data.len());
-    let mut text = String::from_utf8_lossy(&data[start..end]).into_owned();
+async fn tool_fs_read(path: String, max_bytes: usize, offset: Option<u64>) -> Result<String, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let real = normalize_user_path(&path)?;
+    let mut f = std::fs::File::open(&real).map_err(|e| e.to_string())?;
+    let len = f.metadata().map_err(|e| e.to_string())?.len();
+    let start = offset.unwrap_or(0).min(len);
+    let cap = max_bytes.min(TOOL_MAX_OUTPUT) as u64;
+    f.seek(SeekFrom::Start(start)).map_err(|e| e.to_string())?;
+    let mut data = Vec::new();
+    f.take(cap).read_to_end(&mut data).map_err(|e| e.to_string())?;
+    let end = start + data.len() as u64;
+    let mut text = String::from_utf8_lossy(&data).into_owned();
     if start > 0 {
         text = format!("…(from byte {start})\n{text}");
     }
-    if end < data.len() {
+    if end < len {
         text.push_str(&format!(
-            "\n…(truncated at byte {end} of {} — read further with offset={end})",
-            data.len()
+            "\n…(truncated at byte {end} of {len} — read further with offset={end})"
         ));
     }
     Ok(text)
@@ -1816,14 +1978,24 @@ fn diff_counts(before: &str, after: &str) -> (usize, usize) {
 /// line deltas so the UI can show a Cursor-style diff before approval.
 #[tauri::command]
 fn tool_fs_preview(path: String, content: String) -> Result<DiffResult, String> {
-    let existed = Path::new(&path).is_file();
+    // Same normalization as tool_fs_write: the previewed path must be the
+    // exact file the approved write will touch, and `..` is refused here too.
+    let real = normalize_user_path(&path)?;
+    let existed = real.is_file();
     let before = if existed {
-        std::fs::read_to_string(&path).unwrap_or_default()
+        std::fs::read_to_string(&real).unwrap_or_default()
     } else {
         String::new()
     };
     let (added, removed) = diff_counts(&before, &content);
-    Ok(DiffResult { path, before, after: content, added, removed, existed })
+    Ok(DiffResult {
+        path: real.display().to_string(),
+        before,
+        after: content,
+        added,
+        removed,
+        existed,
+    })
 }
 
 /// Backup file name for a path: FNV-1a hash prefix (collision-proof between
@@ -1846,43 +2018,87 @@ fn backup_name(path: &str) -> String {
     format!("{h:016x}-{tail}.bak")
 }
 
+/// Normalize a tool-supplied path so guards compare real locations, not the
+/// spelling the caller chose. Any `..` component is rejected outright (a
+/// lexical prefix check is defeated by traversal, and no legitimate tool call
+/// needs one); the deepest EXISTING ancestor is then canonicalized (symlinks
+/// resolved) and the not-yet-existing remainder re-attached.
+fn normalize_user_path(path: &str) -> Result<PathBuf, String> {
+    use std::path::Component;
+    let p = Path::new(path);
+    if p.as_os_str().is_empty() {
+        return Err("empty path".into());
+    }
+    if p.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(format!("path contains '..', refusing: {path}"));
+    }
+    let mut anchor = p.to_path_buf();
+    let mut rest: Vec<std::ffi::OsString> = Vec::new();
+    while !anchor.as_os_str().is_empty() && !anchor.exists() {
+        let Some(name) = anchor.file_name().map(|n| n.to_os_string()) else { break };
+        rest.push(name);
+        if !anchor.pop() {
+            break;
+        }
+    }
+    // A relative path with no existing ancestor anchors on the current dir.
+    let base = if anchor.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        anchor
+    };
+    let mut out = base
+        .canonicalize()
+        .map_err(|e| format!("{}: {e}", base.display()))?;
+    for name in rest.iter().rev() {
+        out.push(name);
+    }
+    Ok(out)
+}
+
 /// The agent must not be able to rewrite the app's own configuration
 /// (settings.json holds the MCP server commands and standing permissions:
 /// writing it grants arbitrary command execution on the next reload).
-fn is_protected_write(path: &str) -> bool {
-    Path::new(path).starts_with(app_support())
+/// Callers pass a path already through normalize_user_path; the comparison
+/// covers both the lexical and the canonical spelling of the config folder.
+fn is_protected_write(path: &Path) -> bool {
+    let support = app_support();
+    let canon = support.canonicalize().unwrap_or_else(|_| support.clone());
+    path.starts_with(&support) || path.starts_with(&canon)
 }
 
 #[tauri::command]
 fn tool_fs_write(path: String, content: String) -> Result<String, String> {
-    if is_protected_write(&path) {
+    let real = normalize_user_path(&path)?;
+    if is_protected_write(&real) {
         return Err("refusing to write inside the Galactus configuration folder".into());
     }
-    if let Some(dir) = Path::new(&path).parent() {
+    if let Some(dir) = real.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     // Keep a one-step backup so a bad edit can be reverted from the UI.
-    if Path::new(&path).is_file() {
+    if real.is_file() {
         let backups = app_support().join("backups");
         let _ = std::fs::create_dir_all(&backups);
-        let _ = std::fs::copy(&path, backups.join(backup_name(&path)));
+        let _ = std::fs::copy(&real, backups.join(backup_name(&real.to_string_lossy())));
     }
-    std::fs::write(&path, content.as_bytes()).map_err(|e| e.to_string())?;
-    Ok(format!("wrote {} bytes to {}", content.len(), path))
+    std::fs::write(&real, content.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(format!("wrote {} bytes to {}", content.len(), real.display()))
 }
 
 /// Restore the last backup taken for a path (the "undo" of an edit).
 #[tauri::command]
 fn tool_fs_revert(path: String) -> Result<String, String> {
-    if is_protected_write(&path) {
+    let real = normalize_user_path(&path)?;
+    if is_protected_write(&real) {
         return Err("refusing to write inside the Galactus configuration folder".into());
     }
-    let bak = app_support().join("backups").join(backup_name(&path));
+    let bak = app_support().join("backups").join(backup_name(&real.to_string_lossy()));
     if !bak.is_file() {
         return Err("no backup for this file".into());
     }
-    std::fs::copy(&bak, &path).map_err(|e| e.to_string())?;
-    Ok(format!("reverted {path}"))
+    std::fs::copy(&bak, &real).map_err(|e| e.to_string())?;
+    Ok(format!("reverted {}", real.display()))
 }
 
 #[tauri::command]
@@ -2058,86 +2274,122 @@ async fn mcp_reload() -> Result<Vec<McpToolInfo>, String> {
     let empty = serde_json::Map::new();
     let servers_cfg = config["mcpServers"].as_object().unwrap_or(&empty);
 
+    // One failing connector must not take the others down: each server is
+    // started independently, failures are collected, and the tools of every
+    // server that DID initialize are published regardless.
     let mut all_tools = Vec::new();
+    let mut failures: Vec<String> = Vec::new();
     for (name, cfg) in servers_cfg {
-        let command = cfg["command"].as_str().ok_or(format!("{name}: missing command"))?;
-        let args: Vec<String> = cfg["args"]
-            .as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-            .unwrap_or_default();
-        let search_path = augmented_path();
-        let bin = resolve_command(command, &search_path).map_err(|e| format!("{name}: {e}"))?;
-        let mut cmd = Command::new(bin);
-        cmd.args(&args)
-            // The child needs the full PATH too: npx must find node.
-            .env("PATH", &search_path)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        if let Some(env) = cfg["env"].as_object() {
-            for (k, v) in env {
-                if let Some(val) = v.as_str() {
-                    cmd.env(k, val);
-                }
+        match mcp_start_server(name, cfg) {
+            Ok((proc_, mut tools)) => {
+                all_tools.append(&mut tools);
+                mcp_state().lock().unwrap_or_else(|e| e.into_inner()).insert(name.clone(), proc_);
+            }
+            Err(e) => failures.push(format!("{name}: {e}")),
+        }
+    }
+    *mcp_tools_state().lock().unwrap_or_else(|e| e.into_inner()) = all_tools.clone();
+    if failures.is_empty() {
+        Ok(all_tools)
+    } else {
+        // The healthy servers stay registered (mcp_tools serves their tools);
+        // the error carries every failing connector for the UI.
+        Err(failures.join("\n"))
+    }
+}
+
+/// Spawn one MCP connector and run its initialize handshake. On any failure
+/// past the spawn the child is killed and reaped: it must not linger as an
+/// orphan behind the error.
+fn mcp_start_server(name: &str, cfg: &Value) -> Result<(McpServerProc, Vec<McpToolInfo>), String> {
+    let command = cfg["command"].as_str().ok_or("missing command".to_string())?;
+    let args: Vec<String> = cfg["args"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let search_path = augmented_path();
+    let bin = resolve_command(command, &search_path)?;
+    let mut cmd = Command::new(bin);
+    cmd.args(&args)
+        // The child needs the full PATH too: npx must find node.
+        .env("PATH", &search_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    if let Some(env) = cfg["env"].as_object() {
+        for (k, v) in env {
+            if let Some(val) = v.as_str() {
+                cmd.env(k, val);
             }
         }
-        let mut child = cmd.spawn().map_err(|e| format!("{name}: {e}"))?;
-        let stdin = child.stdin.take().ok_or(format!("{name}: no stdin"))?;
-        let stdout = child.stdout.take().ok_or(format!("{name}: no stdout"))?;
-        let pending: Arc<Mutex<HashMap<u64, std::sync::mpsc::Sender<Value>>>> =
-            Arc::new(Mutex::new(HashMap::new()));
-        let pending_reader = pending.clone();
-        std::thread::spawn(move || {
-            let reader = BufReader::new(stdout);
-            for line in reader.lines().flatten() {
-                if let Ok(v) = serde_json::from_str::<Value>(&line) {
-                    if let Some(id) = v["id"].as_u64() {
-                        if let Some(tx) = pending_reader.lock().unwrap_or_else(|e| e.into_inner()).remove(&id) {
-                            let _ = tx.send(v);
-                        }
+    }
+    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    let stdin = match child.stdin.take() {
+        Some(s) => s,
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("no stdin".into());
+        }
+    };
+    let stdout = match child.stdout.take() {
+        Some(s) => s,
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("no stdout".into());
+        }
+    };
+    let pending: Arc<Mutex<HashMap<u64, std::sync::mpsc::Sender<Value>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let pending_reader = pending.clone();
+    std::thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines().flatten() {
+            if let Ok(v) = serde_json::from_str::<Value>(&line) {
+                if let Some(id) = v["id"].as_u64() {
+                    if let Some(tx) = pending_reader.lock().unwrap_or_else(|e| e.into_inner()).remove(&id) {
+                        let _ = tx.send(v);
                     }
                 }
             }
-        });
-
-        let mut proc_ = McpServerProc { child, stdin, pending, next_id: 0 };
-        let init_seq = (|| -> Result<Value, String> {
-            mcp_request(
-                &mut proc_,
-                "initialize",
-                json!({
-                    "protocolVersion": "2025-06-18",
-                    "capabilities": {},
-                    "clientInfo": {"name": "galactus", "version": "0.1.0"}
-                }),
-            )?;
-            mcp_notify(&mut proc_, "notifications/initialized", json!({}))?;
-            mcp_request(&mut proc_, "tools/list", json!({}))
-        })();
-        let tools = match init_seq {
-            Ok(t) => t,
-            Err(e) => {
-                // A server that failed to initialize must not linger as an
-                // orphan process behind the error.
-                let _ = proc_.child.kill();
-                let _ = proc_.child.wait();
-                return Err(format!("{name}: {e}"));
-            }
-        };
-        if let Some(list) = tools["result"]["tools"].as_array() {
-            for tl in list {
-                all_tools.push(McpToolInfo {
-                    server: name.clone(),
-                    name: tl["name"].as_str().unwrap_or("").to_string(),
-                    description: tl["description"].as_str().unwrap_or("").to_string(),
-                    input_schema: tl["inputSchema"].clone(),
-                });
-            }
         }
-        mcp_state().lock().unwrap_or_else(|e| e.into_inner()).insert(name.clone(), proc_);
+    });
+
+    let mut proc_ = McpServerProc { child, stdin, pending, next_id: 0 };
+    let init_seq = (|| -> Result<Value, String> {
+        mcp_request(
+            &mut proc_,
+            "initialize",
+            json!({
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "galactus", "version": "0.1.0"}
+            }),
+        )?;
+        mcp_notify(&mut proc_, "notifications/initialized", json!({}))?;
+        mcp_request(&mut proc_, "tools/list", json!({}))
+    })();
+    let tools = match init_seq {
+        Ok(t) => t,
+        Err(e) => {
+            let _ = proc_.child.kill();
+            let _ = proc_.child.wait();
+            return Err(e);
+        }
+    };
+    let mut out = Vec::new();
+    if let Some(list) = tools["result"]["tools"].as_array() {
+        for tl in list {
+            out.push(McpToolInfo {
+                server: name.to_string(),
+                name: tl["name"].as_str().unwrap_or("").to_string(),
+                description: tl["description"].as_str().unwrap_or("").to_string(),
+                input_schema: tl["inputSchema"].clone(),
+            });
+        }
     }
-    *mcp_tools_state().lock().unwrap_or_else(|e| e.into_inner()) = all_tools.clone();
-    Ok(all_tools)
+    Ok((proc_, out))
 }
 
 #[tauri::command]
@@ -2395,9 +2647,9 @@ fn obsidian_create_vault(path: String) -> Result<String, String> {
             "# Bienvenue\n\nCe coffre a ete cree par Galactus. Les notes liees par des [[wikilinks]] apparaissent dans la Constellation.\n",
         );
     }
-    let mut map = settings_load();
-    map.insert("obsidian_vault".into(), path.clone());
-    settings_store(&map)?;
+    settings_update(|map| {
+        map.insert("obsidian_vault".into(), path.clone());
+    })?;
     Ok(path)
 }
 

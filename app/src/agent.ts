@@ -71,6 +71,9 @@ const ELEVATED_PATTERNS = [
   /\/System\//,
   /\/Library\/(?!Caches)/,
   /\bchmod\s+[0-7]*7[0-7]*\s+\//,
+  // Symbolic execute grants (+x, u+x, a+rx…): the octal pattern above only
+  // catches a 7 digit, and making a dropped file executable IS the payload.
+  /\bchmod\b[^|;&\n]*\+\w*[xX]/,
   /\bmkfs\b/,
   /\bshred\b/,
   /\bdd\s+.*of=\/dev\//,
@@ -84,34 +87,44 @@ const SENSITIVE_WRITE_PREFIXES = ["/System", "/Library", "/usr", "/bin", "/sbin"
 
 // Persistence / credential paths under $HOME are just as system-modifying as
 // /System: writing them silently would allow login hooks or key injection.
+// The bin directories are the ones the backend prepends to PATH when it
+// resolves MCP connector commands: a file dropped there is executed by the
+// app itself on the next connector reload.
 const SENSITIVE_WRITE_PATTERNS = [
   /\/Library\/(LaunchAgents|LaunchDaemons)\//,
   /\/\.ssh\//,
   /\/\.(zshrc|zshenv|zprofile|bashrc|bash_profile|profile)$/,
   /\/\.gitconfig$/,
+  /^\/opt\/homebrew\/s?bin\//,
+  /\/\.(local|bun|cargo|volta)\/bin\//,
 ];
 
 export function isElevatedCommand(cmd: string): boolean {
   if (ELEVATED_PATTERNS.some((re) => re.test(cmd))) return true;
   // Destructive rm in ANY flag layout: `rm -rf`, `rm -r -f`, `rm --recursive`,
-  // `rm -f x` … Split on every separator that can chain commands — newlines
-  // and subshell parens included — and scan EVERY `rm` token: an indexOf of
-  // the first occurrence misses `echo ok && rm …`, `for …; do rm …; done`,
-  // and `VAR=1 rm …`. Over-matching (a quoted "rm -rf" in an echo) only costs
-  // an extra confirmation, under-matching costs the user's files.
-  for (const seg of cmd.split(/[|;&\n()]+/)) {
+  // `rm -f x` … Split on every separator that can chain commands — newlines,
+  // subshell parens, backticks and `$` included, so `$(rm …)` and `` `rm …` ``
+  // substitutions are scanned as their own segments — and scan EVERY `rm`
+  // token by BASENAME: `/bin/rm` must not slip past a whole-token compare,
+  // and an indexOf of the first occurrence misses `echo ok && rm …`,
+  // `for …; do rm …; done`, and `VAR=1 rm …`. Over-matching (a quoted
+  // "rm -rf" in an echo) only costs an extra confirmation, under-matching
+  // costs the user's files.
+  for (const seg of cmd.split(/[|;&\n()$`]+/)) {
     const toks = seg.trim().split(/\s+/);
     for (let i = 0; i < toks.length; i++) {
-      if (toks[i] !== "rm") continue;
+      if ((toks[i].split("/").pop() ?? "") !== "rm") continue;
       const flags = toks.slice(i + 1).filter((tk) => tk.startsWith("-"));
       if (flags.some((tk) => /^-[a-zA-Z]*[rRf]/.test(tk) || tk === "--recursive" || tk === "--force")) {
         return true;
       }
     }
   }
-  // A nested shell (`sh -c '…'`, `zsh -lc "…"`) makes the real command opaque
-  // to this filter: treat it as elevated rather than guess.
-  if (/(?:^|[\s|;&(])(?:sh|bash|zsh|dash|ksh)\b[^|;&\n]*\s-\w*c\b/.test(cmd)) return true;
+  // A nested shell (`sh -c '…'`, `zsh -lc "…"`, `/bin/sh -c '…'`) makes the
+  // real command opaque to this filter: treat it as elevated rather than
+  // guess. The prefix class includes "/", "$" and backtick so path-qualified
+  // shells and substitutions are caught too.
+  if (/(?:^|[\s|;&($`\/])(?:sh|bash|zsh|dash|ksh)\b[^|;&\n]*\s-\w*c\b/.test(cmd)) return true;
   return false;
 }
 
@@ -120,6 +133,22 @@ export function isElevatedWrite(path: string): boolean {
     SENSITIVE_WRITE_PREFIXES.some((p) => path.startsWith(p)) ||
     SENSITIVE_WRITE_PATTERNS.some((re) => re.test(path))
   );
+}
+
+/**
+ * Lexical cleanup only: "." segments and duplicate slashes collapse so a
+ * standing-rule prefix always compares against one canonical spelling.
+ * ".." is never resolved here — it is rejected upstream, because resolving
+ * it lexically would legitimize "granted/../../secret" escapes.
+ */
+export function normalizePath(p: string): string {
+  if (!p.startsWith("/")) return p;
+  return "/" + p.split("/").filter((seg) => seg !== "" && seg !== ".").join("/");
+}
+
+/** True when the path contains a ".." component, whatever the layout. */
+export function hasParentTraversal(p: string): boolean {
+  return p.split("/").includes("..");
 }
 
 interface StandingRule {
@@ -698,7 +727,21 @@ export class Agent {
     let cut = 1 + Math.floor((msgs.length - 1) * 0.6);
     // Never split an assistant tool_calls / tool-results pair.
     while (cut < msgs.length - 1 && msgs[cut].role === "tool") cut++;
-    if (cut >= msgs.length - 1) cut = msgs.length - 2;
+    if (cut >= msgs.length - 1) {
+      cut = msgs.length - 2;
+      // Stepping back can land on a tool message whose assistant tool_calls
+      // partner gets summarized away: a kept slice that starts with an
+      // orphaned tool result is rejected by the server. Walk back to a
+      // boundary that is neither a tool result nor an assistant carrying
+      // tool_calls.
+      while (
+        cut > 1 &&
+        (msgs[cut].role === "tool" ||
+          (msgs[cut].role === "assistant" && (msgs[cut].tool_calls?.length ?? 0) > 0))
+      ) {
+        cut--;
+      }
+    }
     if (cut <= 1) return this.compactHistory();
 
     const chunk = msgs.slice(1, cut);
@@ -1052,6 +1095,21 @@ export class Agent {
 
     this.hooks.onToolStart(name, JSON.stringify(args).slice(0, 300));
     this.hooks.onActivity?.(activityModeFor(name), name);
+
+    // Path-taking tools: reject ".." BEFORE any gate check. A standing folder
+    // grant is matched by prefix, so "granted/../../.ssh/id_ed25519" would
+    // otherwise read outside the granted tree with no dialog. The surviving
+    // path is normalized so standing-rule matching compares one canonical
+    // spelling ("." segments, duplicate slashes).
+    if (name === "read_file" || name === "write_file" || name === "list_directory" || name === "read_document") {
+      const p = normalizePath(String(args.path ?? ""));
+      if (hasParentTraversal(p)) {
+        const msg = 'error: path contains a ".." component; use a fully resolved absolute path';
+        this.hooks.onToolResult(name, msg);
+        return msg;
+      }
+      args.path = p;
+    }
 
     try {
       let result: string;

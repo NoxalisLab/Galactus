@@ -328,6 +328,19 @@ export async function streamChat(
         } catch {
           continue;
         }
+        // llama-server can push an error frame AFTER the stream opened (slot
+        // failure, context overflow discovered late): without this the turn
+        // would end as a silent success with an empty answer.
+        if (parsed.error || (parsed.message && !parsed.choices)) {
+          const err = parsed.error ?? parsed;
+          const msg =
+            typeof err === "string" ? err : String(err.message ?? JSON.stringify(err));
+          try {
+            await reader.cancel();
+          } catch {}
+          handlers.onError(msg.slice(0, 300));
+          return false;
+        }
         const delta = parsed.choices?.[0]?.delta;
         if (!delta) continue;
         if (typeof delta.content === "string" && delta.content.length > 0) {
