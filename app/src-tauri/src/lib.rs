@@ -55,16 +55,82 @@ fn settings_set(key: String, value: String) -> Result<(), String> {
 
 fn galactus_root() -> Result<PathBuf, String> {
     let map = settings_load();
-    let root = map
-        .get("root")
-        .cloned()
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| "Galactus folder is not set (Settings)".to_string())?;
-    let p = PathBuf::from(root);
-    if !p.join("scripts/models-registry.json").exists() {
-        return Err("Galactus folder does not contain scripts/models-registry.json".into());
+    if let Some(root) = map.get("root").cloned().filter(|s| !s.is_empty()) {
+        let p = PathBuf::from(root);
+        if p.join("scripts/models-registry.json").exists() {
+            return Ok(p);
+        }
     }
-    Ok(p)
+    // No (valid) checkout configured: run self-contained on the bundled data.
+    provision_default_root()
+}
+
+/// Bundle Resources dir (packaged app) or src-tauri (dev run).
+fn resource_dir() -> Option<PathBuf> {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(res) = exe
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|p| p.join("Resources"))
+        {
+            if res.join("engine/llama-server").exists() || res.join("packaged").exists() {
+                return Some(res);
+            }
+        }
+    }
+    let dev = std::env::current_dir().unwrap_or_default().join("src-tauri");
+    if dev.join("engine").exists() || dev.join("packaged").exists() {
+        return Some(dev);
+    }
+    None
+}
+
+/// The llama-server shipped inside the app bundle (fully relocated: dylibs
+/// and OpenSSL travel with it). Returns None when the app was built without
+/// an engine (dev builds before prepare-engine.sh).
+fn bundled_engine() -> Option<PathBuf> {
+    let bin = resource_dir()?.join("engine/llama-server");
+    if !bin.is_file() {
+        return None;
+    }
+    // Resource copying does not guarantee the executable bit.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(&bin) {
+            let mut perm = meta.permissions();
+            if perm.mode() & 0o111 == 0 {
+                perm.set_mode(0o755);
+                let _ = std::fs::set_permissions(&bin, perm);
+            }
+        }
+    }
+    Some(bin)
+}
+
+/// Self-contained mode: data lives in Application Support/Galactus/data,
+/// seeded from the registry and scripts bundled with the app. No checkout,
+/// no third-party install: plug and play.
+fn provision_default_root() -> Result<PathBuf, String> {
+    let root = app_support().join("data");
+    let scripts = root.join("scripts");
+    std::fs::create_dir_all(&scripts).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(root.join("models")).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(root.join("artifacts/h4/packs")).map_err(|e| e.to_string())?;
+    if !scripts.join("models-registry.json").exists() {
+        let res = resource_dir()
+            .ok_or("Galactus folder is not set and the app bundle carries no packaged data")?;
+        let src = res.join("packaged/scripts");
+        for f in [
+            "models-registry.json",
+            "moe-profile.py",
+            "galactus-pack-plan.py",
+            "galactus-pack-write.py",
+        ] {
+            std::fs::copy(src.join(f), scripts.join(f)).map_err(|e| format!("seed {f}: {e}"))?;
+        }
+    }
+    Ok(root)
 }
 
 // ---------------------------------------------------------------- hardware
@@ -326,16 +392,15 @@ fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -> Resu
     let ram_gb = hw_info().ram_gb.max(8);
     let (cache_bytes, fraction, ubatch) = plan_cache(&entry, ram_gb, override_gb)?;
 
-    let server_bin = root.join("third_party/llama.cpp/build/bin/llama-server");
-    if !server_bin.exists() {
-        return Err("llama-server binary not found — build it: cmake --build third_party/llama.cpp/build --target llama-server -j".into());
-    }
-    // The server must be at least as new as the engine sources, otherwise it
-    // runs without the Galactus wiring and dies on startup (silently, before
-    // this fix). Compare against the h4 core we link into llama.cpp.
-    {
+    // Engine resolution: a developer checkout build wins (always freshest);
+    // otherwise the fully relocated llama-server shipped INSIDE the app
+    // bundle is used — no Homebrew, no checkout, plug and play.
+    let checkout_bin = root.join("third_party/llama.cpp/build/bin/llama-server");
+    let server_bin = if checkout_bin.exists() {
+        // A checkout binary must be at least as new as the engine sources,
+        // otherwise it runs without the Galactus wiring and dies on startup.
         let engine = root.join("src/h4/h4-expert-store.cpp");
-        if let (Ok(bin_meta), Ok(src_meta)) = (std::fs::metadata(&server_bin), std::fs::metadata(&engine)) {
+        if let (Ok(bin_meta), Ok(src_meta)) = (std::fs::metadata(&checkout_bin), std::fs::metadata(&engine)) {
             if let (Ok(bin_t), Ok(src_t)) = (bin_meta.modified(), src_meta.modified()) {
                 if bin_t < src_t {
                     return Err(
@@ -345,7 +410,12 @@ fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -> Resu
                 }
             }
         }
-    }
+        checkout_bin
+    } else if let Some(bundled) = bundled_engine() {
+        bundled
+    } else {
+        return Err("llama-server binary not found — build it: cmake --build third_party/llama.cpp/build --target llama-server -j".into());
+    };
 
     // Keep the server's output so failures are visible instead of hanging.
     let log_path = app_support().join("llama-server.log");
@@ -826,15 +896,37 @@ fn floor_char_boundary(s: &str, max: usize) -> usize {
 }
 
 #[tauri::command]
-fn tool_fs_read(path: String, max_bytes: usize) -> Result<String, String> {
+fn tool_fs_read(path: String, max_bytes: usize, offset: Option<u64>) -> Result<String, String> {
     let data = std::fs::read(&path).map_err(|e| e.to_string())?;
+    let start = (offset.unwrap_or(0) as usize).min(data.len());
     let cap = max_bytes.min(TOOL_MAX_OUTPUT);
-    let slice = &data[..data.len().min(cap)];
-    let mut text = String::from_utf8_lossy(slice).into_owned();
-    if data.len() > cap {
-        text.push_str(&format!("\n…(truncated, {} bytes total)", data.len()));
+    let end = (start + cap).min(data.len());
+    let mut text = String::from_utf8_lossy(&data[start..end]).into_owned();
+    if start > 0 {
+        text = format!("…(from byte {start})\n{text}");
+    }
+    if end < data.len() {
+        text.push_str(&format!(
+            "\n…(truncated at byte {end} of {} — read further with offset={end})",
+            data.len()
+        ));
     }
     Ok(text)
+}
+
+/// Internal spill area for oversized tool outputs and sub-agent transcripts.
+/// The agent can READ these (tool_fs_read) but cannot overwrite them: the
+/// whole Application Support folder is refused by tool_fs_write.
+#[tauri::command]
+fn scratch_write(name: String, content: String) -> Result<String, String> {
+    if name.is_empty() || name.contains("..") || name.contains('/') || name.starts_with('.') {
+        return Err("invalid scratch name".into());
+    }
+    let dir = app_support().join("scratch");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let p = dir.join(name);
+    std::fs::write(&p, content.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(p.display().to_string())
 }
 
 #[derive(Serialize, Clone)]
@@ -1234,7 +1326,11 @@ fn detect_root() -> Option<String> {
             return Some(root);
         }
     }
-    None
+    // No checkout anywhere: self-provision from the bundled data so the app
+    // works out of the box.
+    provision_default_root()
+        .ok()
+        .map(|p| p.display().to_string())
 }
 
 /// Native macOS folder chooser via osascript. Returns None on cancel.
@@ -1823,6 +1919,7 @@ pub fn run() {
             install_model,
             cancel_install,
             tool_fs_read,
+            scratch_write,
             tool_fs_write,
             tool_fs_preview,
             tool_fs_revert,

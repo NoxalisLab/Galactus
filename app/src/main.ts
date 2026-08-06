@@ -1,3 +1,4 @@
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, HwInfo, ModelEntry, onEvent, ServerStatus, SkillInfo } from "./api";
 import {
   Agent,
@@ -400,7 +401,7 @@ function chatView(): HTMLElement {
   const tps = running ? expectedTps(running) : null;
   const ready = server.running && server.phase === "ready";
   const wrap = el(`<div class="main">
-    <div class="topbar">
+    <div class="topbar" data-tauri-drag-region>
       <span class="ttl">${esc(t("nav.chat"))}</span>
       <div class="right">
         ${taskBarHtml()}
@@ -693,6 +694,11 @@ async function ensureAgent(): Promise<void> {
       },
       onPlan: (steps) => { if (agent === inst) { store.setPlan(steps); paintPlan(); } },
       onActivity: (mode, label) => { if (agent === inst) onAgentActivity(mode, label); },
+      onNotice: (text) => {
+        if (agent !== inst) return;
+        store.pushNotice(text);
+        schedulePaint();
+      },
       onError: (err) => {
         if (agent !== inst) return;
         store.pushError(err);
@@ -843,7 +849,7 @@ function prettyTool(name: string): string {
   const map: Record<string, string> = {
     read_file: t("tool.read"), write_file: t("tool.write"), list_directory: t("tool.list"),
     run_command: t("tool.run"), remember: t("tool.remember"), use_skill: t("tool.skill"),
-    read_document: t("tool.doc"),
+    read_document: t("tool.doc"), run_workflow: t("tool.workflow"),
     obsidian_search: t("tool.osearch"), obsidian_read: t("tool.oread"), obsidian_append: t("tool.owrite"),
   };
   if (map[name]) return map[name];
@@ -854,7 +860,7 @@ function prettyTool(name: string): string {
 // ---------- models ----------
 function modelsView(): HTMLElement {
   const wrap = el(`<div class="main">
-    <div class="topbar"><span class="ttl">${esc(t("nav.models"))}</span><span class="sub">${esc(t("models.subtitle"))}</span></div>
+    <div class="topbar" data-tauri-drag-region><span class="ttl">${esc(t("nav.models"))}</span><span class="sub">${esc(t("models.subtitle"))}</span></div>
     <div class="page">
       <div id="srvfail"></div>
       <div class="hwbar" id="hw"></div>
@@ -936,7 +942,7 @@ function modelsView(): HTMLElement {
 // ---------- connectors ----------
 function connectorsView(): HTMLElement {
   const wrap = el(`<div class="main">
-    <div class="topbar"><span class="ttl">${esc(t("nav.connectors"))}</span><span class="sub">${esc(t("conn.subtitle"))}</span></div>
+    <div class="topbar" data-tauri-drag-region><span class="ttl">${esc(t("nav.connectors"))}</span><span class="sub">${esc(t("conn.subtitle"))}</span></div>
     <div class="page"><div class="hold"><div id="list"></div></div></div></div>`);
   const list = wrap.querySelector<HTMLElement>("#list")!;
   const lang = getLang();
@@ -1004,7 +1010,7 @@ function customForm(dashed: HTMLElement, holder: HTMLElement): HTMLElement {
 // ---------- memory ----------
 function memoryView(): HTMLElement {
   const wrap = el(`<div class="main">
-    <div class="topbar"><span class="ttl">${esc(t("nav.memory"))}</span><span class="sub">${esc(t("mem.subtitle"))}</span></div>
+    <div class="topbar" data-tauri-drag-region><span class="ttl">${esc(t("nav.memory"))}</span><span class="sub">${esc(t("mem.subtitle"))}</span></div>
     <div class="page"><div class="hold">
       <div class="card">
         <div class="hd"><div class="grow"><b>${esc(t("mem.enable"))}</b><span class="d">${esc(t("mem.enableHint"))}</span></div><div class="tgl" id="memtog"><div class="k"></div></div></div>
@@ -1067,7 +1073,7 @@ function memoryView(): HTMLElement {
 // ---------- agent (workspace + autonomy + skills) ----------
 function agentView(): HTMLElement {
   const wrap = el(`<div class="main">
-    <div class="topbar"><span class="ttl">${esc(t("nav.agent"))}</span><span class="sub">${esc(t("agent.subtitle"))}</span></div>
+    <div class="topbar" data-tauri-drag-region><span class="ttl">${esc(t("nav.agent"))}</span><span class="sub">${esc(t("agent.subtitle"))}</span></div>
     <div class="page"><div class="hold">
       <div class="card">
         <div class="hd"><div class="grow"><b>${esc(t("agent.workspaceTitle"))}</b><span class="d">${esc(t("agent.workspaceDesc"))}</span></div></div>
@@ -1124,7 +1130,7 @@ function agentView(): HTMLElement {
 // ---------- settings ----------
 function settingsView(): HTMLElement {
   const wrap = el(`<div class="main">
-    <div class="topbar"><span class="ttl">${esc(t("nav.settings"))}</span></div>
+    <div class="topbar" data-tauri-drag-region><span class="ttl">${esc(t("nav.settings"))}</span></div>
     <div class="page"><div class="hold narrow">
       <div class="set-row"><div class="grow"><b>${esc(t("settings.language"))}</b><span>${esc(t("settings.languageDesc"))}</span></div>
         <div class="seg" id="lang"><button data-l="fr" class="${getLang() === "fr" ? "on" : ""}">Français</button><button data-l="en" class="${getLang() === "en" ? "on" : ""}">English</button></div>
@@ -1234,7 +1240,7 @@ function render() {
 
   const layout = el(`<div class="layout">
     <div class="side">
-      <div class="side-head"></div>
+      <div class="side-head" data-tauri-drag-region></div>
       <div class="brand2"><img class="mark" src="${LOGO}" alt="Galactus"/><div class="txt"><b>Galactus</b><span>${esc(t("brand.by"))}</span></div></div>
       <div class="nav">
         ${nav("chat", I.chat, t("nav.chat"))}
@@ -1400,6 +1406,20 @@ async function boot() {
     }
     await refreshServer();
     render();
+  });
+
+  // Window dragging: WKWebView ignores `-webkit-app-region` (Electron-only),
+  // so the hidden-titlebar window has NO native grab area. Drive it manually:
+  // any press on a drag-region zone that is not an interactive control starts
+  // a native window drag; a double press toggles maximize like a real titlebar.
+  document.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
+    const t = e.target as HTMLElement;
+    if (!t.closest("[data-tauri-drag-region]")) return;
+    if (t.closest("button, input, textarea, select, a, .iconbtn, .mpill, .task-bar, .seg, .seg-mode, .tgl, .link")) return;
+    const win = getCurrentWindow();
+    if (e.detail >= 2) win.toggleMaximize().catch(() => {});
+    else win.startDragging().catch(() => {});
   });
 
   // Keyboard shortcuts: ⌘N new chat, ⌘1..6 navigation.

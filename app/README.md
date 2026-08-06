@@ -24,12 +24,16 @@ gated access to your files and shell so it can actually get work done.
 
 ## Requirements
 
-This app is a front-end for an existing Galactus checkout. It needs:
+The app is self-contained: the Galactus llama-server (with its dylibs and
+OpenSSL, fully relocated) plus the model registry and install scripts ship
+inside the bundle. Without any checkout, data lives in
+`~/Library/Application Support/Galactus/data`.
 
-- The Galactus repo folder (containing `scripts/models-registry.json`,
-  `models/`, `artifacts/`, and a built `third_party/llama.cpp/build/bin/llama-server`).
-  Set it in **Settings → Galactus folder**.
-- `python3`, `curl`, `shasum` on PATH (stock macOS has all three).
+Only stock macOS tools are used at runtime: `python3`, `curl`, `shasum`.
+
+Developers can still point **Settings → Galactus folder** at a checkout: a
+`third_party/llama.cpp/build/bin/llama-server` built there takes precedence
+over the bundled engine.
 
 ## Develop
 

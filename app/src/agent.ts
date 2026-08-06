@@ -3,6 +3,8 @@
 import {
   api,
   ChatMessage,
+  chatOnce,
+  fetchCtxSize,
   StreamHandlers,
   streamChat,
   ToolCall,
@@ -53,7 +55,11 @@ export interface AgentHooks {
   onError: (err: string) => void;
   askPermission: (req: PermissionRequest) => Promise<PermissionDecision>;
   onActivity?: (mode: import("./pixel").PixelMode, label?: string) => void;
+  /** Discreet system line in the thread (sub-agent progress…). */
+  onNotice?: (text: string) => void;
 }
+
+export type AgentRole = "main" | "sub";
 
 const ELEVATED_PATTERNS = [
   /\bsudo\b/,
@@ -161,7 +167,34 @@ function isStanding(kind: PermissionKind, detail: string): boolean {
   });
 }
 
-function builtinTools(hasVault: boolean): ToolDef[] {
+const WORKFLOW_TOOL: ToolDef = {
+  type: "function",
+  function: {
+    name: "run_workflow",
+    description:
+      "Split a broad subject into 2-6 focused sub-tasks and run a dedicated sub-agent on each one, in sequence. Every sub-agent starts with a CLEAN context (none of this conversation's accumulated output), works with the same tools, and returns a compact factual report with its sources. Use this for multi-source research, comparisons, or any task where raw intermediate output would pollute your context. You receive the reports and must synthesize them.",
+    parameters: {
+      type: "object",
+      properties: {
+        tasks: {
+          type: "array",
+          description: "The sub-tasks, each handled by one sub-agent",
+          items: {
+            type: "object",
+            properties: {
+              title: { type: "string", description: "Short label shown to the user" },
+              goal: { type: "string", description: "Precise, self-contained instruction for the sub-agent (it knows NOTHING of this conversation)" },
+            },
+            required: ["title", "goal"],
+          },
+        },
+      },
+      required: ["tasks"],
+    },
+  },
+};
+
+function builtinTools(hasVault: boolean, role: AgentRole = "main"): ToolDef[] {
   const tools: ToolDef[] = [
     {
       type: "function",
@@ -192,10 +225,15 @@ function builtinTools(hasVault: boolean): ToolDef[] {
       type: "function",
       function: {
         name: "read_file",
-        description: "Read a text file from the user's disk. Returns up to 200 KB.",
+        description:
+          "Read a text file from the user's disk. For large files, read targeted sections with offset/max_bytes instead of loading everything.",
         parameters: {
           type: "object",
-          properties: { path: { type: "string", description: "Absolute file path" } },
+          properties: {
+            path: { type: "string", description: "Absolute file path" },
+            offset: { type: "number", description: "Byte offset to start reading from (default 0)" },
+            max_bytes: { type: "number", description: "How many bytes to read (default 200000)" },
+          },
           required: ["path"],
         },
       },
@@ -327,11 +365,20 @@ function builtinTools(hasVault: boolean): ToolDef[] {
       }
     );
   }
+  // Sub-agents never delegate further: one level of fan-out, no recursion.
+  if (role === "main") tools.push(WORKFLOW_TOOL);
   return tools;
+}
+
+/** Short human label for sub-agent activity lines. */
+function prettyToolLabel(name: string): string {
+  if (name.startsWith("mcp__")) return name.split("__").slice(1).join(" ");
+  return name.replace(/_/g, " ");
 }
 
 function activityModeFor(tool: string): import("./pixel").PixelMode {
   if (tool.startsWith("mcp__")) return "connector";
+  if (tool === "run_workflow") return "connector";
   switch (tool) {
     case "read_document":
     case "read_file":
@@ -374,7 +421,11 @@ export class Agent {
   private taskSystem: string | null = null;
   private taskTemp: number | null = null;
 
-  constructor(private hooks: AgentHooks, private port: number) {
+  constructor(
+    private hooks: AgentHooks,
+    private port: number,
+    private role: AgentRole = "main"
+  ) {
     this.reset();
   }
 
@@ -443,6 +494,11 @@ export class Agent {
         "Then carry them out one by one with your tools, calling update_plan again to mark each step 'doing' then 'done'. " +
         "Do the work yourself instead of telling the user how to do it. When everything is complete, give a short final summary. " +
         "Only stop early if you are truly blocked or a step would be destructive and needs a human decision.";
+      if (this.role === "main") {
+        p +=
+          " For broad or multi-source subjects (research across several sites, comparisons, large analyses), " +
+          "call run_workflow to fan the work out to focused sub-agents with clean contexts, then synthesize their reports yourself.";
+      }
     }
     if (this.skills.length > 0) {
       p +=
@@ -453,11 +509,17 @@ export class Agent {
     if (this.memory.trim().length > 0) {
       p += "\n\nWhat you remember about the user:\n" + this.memory.trim();
     }
+    if (this.contextSummary.trim().length > 0) {
+      p +=
+        "\n\nFaithful summary of the EARLIER part of this conversation (auto-condensed to keep the context clean; treat as established facts, do not re-derive or embellish them):\n" +
+        this.contextSummary.trim();
+    }
     return p;
   }
 
   stop() {
     this.abort?.abort();
+    this.activeSub?.stop();
   }
 
   history(): ChatMessage[] {
@@ -475,7 +537,106 @@ export class Agent {
     await this.turn(0);
   }
 
-  private async turn(depth: number): Promise<void> {
+  // ---------------- adaptive context management ----------------
+  //
+  // Anti-hallucination hygiene: the model's window never fills with stale
+  // raw dumps. Oversized tool outputs spill to scratch files (the model
+  // re-reads precise sections on demand), and when the window approaches
+  // capacity the OLDEST turns are summarized BY THE MODEL under a strict
+  // "facts, numbers, paths, sources, nothing invented" instruction, then
+  // folded into the system prompt. Blind truncation is the last resort only.
+
+  private nCtx: number | null = null;
+  private contextSummary = "";
+
+  private async ensureCtxSize(): Promise<number> {
+    if (this.nCtx) return this.nCtx;
+    try {
+      this.nCtx = await fetchCtxSize(this.port);
+    } catch {
+      this.nCtx = 32768;
+    }
+    return this.nCtx;
+  }
+
+  /** Rough token estimate of the request body (~4 chars per token). */
+  private estimateTokens(): number {
+    let chars = 0;
+    for (const m of this.messages) {
+      chars += (typeof m.content === "string" ? m.content.length : 0) + 20;
+      if (m.tool_calls) for (const tc of m.tool_calls) chars += tc.function.name.length + tc.function.arguments.length + 30;
+    }
+    return Math.ceil(chars / 4) + 2500; // + tool schemas overhead
+  }
+
+  /**
+   * Fold the oldest ~60% of the thread into a model-written faithful summary.
+   * Falls back to hard trimming only if the summarization call itself fails.
+   */
+  private async digestHistory(): Promise<boolean> {
+    const msgs = this.messages;
+    if (msgs.length < 6) return this.compactHistory();
+    let cut = 1 + Math.floor((msgs.length - 1) * 0.6);
+    // Never split an assistant tool_calls / tool-results pair.
+    while (cut < msgs.length - 1 && msgs[cut].role === "tool") cut++;
+    if (cut >= msgs.length - 1) cut = msgs.length - 2;
+    if (cut <= 1) return this.compactHistory();
+
+    const chunk = msgs.slice(1, cut);
+    const rendered = chunk
+      .map((m) => {
+        let c = typeof m.content === "string" ? m.content : "";
+        if (c.length > 3000) c = c.slice(0, 3000) + "…";
+        const calls = m.tool_calls
+          ?.map((tc) => `${tc.function.name}(${tc.function.arguments.slice(0, 200)})`)
+          .join(", ");
+        return `[${m.role}]${calls ? ` tool calls: ${calls}` : ""} ${c}`;
+      })
+      .join("\n");
+
+    try {
+      const summary = await chatOnce(
+        this.port,
+        [
+          {
+            role: "system",
+            content:
+              "You compress conversation history. Keep EVERY fact, number, URL, file path, decision and source attribution exactly as stated. Never invent, embellish or reinterpret anything. If something is uncertain in the original, keep it marked uncertain. Output a tight bullet list.",
+          },
+          { role: "user", content: "Summarize this conversation segment faithfully:\n\n" + rendered.slice(0, 60_000) },
+        ],
+        0.1,
+        this.abort?.signal
+      );
+      if (!summary.trim()) return this.compactHistory();
+      this.contextSummary = (this.contextSummary ? this.contextSummary + "\n" : "") + summary.trim();
+      if (this.contextSummary.length > 8000) this.contextSummary = this.contextSummary.slice(-8000);
+      this.messages = [msgs[0], ...msgs.slice(cut)];
+      if (this.messages[0].role === "system") this.messages[0].content = this.systemPrompt();
+      return true;
+    } catch {
+      return this.compactHistory();
+    }
+  }
+
+  /** Emergency fallback: trim old tool outputs in place, no model call. */
+  private compactHistory(): boolean {
+    const toolIdx = this.messages
+      .map((m, i) => (m.role === "tool" ? i : -1))
+      .filter((i) => i >= 0);
+    let changed = false;
+    toolIdx.forEach((i, rank) => {
+      const m = this.messages[i];
+      const keep = rank >= toolIdx.length - 2 ? 6000 : 800;
+      if (typeof m.content === "string" && m.content.length > keep) {
+        m.content = m.content.slice(0, keep) + "\n…(older tool output trimmed to fit the context)";
+        changed = true;
+      }
+    });
+    return changed;
+  }
+
+  private async turn(depth: number, retriedAfterCompact = false): Promise<void> {
     const maxDepth = this.mode === "agent" ? 30 : 12;
     if (depth > maxDepth) {
       this.hooks.onError("tool loop limit reached");
@@ -483,8 +644,17 @@ export class Agent {
     }
     this.abort = new AbortController();
     this.hooks.onActivity?.("thinking");
+
+    // Proactive: digest BEFORE the window overflows, not after the server
+    // rejects us. 75% leaves room for the answer being generated.
+    const nCtx = await this.ensureCtxSize();
+    if (this.estimateTokens() > nCtx * 0.75) {
+      await this.digestHistory();
+    }
+
     let assistantText = "";
     let toolCalls: ToolCall[] = [];
+    let streamErr: string | null = null;
 
     const handlers: StreamHandlers = {
       onDelta: (text) => {
@@ -495,10 +665,12 @@ export class Agent {
         toolCalls = calls;
       },
       onDone: () => {},
-      onError: (err) => this.hooks.onError(err),
+      onError: (err) => {
+        streamErr = err;
+      },
     };
 
-    const tools = [...builtinTools(this.hasVault), ...mcpToolDefs(this.mcp)];
+    const tools = [...builtinTools(this.hasVault, this.role), ...mcpToolDefs(this.mcp)];
     const ok = await streamChat(
       this.port,
       this.messages,
@@ -508,8 +680,17 @@ export class Agent {
       this.taskTemp ?? 0.6
     );
     if (!ok && !this.abort.signal.aborted) {
-      // Request failed: onError already surfaced it. Do NOT push an empty
-      // assistant message nor call finishTurn — that would end the turn twice.
+      // Context overflow (huge tool outputs, long thread): summarize the
+      // history once and retry instead of killing the conversation.
+      const looksLikeCtx = streamErr !== null && /context|exceed|too (long|large|many)|kv[ _-]?cache|n_ctx|token/i.test(streamErr);
+      if (looksLikeCtx && !retriedAfterCompact && assistantText.length === 0) {
+        if (await this.digestHistory()) {
+          return this.turn(depth, true);
+        }
+      }
+      // Request failed for real: surface it. Do NOT push an empty assistant
+      // message nor call finishTurn — that would end the turn twice.
+      this.hooks.onError(streamErr ?? "request failed");
       this.hooks.onActivity?.("done");
       return;
     }
@@ -553,10 +734,30 @@ export class Agent {
       } catch (e: any) {
         result = `error: ${String(e?.message ?? e)}`;
       }
+      // A raw web-page dump can weigh 200 KB (≈ 50k tokens): pushed whole, a
+      // handful of those blows the context window and every later request
+      // gets rejected. Oversized outputs spill WHOLE to a scratch file and
+      // the history keeps the head plus the path: the model re-reads precise
+      // sections with read_file(offset) instead of working from a blind cut.
+      // Workflow reports are ALREADY distilled: give them more room before
+      // spilling, or the whole point of the fan-out is lost.
+      const HIST_TOOL_MAX = call.function.name === "run_workflow" ? 40_000 : 20_000;
+      let hist = result && result.length > 0 ? result : "(no output)";
+      if (hist.length > HIST_TOOL_MAX) {
+        let note: string;
+        try {
+          const fname = `tool-${Date.now().toString(36)}-${call.function.name.replace(/[^\w-]/g, "_").slice(0, 40)}.txt`;
+          const path = await api.scratchWrite(fname, result);
+          note = `\n[output truncated here — the FULL output (${result.length} chars) is saved at: ${path}\nRead precise sections with read_file (offset=<byte>, max_bytes=…) instead of assuming the rest.]`;
+        } catch {
+          note = `\n…(truncated, ${result.length} chars total)`;
+        }
+        hist = hist.slice(0, 8_000) + note;
+      }
       this.messages.push({
         role: "tool",
         tool_call_id: call.id,
-        content: result && result.length > 0 ? result : "(no output)",
+        content: hist,
       });
       if (this.abort.signal.aborted) {
         // Even on Stop the history must stay 1:1 with tool_calls: fill the
@@ -576,7 +777,7 @@ export class Agent {
 
   /** End of a task: notify if the window is unfocused, then signal "done". */
   private finishTurn(assistantText: string) {
-    if (!document.hasFocus()) {
+    if (this.role === "main" && !document.hasFocus()) {
       const firstLine = assistantText
         .split("\n")
         .map((l) => l.trim())
@@ -585,6 +786,96 @@ export class Agent {
     }
     this.hooks.onActivity?.("done");
     this.hooks.onAssistantDone();
+  }
+
+  // ---------------- multi-agent workflow ----------------
+
+  private autoApproveValue(): boolean {
+    return this.autoApprove;
+  }
+
+  private activeSub: Agent | null = null;
+
+  /**
+   * Run each sub-task on a dedicated sub-agent with a CLEAN context. They run
+   * in sequence (the local server serves one slot), each spills its full
+   * transcript to a scratch file, and the main context only receives the
+   * compact sourced reports.
+   */
+  private async runWorkflow(tasksArg: unknown): Promise<string> {
+    const tasks: { title: string; goal: string }[] = Array.isArray(tasksArg)
+      ? tasksArg
+          .map((tk: any) => ({
+            title: String(tk?.title ?? "").slice(0, 80) || "task",
+            goal: String(tk?.goal ?? ""),
+          }))
+          .filter((tk) => tk.goal.trim().length > 0)
+          .slice(0, 6)
+      : [];
+    if (tasks.length === 0) return "error: run_workflow needs tasks: [{title, goal}, …]";
+
+    const reports: string[] = [];
+    for (let i = 0; i < tasks.length; i++) {
+      const task = tasks[i];
+      if (this.abort?.signal.aborted) {
+        reports.push(`### ${i + 1}. ${task.title}\n(aborted by user)`);
+        continue;
+      }
+      this.hooks.onNotice?.(
+        t("wf.run").replace("%i", String(i + 1)).replace("%n", String(tasks.length)).replace("%t", task.title)
+      );
+      this.hooks.onActivity?.("connector", `${i + 1}/${tasks.length} · ${task.title}`);
+
+      const transcript: string[] = [];
+      const parent = this;
+      const report = await new Promise<string>((resolve) => {
+        let text = "";
+        const sub = new Agent(
+          {
+            onAssistantDelta: (tx) => { text += tx; },
+            onAssistantDone: () => resolve(text),
+            onToolStart: (name, detail) => {
+              transcript.push(`→ ${name} ${detail}`);
+              parent.hooks.onActivity?.(activityModeFor(name), `${i + 1}/${tasks.length} · ${prettyToolLabel(name)}`);
+            },
+            onToolResult: (_n, r) => { transcript.push(r.slice(0, 2000)); },
+            onPlan: () => {},
+            onError: (err) => resolve(text ? text + `\n[stopped: ${err}]` : `error: ${err}`),
+            askPermission: (req) => parent.hooks.askPermission(req),
+          },
+          this.port,
+          "sub"
+        );
+        this.activeSub = sub;
+        sub.setAutoApprove(this.autoApproveValue());
+        sub.setMcpTools(this.mcp);
+        sub.setMode("agent");
+        sub.setTaskSystem(
+          "You are a focused Galactus sub-agent handling exactly ONE task. Work factually with your tools. " +
+            "Cite a source (URL, file path or command) for every claim that comes from a tool. " +
+            "Finish with a compact report: findings first, then a 'Sources:' list. " +
+            "If something could not be verified, say so explicitly instead of guessing.",
+          0.4
+        );
+        sub.send(task.goal).catch((e: any) => resolve(`error: ${String(e?.message ?? e)}`));
+      });
+      this.activeSub = null;
+
+      // Full transcript spills to scratch; the main context stays clean.
+      let pathNote = "";
+      try {
+        const p = await api.scratchWrite(
+          `subagent-${Date.now().toString(36)}-${i + 1}.txt`,
+          `# ${task.title}\n\n## Goal\n${task.goal}\n\n## Tool trace\n${transcript.join("\n")}\n\n## Report\n${report}`
+        );
+        pathNote = `\n(full transcript: ${p})`;
+      } catch {}
+      reports.push(`### ${i + 1}. ${task.title}\n${report.slice(0, 6000)}${pathNote}`);
+      this.hooks.onNotice?.(
+        t("wf.done").replace("%i", String(i + 1)).replace("%n", String(tasks.length)).replace("%t", task.title)
+      );
+    }
+    return reports.join("\n\n");
   }
 
   private async gate(req: PermissionRequest): Promise<boolean> {
@@ -639,7 +930,9 @@ export class Agent {
       if (name === "read_file") {
         const p = String(args.path ?? "");
         const ok = await this.gate({ kind: "fs_read", detail: p, elevated: false });
-        result = ok ? await api.fsRead(p, 200_000) : "denied by user";
+        const off = Number(args.offset) > 0 ? Math.floor(Number(args.offset)) : undefined;
+        const cap = Math.min(Math.max(Math.floor(Number(args.max_bytes)) || 200_000, 1_000), 200_000);
+        result = ok ? await api.fsRead(p, cap, off) : "denied by user";
       } else if (name === "write_file") {
         const p = String(args.path ?? "");
         const content = String(args.content ?? "");
@@ -686,6 +979,8 @@ export class Agent {
         const p = String(args.path ?? "");
         const ok = await this.gate({ kind: "fs_read", detail: p, elevated: false });
         result = ok ? await api.docRead(p, args.mode ? String(args.mode) : undefined) : "denied by user";
+      } else if (name === "run_workflow" && this.role === "main") {
+        result = await this.runWorkflow(args.tasks);
       } else if (name === "use_skill") {
         result = await api.skillRead(String(args.name ?? ""));
       } else if (name === "obsidian_search") {

@@ -67,8 +67,10 @@ export const api = {
   serverStop: () => invoke<void>("server_stop"),
   installModel: (modelId: string) => invoke<void>("install_model", { modelId }),
   cancelInstall: (modelId: string) => invoke<void>("cancel_install", { modelId }),
-  fsRead: (path: string, maxBytes: number) =>
-    invoke<string>("tool_fs_read", { path, maxBytes }),
+  fsRead: (path: string, maxBytes: number, offset?: number) =>
+    invoke<string>("tool_fs_read", { path, maxBytes, offset }),
+  scratchWrite: (name: string, content: string) =>
+    invoke<string>("scratch_write", { name, content }),
   fsWrite: (path: string, content: string) =>
     invoke<string>("tool_fs_write", { path, content }),
   fsPreview: (path: string, content: string) =>
@@ -119,6 +121,33 @@ export function onEvent(
 }
 
 // ---- llama-server OpenAI-compatible client ----
+
+/** Real context window of the loaded model (llama-server /props). */
+export async function fetchCtxSize(port: number): Promise<number> {
+  const r = await fetch(`http://127.0.0.1:${port}/props`);
+  if (!r.ok) throw new Error(`server ${r.status}`);
+  const j: any = await r.json();
+  const n = Number(j?.default_generation_settings?.n_ctx ?? j?.n_ctx);
+  return Number.isFinite(n) && n > 0 ? n : 32768;
+}
+
+/** One non-streamed completion (no tools). Used for history summarization. */
+export async function chatOnce(
+  port: number,
+  messages: { role: string; content: string }[],
+  temperature = 0.2,
+  abort?: AbortSignal
+): Promise<string> {
+  const r = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model: "galactus-local", messages, temperature, stream: false }),
+    signal: abort,
+  });
+  if (!r.ok) throw new Error(`server ${r.status}`);
+  const j: any = await r.json();
+  return String(j.choices?.[0]?.message?.content ?? "");
+}
 
 export interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
@@ -189,7 +218,16 @@ export async function streamChat(
     return false;
   }
   if (!response.ok || !response.body) {
-    handlers.onError(`server ${response.status}`);
+    // llama-server explains the refusal in the body (context overflow,
+    // template error…): surface it instead of a bare status code.
+    let msg = `server ${response.status}`;
+    try {
+      const body = await response.text();
+      const j = JSON.parse(body);
+      const m = j?.error?.message ?? j?.message;
+      if (m) msg += `: ${String(m).slice(0, 300)}`;
+    } catch {}
+    handlers.onError(msg);
     return false;
   }
 

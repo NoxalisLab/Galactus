@@ -20,6 +20,8 @@ fi
 
 command -v cargo >/dev/null 2>&1 || { echo "Rust manquant (https://rustup.rs)"; read -r -p "Entree"; exit 1; }
 [ -d node_modules ] || npm install --no-audit --no-fund
+# Embarque le moteur (llama-server relocalise) et les scripts dans le bundle.
+bash src-tauri/prepare-engine.sh || { echo "Echec de l'embarquement du moteur"; read -r -p "Entree"; exit 1; }
 npm run tauri build
 echo ""
 echo "Artefacts dans app/src-tauri/target/release/bundle/"
