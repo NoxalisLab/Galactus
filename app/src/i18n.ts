@@ -50,6 +50,8 @@ const dict: Record<string, { en: string; fr: string }> = {
   "tool.workflow": { en: "Sub-agent workflow", fr: "Workflow de sous-agents" },
   "wf.run": { en: "Sub-agent %i/%n started: %t", fr: "Sous-agent %i/%n lancé : %t" },
   "wf.done": { en: "Sub-agent %i/%n finished: %t", fr: "Sous-agent %i/%n terminé : %t" },
+  "px.thinking": { en: "thinking", fr: "réfléchit" },
+  "px.responding": { en: "writing the reply", fr: "rédige la réponse" },
   "tool.osearch": { en: "Search vault", fr: "Chercher dans le coffre" },
   "tool.oread": { en: "Read note", fr: "Lire la note" },
   "tool.owrite": { en: "Write note", fr: "Écrire la note" },

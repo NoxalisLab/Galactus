@@ -111,8 +111,15 @@ function paintLive(): void {
 // ---------- agent activity bar (PixelViz) ----------
 let pixel: PixelViz | null = null;
 let pixelHost: HTMLElement | null = null;
+/**
+ * Last non-done activity: render() rebuilds the whole DOM (server events,
+ * install progress, view switches) and destroys the canvas; without this the
+ * bar stayed hidden for the rest of a tool-less turn.
+ */
+let lastActivity: { mode: PixelMode; label?: string } | null = null;
 
 function hideActivity() {
+  lastActivity = null;
   const bar = document.getElementById("actbar");
   if (bar) bar.style.display = "none";
   pixel?.destroy();
@@ -123,6 +130,7 @@ function onAgentActivity(mode: PixelMode, label?: string) {
   if (mode === "done") {
     // Laisser les confettis jouer avant de ranger la scene; une nouvelle
     // activite (message en file) recree simplement un PixelViz.
+    lastActivity = null;
     if (pixel) {
       pixel.setMode("done");
       const px = pixel;
@@ -133,6 +141,8 @@ function onAgentActivity(mode: PixelMode, label?: string) {
     return;
   }
   if (!generating) { hideActivity(); return; }
+  if (mode === "thinking" && !label) label = t("px.thinking");
+  lastActivity = { mode, label };
   const bar = document.getElementById("actbar");
   const host = document.getElementById("pixelhost");
   if (!bar || !host) return;
@@ -891,6 +901,9 @@ async function ensureAgent(): Promise<void> {
           if (genStats.chars === 0) genStats.startMs = Date.now();
           genStats.chars += text.length;
         }
+        // The pixel types along while the answer streams (setMode dedupes;
+        // a fresh action scene finishes its hold before this applies).
+        onAgentActivity("responding", t("px.responding"));
         store.appendAssistant(text);
         schedulePaint();
       },
@@ -1100,6 +1113,9 @@ async function dispatchTurn(text: string, show: boolean): Promise<void> {
   genStats = { convId: store.current().id, chars: 0, startMs: Date.now(), endMs: null };
   paintChat();
   scrollChatDown();
+  // Immediate feedback: the scene shows BEFORE agent setup (memory, skills,
+  // connectors on the first turn) and before the server's first token.
+  onAgentActivity("thinking");
   await ensureAgent();
   const inst = agent;
   if (!inst) return;
@@ -2013,6 +2029,8 @@ function render() {
     }
     paintChat();
     scrollChatDown();
+    // The rebuild destroyed the activity canvas: restore the current scene.
+    if (generating && lastActivity) onAgentActivity(lastActivity.mode, lastActivity.label);
   }
 }
 

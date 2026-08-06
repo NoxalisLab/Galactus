@@ -5,6 +5,7 @@
 export type PixelMode =
   | "idle"
   | "thinking"
+  | "responding" // redige la reponse : frappe + bulle qui se remplit
   | "reading"   // exploration : saute de planete en planete
   | "doc"       // lecture d'un document : page en main
   | "writing"
@@ -105,11 +106,14 @@ export class PixelViz {
       this.label = label ?? "";
       return;
     }
-    // Une scene d'action fraiche n'est pas ecrasee par le "thinking" de
-    // l'iteration suivante : elle reste visible MIN_SCENE_FRAMES, puis le
-    // retour attendu s'applique. Une autre action ou "done" passe direct.
-    const inAction = this.mode !== "idle" && this.mode !== "thinking" && this.mode !== "done";
-    if (mode === "thinking" && inAction && this.modeFrame < MIN_SCENE_FRAMES) {
+    // Une scene d'action fraiche n'est pas ecrasee par le "thinking" ou le
+    // "responding" de l'iteration suivante : elle reste visible
+    // MIN_SCENE_FRAMES, puis le retour attendu s'applique. Une autre action
+    // ou "done" passe direct.
+    const calm = mode === "thinking" || mode === "responding";
+    const inAction =
+      this.mode !== "idle" && this.mode !== "thinking" && this.mode !== "responding" && this.mode !== "done";
+    if (calm && inAction && this.modeFrame < MIN_SCENE_FRAMES) {
       this.pending = { mode, label: label ?? "" };
       return;
     }
@@ -121,7 +125,7 @@ export class PixelViz {
     this.mode = mode;
     this.modeFrame = 0;
     if (mode === "done") this.spawnConfetti();
-    if (mode !== "writing") this.sparks.length = 0;
+    if (mode !== "writing" && mode !== "responding") this.sparks.length = 0;
     this.label = label;
   }
 
@@ -186,7 +190,7 @@ export class PixelViz {
     }
 
     // Etincelles de frappe.
-    if (this.mode === "writing" && this.frame % 2 === 0) {
+    if ((this.mode === "writing" || this.mode === "responding") && this.frame % 2 === 0) {
       const side = this.frame % 4 === 0 ? 3 : 12;
       this.sparks.push({
         x: side + (Math.random() * 2 - 1),
@@ -297,6 +301,12 @@ export class PixelViz {
         arms = f % 2 === 0 ? "typeL" : "typeR";
         oy = f % 4 < 2 ? 0 : 1; // frappe energique
         break;
+      case "responding":
+        // Redige la reponse : frappe soutenue, regard vers la bulle.
+        arms = f % 2 === 0 ? "typeL" : "typeR";
+        oy = f % 4 < 2 ? 0 : 1;
+        eyeDx = f % 20 < 10 ? 1 : 0;
+        break;
       case "running":
         oy = f % 6 < 3 ? 0 : 1;
         eyeDx = f % 12 < 6 ? 0 : 1; // suit le graphe
@@ -351,6 +361,7 @@ export class PixelViz {
 
     if (mode === "doc") this.drawPage(oy, f);
     if (mode === "memory") this.drawMemoryChest(f, oy);
+    if (mode === "responding") this.drawReplyBubble(f);
 
     // ---- extras par mode (au-dessus du robot)
     if (mode === "thinking") {
@@ -373,7 +384,7 @@ export class PixelViz {
 
     // ---- label a droite de la scene
     if (this.label) {
-      const wide = mode === "reading" || mode === "web" || mode === "fleet";
+      const wide = mode === "reading" || mode === "web" || mode === "fleet" || mode === "responding";
       const labelX = (wide ? STAGE : mode === "memory" ? GRID + 2 : GRID) * SCALE + 10;
       c.font = '11px "IBM Plex Mono", ui-monospace, monospace';
       c.fillStyle = LABEL_COLOR;
@@ -533,6 +544,28 @@ export class PixelViz {
       P(2, y, on ? ACC2 : ACC, on ? 0.95 : 0.4);
       P(3, y, on ? ACC2 : ACC, on ? 0.95 : 0.4);
       if (i % 2 === 0) P(4, y, on ? ACC2 : ACC, on ? 0.95 : 0.4);
+    }
+  }
+
+  /** Bulle de reponse a droite du robot : le texte s'y ecrit en boucle. */
+  private drawReplyBubble(f: number): void {
+    const x0 = 19; // interieur : x0..x0+8, trois lignes de texte
+    const y0 = 3;
+    const w = 9;
+    // Cadre discret + queue vers le robot.
+    for (let x = x0 - 1; x <= x0 + w; x++) { this.px(x, y0 - 1, ACC, 0.22); this.px(x, y0 + 5, ACC, 0.22); }
+    for (let y = y0 - 1; y <= y0 + 5; y++) { this.px(x0 - 2, y, ACC, 0.22); this.px(x0 + w + 1, y, ACC, 0.22); }
+    this.px(x0 - 3, y0 + 3, ACC, 0.3);
+    this.px(x0 - 4, y0 + 4, ACC, 0.2);
+    // Trois lignes qui se remplissent pixel a pixel, curseur blanc en tete,
+    // petite pause une fois la bulle pleine puis on recommence.
+    const total = 3 * w;
+    const done = Math.floor(f / 2) % (total + 10);
+    for (let i = 0; i < Math.min(done, total); i++) {
+      const line = Math.floor(i / w);
+      const col = i % w;
+      const head = i === done - 1;
+      this.px(x0 + col, y0 + line * 2, head ? WHITE : ACC2, head ? 0.95 : 0.5);
     }
   }
 
