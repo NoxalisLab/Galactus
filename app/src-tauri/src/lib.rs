@@ -849,8 +849,9 @@ fn plan_cache(entry: &Value, ram_gb: u64, override_gb: Option<u64>, ram_mode: &s
     // of Galactus on a machine where the model would fit natively is to run
     // it in a FRACTION of the RAM, not to hoard it:
     // - eco:      smallest measured cache (minimum viable footprint)
-    // - balanced: the knee — smallest measured cache reaching >= 90% of the
-    //             best throughput this machine could get
+    // - balanced: full residency when this machine can afford it, otherwise
+    //             the knee, i.e. the smallest measured cache reaching >= 90%
+    //             of the best generation throughput reachable here
     // - perf:     the full planning ceiling
     let measured: Vec<(f64, f64)> = entry["measured"]
         .as_array()
@@ -878,6 +879,20 @@ fn plan_cache(entry: &Value, ram_gb: u64, override_gb: Option<u64>, ram_mode: &s
             "eco" => (measured[0].0 * 1e9) as u64,
             "perf" => max_cache,
             _ => {
+                // Full residency first, when the ceiling already reaches every
+                // routed expert byte. The knee optimizes GENERATION throughput
+                // per byte of RAM, and it was the right criterion until
+                // residency became a step change in PROMPT throughput: a
+                // resident cache never evicts, so the physical micro-batch
+                // jumps from a handful of tokens to llama.cpp's standard 512.
+                // RAM left unused buys nothing, whereas minutes of waiting
+                // before the first token are paid on every single message.
+                // eco stays the explicit minimum-footprint mode, and a machine
+                // that cannot hold the experts still falls through to the knee
+                // below, streamed regime untouched.
+                if max_cache >= expert_total {
+                    return max_cache;
+                }
                 // Best throughput reachable within the ceiling, then the
                 // smallest cache reaching 90% of it.
                 let reachable = measured

@@ -220,7 +220,13 @@ function expectedTps(m: ModelEntry): number | null {
   let cache = maxCache;
   if (ramMode === "eco") {
     cache = Math.min(pts[0].cache_gb, maxCache);
-  } else if (ramMode === "balanced") {
+  } else if (ramMode === "balanced" && !(m.expert_bytes_total && maxCache >= m.expert_bytes_total / 1e9)) {
+    // Balanced takes full residency whenever the ceiling already reaches every
+    // routed expert byte (the condition negated above), because a resident
+    // cache stops evicting and the micro-batch becomes 512 instead of a
+    // handful of tokens. Only a machine that cannot hold the experts stops at
+    // the knee: smallest measured cache reaching 90% of the best generation
+    // throughput reachable here.
     const reachable = Math.max(...pts.filter((p) => p.cache_gb <= maxCache).map((p) => p.gen_tps), pts[0].gen_tps);
     const knee = pts.find((p) => p.gen_tps >= 0.9 * reachable);
     cache = Math.min(knee ? knee.cache_gb : maxCache, maxCache);
