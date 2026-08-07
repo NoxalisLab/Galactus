@@ -43,6 +43,19 @@ A model below the minimum memory for your Mac is refused, at install and at
 start, rather than failing later. On a 24 GB Mac the catalog still runs a 235B
 model from a 14 GB cache.
 
+## Speed
+
+On a 128 GB MacBook Pro, GLM-4.5-Air fully resident: prompt 31 tok/s,
+generation 15.5 tok/s. GLM-5.2 744B, 202 GB streamed from two SSDs: about
+6 tok/s. Speeds shown on each model card are interpolated from measured
+benchmarks for your machine, not extrapolated from a spec sheet.
+
+A model that fits entirely in cache no longer pays the streaming regime's
+safeguards: the expert cache stops evicting when every expert owns a permanent
+slot, so the prompt is processed with llama.cpp's standard micro-batch instead
+of a few tokens at a time. Output is identical, character for character, to the
+previous behaviour under greedy decoding.
+
 ## What it does
 
 - **Chat that acts.** Three autonomy levels (manual, assisted, autonomous),
