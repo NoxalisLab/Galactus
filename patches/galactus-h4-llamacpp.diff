@@ -92,10 +92,10 @@ index 5018170e..542552b5 100644
  
 diff --git a/src/llama-galactus-h4.cpp b/src/llama-galactus-h4.cpp
 new file mode 100644
-index 00000000..e244abef
+index 00000000..605feb22
 --- /dev/null
 +++ b/src/llama-galactus-h4.cpp
-@@ -0,0 +1,600 @@
+@@ -0,0 +1,604 @@
 +#include "llama-galactus-h4.h"
 +
 +#include "h4-expert-cache.hpp"
@@ -183,7 +183,11 @@ index 00000000..e244abef
 +LayerTag layer_tags[512];   // borne large : Qwen3-235B a 94 couches
 +
 +std::uint64_t fnv1a64(const unsigned char * data, std::size_t length) {
-+    std::uint64_t hash = 1469598103934665603ULL;
++    // Base FNV-1a 64 bits reelle. Elle portait un chiffre en moins, ce qui
++    // donnait une empreinte coherente avec elle-meme mais differente de tout
++    // FNV-1a calcule ailleurs : les comparaisons hors ligne trace/pack
++    // repondaient NON alors que les octets etaient identiques.
++    std::uint64_t hash = 14695981039346656037ULL;
 +    for (std::size_t i = 0; i < length; ++i) {
 +        hash ^= data[i];
 +        hash *= 1099511628211ULL;

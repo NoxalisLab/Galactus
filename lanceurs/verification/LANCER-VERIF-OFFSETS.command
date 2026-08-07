@@ -13,6 +13,9 @@ records = {r["key"]: r for r in plan["records"]}
 order = sorted(records); off = 0; pack_offset = {}
 for k in order: pack_offset[k] = off; off += records[k]["record_bytes"]
 def fnv(data):
+    # Base FNV-1a 64 bits standard, la meme que le moteur : les trois
+    # empreintes comparees ici doivent venir de la meme base, sinon la
+    # comparaison repond NON sur des octets pourtant identiques.
     h = 14695981039346656037; M = (1<<64)-1
     for b in data: h = ((h ^ b) * 1099511628211) & M
     return h

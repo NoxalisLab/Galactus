@@ -95,10 +95,16 @@ fn serve(root: &Path, model_id: &str, args: &[String]) -> Result<(), String> {
         .env("GALACTUS_H4_PROTECTED", format!("{fraction:.2}"))
         .env("GALACTUS_H4_QD", "32")
         .env("LC_ALL", "C");
-    // Un profil pointe mais absent ferait avorter le moteur : ne le passer
-    // que s'il existe (sinon profil builtin, les classes gelees GLM-5.2).
+    // Sans GALACTUS_PROFILE le moteur prend sa geometrie GLM-5.2 integree :
+    // juste pour GLM-5.2, faux pour tout autre modele. Des que l'installation
+    // a produit un profil, le fichier devient obligatoire.
     if profile.is_file() {
         cmd.env("GALACTUS_PROFILE", &profile);
+    } else if model_dir.join("profile.json").is_file() {
+        return Err(format!(
+            "profil moteur absent : {} (regenere-le avec scripts/moe-profile.py)",
+            profile.display()
+        ));
     }
     if cpu_moe {
         cmd.env("GALACTUS_H4_CPU_MOE", "1").arg("--n-cpu-moe").arg("99");

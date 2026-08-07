@@ -5,7 +5,10 @@ depuis les DEUX packs (la verite deja prouvee conforme au GGUF)."""
 import json
 import sys
 
-FNV_OFFSET = 1469598103934665603
+# Base FNV-1a 64 bits reelle, la meme que le moteur (llama-galactus-h4.cpp).
+# Elle portait un chiffre en moins des deux cotes : coherent entre eux, mais
+# incomparable avec un FNV-1a calcule par n'importe quel autre outil.
+FNV_OFFSET = 14695981039346656037
 FNV_PRIME = 1099511628211
 MASK = (1 << 64) - 1
 

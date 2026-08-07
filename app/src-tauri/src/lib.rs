@@ -1076,8 +1076,12 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
     engine_is_wired(&server_bin)?;
 
     // Keep the server's output so failures are visible instead of hanging.
+    // The PREVIOUS run is kept alongside: a failed start is usually reported
+    // after the user has already retried, and truncating on every start
+    // destroyed the only evidence of what actually failed.
     let log_path = app_support().join("llama-server.log");
     let _ = std::fs::create_dir_all(app_support());
+    let _ = std::fs::rename(&log_path, app_support().join("llama-server.log.1"));
     let log_out = std::fs::File::create(&log_path).map_err(|e| e.to_string())?;
     let log_err = log_out.try_clone().map_err(|e| e.to_string())?;
 
@@ -1095,7 +1099,12 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
     // certified curves were measured in this envelope, and a different batch
     // shape changes kernel paths and accumulation order — do not trade
     // bit-exactness for prompt speed silently.
-    let expert_total = entry["expert_bytes_total"].as_u64().unwrap_or(u64::MAX);
+    // Residency is judged on the SAME geometry the planner used (the profile
+    // measured at install when there is one), not on the registry estimate:
+    // the two can drift and the badge would then contradict the plan.
+    let expert_total = measured_geometry(&entry)
+        .map(|g| g.1)
+        .unwrap_or_else(|| entry["expert_bytes_total"].as_u64().unwrap_or(u64::MAX));
     let full_residency = cache_bytes >= expert_total;
     // The Metal parity path (patches 0002-0004) now covers EVERY expert quant
     // type of the certified registry (iq1_s..q3_K, q8_0, q5_0, q4_K, q6_K,
@@ -1116,10 +1125,19 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
         .env("GALACTUS_H4_PROTECTED", format!("{fraction:.2}"))
         .env("GALACTUS_H4_QD", "32")
         .env("LC_ALL", "C");
-    // A missing profile file makes the engine abort; leaving the variable
-    // unset selects its builtin profile (the GLM-5.2 frozen classes).
+    // Without GALACTUS_PROFILE the engine adopts its builtin GLM-5.2 geometry.
+    // That is right for GLM-5.2 itself and wrong for every other model, so the
+    // sidecar is mandatory as soon as the install produced a profile: a
+    // renamed or deleted profile.engine.txt would otherwise read experts at
+    // the wrong offsets instead of failing.
     if profile.is_file() {
         cmd.env("GALACTUS_PROFILE", &profile);
+    } else if model_dir.join("profile.json").is_file() {
+        return Err(format!(
+            "engine profile missing: {} (regenerate it with scripts/moe-profile.py, \
+             or reinstall the model)",
+            profile.display()
+        ));
     }
     if cpu_moe {
         cmd.env("GALACTUS_H4_CPU_MOE", "1");
