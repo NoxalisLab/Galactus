@@ -52,6 +52,23 @@ ExpertCache::ExpertCache(std::uint64_t capacity_bytes, double protected_fraction
             + " par couche : il faut au moins 2 emplacements (agrandir "
               "GALACTUS_H4_CACHE_BYTES)");
     }
+    // RESIDENCE PLEINE : quand le quota par couche atteint le nombre d'experts
+    // du modele, chaque expert possede son emplacement a demeure et AUCUNE
+    // eviction ne peut jamais etre necessaire. On porte alors les deux
+    // segments au niveau du quota : le nombre de cles distinctes d'une couche
+    // vaut au plus experts == quota_, donc ni protected_size ni probation_size
+    // ne peut depasser sa borne et aucune branche d'eviction de access() ne se
+    // declenche. Sans cela le SLRU evincait sur la seule CAPACITE DE SEGMENT
+    // (GLM-4.5-Air : probation 32 sur 128 emplacements, un pour chaque expert)
+    // alors que l'arene tenait tout le modele : evictions et relectures
+    // gratuites, et surtout un micro-lot borne a 3 tokens par le garde-fou du
+    // moteur, soit un prompt a 21 tok/s. Le SLRU normal (quota_ < experts) est
+    // inchange.
+    if (quota_ == model_experts) {
+        protected_quota_ = quota_;
+        probation_quota_ = quota_;
+        return;
+    }
     protected_quota_ = static_cast<std::uint32_t>(
         static_cast<double>(quota_) * protected_fraction);
     if (protected_quota_ < 1) protected_quota_ = 1;

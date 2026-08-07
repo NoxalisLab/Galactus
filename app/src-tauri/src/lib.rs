@@ -910,11 +910,24 @@ fn plan_cache(entry: &Value, ram_gb: u64, override_gb: Option<u64>, ram_mode: &s
         protected = protected.clamp(1, quota - 1);
         let probation = quota - protected;
         if probation >= used {
-            // Largest physical micro-batch whose distinct experts still fit in
-            // the probation segment: probation / experts_used, capped at 8 so
-            // prompt processing stays fast without risking the fail-closed
-            // guard. This is what makes cold starts feel quick.
-            let ubatch = ((probation / used).max(1)).min(8) as u32;
+            // Full residency (cache >= every routed expert byte): the engine
+            // cache gives each expert a permanent slot and stops evicting
+            // altogether (h4-expert-cache.cpp), so a batch can never evict its
+            // own members and the safe bound becomes the layer quota, i.e. all
+            // the experts there are. Nothing constrains the micro-batch any
+            // more: take llama.cpp's standard physical micro-batch instead of
+            // crawling through the prompt 3 tokens at a time.
+            //
+            // STREAMED regime (cache < expert bytes): untouched. The bound is
+            // still the probation segment, largest physical micro-batch whose
+            // distinct experts fit in it: probation / experts_used, capped at
+            // 8 so prompt processing stays fast without risking the
+            // fail-closed guard. This is what makes cold starts feel quick.
+            let ubatch = if cache >= expert_total {
+                512u32
+            } else {
+                ((probation / used).max(1)).min(8) as u32
+            };
             return Ok((cache, f, ubatch));
         }
     }
