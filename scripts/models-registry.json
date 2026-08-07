@@ -146,33 +146,32 @@
       "status": "certified_bit_transparent",
       "measured": [
         {
-          "cache_gb": 9,
-          "gen_tps": 24.0,
-          "prompt_tps": 19.4,
+          "cache_gb": 9.83,
+          "gen_tps": 11.7,
+          "prompt_tps": 10.7,
           "mac_gb": 16
         },
         {
-          "cache_gb": 17,
-          "gen_tps": 29.2,
-          "prompt_tps": 18.4,
+          "cache_gb": 17.0,
+          "gen_tps": 25.0,
+          "prompt_tps": 31.3,
           "mac_gb": 24
         },
         {
-          "cache_gb": 25,
-          "gen_tps": 29.1,
-          "prompt_tps": 18.1,
-          "mac_gb": 32
-        },
-        {
-          "cache_gb": 29,
-          "gen_tps": 29.8,
-          "prompt_tps": 18.4,
+          "cache_gb": 25.0,
+          "gen_tps": 27.1,
+          "prompt_tps": 42.1,
           "mac_gb": 36
         },
         {
-          "cache_gb": 31,
-          "gen_tps": 29.5,
-          "prompt_tps": 18.2,
+          "cache_gb": 29.0,
+          "gen_tps": 27.8,
+          "prompt_tps": 44.5
+        },
+        {
+          "cache_gb": 30.8,
+          "gen_tps": 28.7,
+          "prompt_tps": 64.6,
           "mac_gb": 48
         }
       ],
@@ -258,7 +257,7 @@
         }
       ],
       "measured_note": "M5 Max reference, ubatch 1; top-1, 76 MB records: SSD-bound until high residency; Mac 16 GB refused (quota<2)",
-      "min_ram_gb": 19,
+      "min_ram_gb": 20,
       "download": {
         "base": "https://huggingface.co/unsloth/Llama-4-Scout-17B-16E-Instruct-GGUF/resolve/main/Q4_K_M",
         "files": [
@@ -433,34 +432,26 @@
       "min_ram_gb": 16,
       "measured": [
         {
-          "cache_gb": 9,
-          "gen_tps": 17.7,
-          "prompt_tps": 13.6,
-          "mac_gb": 16
+          "cache_gb": 1.81,
+          "gen_tps": 3.8,
+          "prompt_tps": 4.2,
+          "mac_gb": 8
         },
         {
-          "cache_gb": 16,
-          "gen_tps": 17.7,
-          "prompt_tps": 14.0,
-          "mac_gb": 24
+          "cache_gb": 9.0,
+          "gen_tps": 12.5,
+          "prompt_tps": 14.8
         },
         {
-          "cache_gb": 22,
-          "gen_tps": 24.8,
-          "prompt_tps": 14.5,
-          "mac_gb": 32
+          "cache_gb": 16.0,
+          "gen_tps": 18.4,
+          "prompt_tps": 25.2
         },
         {
-          "cache_gb": 25,
-          "gen_tps": 25.8,
-          "prompt_tps": 14.6,
-          "mac_gb": 36
-        },
-        {
-          "cache_gb": 33,
-          "gen_tps": 26.4,
-          "prompt_tps": 14.5,
-          "mac_gb": 48
+          "cache_gb": 46.91,
+          "gen_tps": 22.6,
+          "prompt_tps": 41.2,
+          "mac_gb": 96
         }
       ],
       "measured_note": "M5 Max reference; 512 experts (first 10-bit-key model), 1.9 MB records, hybrid attention; daily-driver tier",

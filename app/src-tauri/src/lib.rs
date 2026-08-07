@@ -925,24 +925,22 @@ fn plan_cache(entry: &Value, ram_gb: u64, override_gb: Option<u64>, ram_mode: &s
         protected = protected.clamp(1, quota - 1);
         let probation = quota - protected;
         if probation >= used {
-            // Full residency (cache >= every routed expert byte): the engine
-            // cache gives each expert a permanent slot and stops evicting
-            // altogether (h4-expert-cache.cpp), so a batch can never evict its
-            // own members and the safe bound becomes the layer quota, i.e. all
-            // the experts there are. Nothing constrains the micro-batch any
-            // more: take llama.cpp's standard physical micro-batch instead of
-            // crawling through the prompt 3 tokens at a time.
+            // Largest physical micro-batch whose distinct experts fit in the
+            // probation segment: probation / experts_used, capped at 8.
             //
-            // STREAMED regime (cache < expert bytes): untouched. The bound is
-            // still the probation segment, largest physical micro-batch whose
-            // distinct experts fit in it: probation / experts_used, capped at
-            // 8 so prompt processing stays fast without risking the
-            // fail-closed guard. This is what makes cold starts feel quick.
-            let ubatch = if cache >= expert_total {
-                512u32
-            } else {
-                ((probation / used).max(1)).min(8) as u32
-            };
+            // The cap is a NUMERICS bound, not a cache bound. Full residency
+            // does lift the cache constraint (the engine stops evicting, so a
+            // batch can never evict its own members), and a micro-batch of 512
+            // measured 5 to 13 times faster on prompt. It is not shipped,
+            // because the Metal bit-exact expert kernels are only verified at
+            // n_tokens = 2 by the parity probe, and they are demonstrably wrong
+            // beyond small batches: gpt-oss perplexity on one corpus reads
+            // 139.6 / 129.9 / 119.0 / 166.8 / 162.7 at micro-batch 2 / 8 / 16 /
+            // 32 / 512, against 138.3 for stock llama.cpp at 512. A certified
+            // model runs bit-exact, so the engine stays inside the envelope the
+            // probe actually covers until the kernels are fixed and the probe
+            // extended to the shipped batch shape.
+            let ubatch = ((probation / used).max(1)).min(8) as u32;
             return Ok((cache, f, ubatch));
         }
     }
