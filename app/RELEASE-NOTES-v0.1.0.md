@@ -52,9 +52,17 @@ benchmarks for your machine, not extrapolated from a spec sheet.
 
 A model that fits entirely in cache no longer pays the streaming regime's
 safeguards: the expert cache stops evicting when every expert owns a permanent
-slot, so the prompt is processed with llama.cpp's standard micro-batch instead
-of a few tokens at a time. Output is identical, character for character, to the
-previous behaviour under greedy decoding.
+slot, so the prompt is processed with llama.cpp's standard micro-batch of 512
+instead of a few tokens at a time.
+
+What bit-exact means here, precisely: Galactus produces the same bits as stock
+llama.cpp **at equal settings**. It is not, and cannot be, invariant to the
+settings themselves. llama.cpp's own reduction order depends on the physical
+micro-batch, so two micro-batch sizes can differ in the last bits and, under
+greedy decoding, occasionally pick a different token when two candidates are
+nearly tied. That is upstream behaviour, measured here at micro-batch 2, 7 and
+512 on a fully resident model where the expert cache evicts nothing at all. The
+resident regime now runs at llama.cpp's own default of 512.
 
 ## What it does
 
