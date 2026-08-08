@@ -53,6 +53,25 @@ pub struct GitCommit {
     pub subject: String,
 }
 
+/// One entry of the working tree, split the way the user acts on it: what is
+/// already staged, what is modified but not staged, and what git does not
+/// track yet. `code_tree` only carries a merged letter for decoration; the
+/// Changes panel needs the two sides apart because Stage and Unstage act on
+/// different things.
+#[derive(Serialize)]
+pub struct GitChange {
+    pub path: String,
+    /// Index side of the porcelain code (" " when unmodified in the index).
+    pub index: String,
+    /// Worktree side of the porcelain code.
+    pub work: String,
+    pub staged: bool,
+    pub unstaged: bool,
+    pub untracked: bool,
+    /// Original path of a rename, empty otherwise.
+    pub from: String,
+}
+
 #[derive(Serialize)]
 pub struct GitInfo {
     pub repo: bool,
@@ -301,6 +320,62 @@ pub async fn git_info(root: String) -> Result<GitInfo, String> {
         untracked,
         dirty: staged + unstaged + untracked > 0,
     })
+}
+
+/// The working tree, entry by entry. Parsed from `--porcelain=v1 -z` because
+/// the NUL form is the only one that survives a path with a space, a quote or
+/// a newline in it, and a rename spends TWO records there (new path, then old)
+/// which the line-based form hides behind a quoted "->" string.
+#[tauri::command]
+pub async fn git_status(root: String) -> Result<Vec<GitChange>, String> {
+    let out = git(&root, &["status", "--porcelain=v1", "-z", "--untracked-files=normal"])?;
+    let mut chunks = out.split('\0').filter(|c| !c.is_empty());
+    let mut rows: Vec<GitChange> = Vec::new();
+    while let Some(chunk) = chunks.next() {
+        if chunk.len() < 4 {
+            continue;
+        }
+        let (code, rest) = chunk.split_at(2);
+        let bytes = code.as_bytes();
+        let index = (bytes[0] as char).to_string();
+        let work = (bytes[1] as char).to_string();
+        let path = rest.trim_start().to_string();
+        // A rename or a copy carries its source in the NEXT record: consume it
+        // here or every following entry would be read one record off.
+        let from = if index == "R" || index == "C" {
+            chunks.next().unwrap_or("").to_string()
+        } else {
+            String::new()
+        };
+        let untracked = index == "?";
+        rows.push(GitChange {
+            staged: !untracked && index != " ",
+            unstaged: !untracked && work != " ",
+            untracked,
+            index,
+            work,
+            path,
+            from,
+        });
+    }
+    rows.sort_by(|a, b| a.path.to_lowercase().cmp(&b.path.to_lowercase()));
+    Ok(rows)
+}
+
+/// Diff of ONE path, on one side of the index. `git_diff` compares the
+/// worktree with HEAD, which merges the two sides into a single patch; the
+/// Changes panel has to show them apart, since Stage moves lines from one to
+/// the other.
+#[tauri::command]
+pub async fn git_file_diff(root: String, path: String, staged: bool) -> Result<String, String> {
+    inside(&root, &path)?;
+    let mut args: Vec<&str> = vec!["--no-pager", "diff", "--no-color"];
+    if staged {
+        args.push("--cached");
+    }
+    args.push("--");
+    args.push(path.as_str());
+    git(&root, &args)
 }
 
 #[tauri::command]

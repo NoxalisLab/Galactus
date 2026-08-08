@@ -8,8 +8,10 @@ import {
   PermissionDecision,
   PermissionRequest,
   setAgentDirectory,
+  setCodeWorkspace,
   TeamMember,
 } from "./agent";
+import * as codeview from "./code";
 import { CATALOG, ConnectorPreset, EnabledConnector, loadEnabled, saveEnabled } from "./connectors";
 import { getLang, Lang, setLang, t } from "./i18n";
 import { PixelMode, PixelViz } from "./pixel";
@@ -25,7 +27,7 @@ import type { ChatItem, Conversation, ConvMeta, SubAgent, ThreadData } from "./s
 const app = document.getElementById("app")!;
 const LOGO = "/galactus-mark.svg";
 
-type View = "chat" | "models" | "connectors" | "memory" | "agent" | "settings";
+type View = "chat" | "code" | "models" | "connectors" | "memory" | "agent" | "settings";
 type Autonomy = "manual" | "assisted" | "autonomous";
 
 let view: View = "chat";
@@ -365,6 +367,7 @@ function restoreActivity(): void {
 // ---------- svg icons ----------
 const I = {
   chat: `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9 9 0 0 1-3.9-.9L3 21l1.9-5A8.4 8.4 0 0 1 12 3.1a8.4 8.4 0 0 1 9 8.4z"/></svg>`,
+  code: `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m8 17-5-5 5-5"/><path d="m16 7 5 5-5 5"/><path d="M13.5 4.5 10.5 19.5"/></svg>`,
   models: `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 3 7l9 5 9-5-9-5z"/><path d="M3 12l9 5 9-5"/><path d="M3 17l9 5 9-5"/></svg>`,
   conn: `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 17H7a5 5 0 0 1 0-10h2"/><path d="M15 7h2a5 5 0 0 1 0 10h-2"/><path d="M8 12h8"/></svg>`,
   mem: `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4a4 4 0 0 0-4 4 3.5 3.5 0 0 0-1 6.8V17a3 3 0 0 0 5 2.2A3 3 0 0 0 17 17v-2.2A3.5 3.5 0 0 0 16 8a4 4 0 0 0-4-4z"/></svg>`,
@@ -577,7 +580,9 @@ function switchTo(conv: Conversation, agentId: string | null = null): void {
   threadOf(conv);
   teamThreads(conv); // materialize the team so its state is addressable
   pruneConversations();
-  view = "chat";
+  // The Code view carries the same thread pane: opening another conversation
+  // from it must not throw the user out of the workspace they are reading.
+  if (view !== "code") view = "chat";
   render();
 }
 
@@ -585,7 +590,7 @@ function switchTo(conv: Conversation, agentId: string | null = null): void {
 function openTeamThread(agentId: string | null): void {
   checkpoint(active());
   focusAgent = agentId;
-  view = "chat";
+  if (view !== "code") view = "chat";
   render();
 }
 
@@ -853,7 +858,7 @@ function permPaintWaiting(): void {
       else acts.prepend(el(`<span class="pqueue">${esc(t("perm.more").replace("%n", String(permQueue.length)))}</span>`));
     }
   }
-  if (view === "chat") renderSidebarOnly();
+  if (view === "chat" || view === "code") renderSidebarOnly();
 }
 
 /**
@@ -913,6 +918,8 @@ function permissionDialogEl(entry: PendingPermission): HTMLElement {
     : req.kind === "web" ? t("perm.web")
     : req.kind === "agent" ? t("perm.agent")
     : req.kind === "conversations" ? t("perm.conversations")
+    : req.kind === "code" ? t("perm.code")
+    : req.kind === "git" ? t("perm.git")
     : t("perm.mcpTool");
   // "perm" lifts it above every other full-screen layer (the constellation
   // overlay, the install dialogs): a permission dialog nobody can see is a
@@ -922,12 +929,13 @@ function permissionDialogEl(entry: PendingPermission): HTMLElement {
       <div class="ps">${esc(t("perm.sub"))} <b>${esc(kind)}</b></div>
       ${origin ? `<div class="porigin">${esc(t("perm.origin").replace("%s", origin))}</div>` : ""}
       ${req.elevated ? `<div class="warn">⚠ ${esc(t("perm.elevated"))}</div>` : ""}
-      ${req.diff ? diffPanelHtml(req.detail, req.diff) : `<div class="pd">${esc(req.detail)}</div>`}
+      ${req.diff ? diffPanelHtml(req.detail, req.diff) : `<div class="pd ${req.kind === "git" ? "sentence" : ""}">${esc(req.detail)}</div>`}
+      ${req.kind === "code" ? `<div class="pnote">${esc(t("perm.codeNote"))}</div>` : ""}
       ${req.elevated ? `<input class="confirm" id="pc" placeholder="${esc(t("perm.elevatedPlaceholder"))}" autocomplete="off"/>` : ""}
       <div class="acts">
         ${behind > 0 ? `<span class="pqueue">${esc(t("perm.more").replace("%n", String(behind)))}</span>` : ""}
         <button class="bs" data-d="deny">${esc(t("perm.deny"))}</button>
-        ${!req.elevated ? `<button class="bs" data-d="always">${esc(t("perm.allowAlways"))}</button>` : ""}
+        ${!req.elevated && !req.noAlways ? `<button class="bs" data-d="always">${esc(t("perm.allowAlways"))}</button>` : ""}
         <button class="${req.elevated ? "bd" : "bp"}" data-d="once" ${req.elevated ? "disabled" : ""}>${esc(t("perm.allowOnce"))}</button>
       </div></div></div>`);
   if (req.elevated) {
@@ -1018,6 +1026,43 @@ function chatView(): HTMLElement {
       <span class="brieftgl" id="brieftgl">${esc(t("team.brief"))}</span>
     </div><div class="briefbox" id="briefbox" style="display:none">${esc(sub.brief)}</div>` : ""}
     ${!sub && conv.team.length ? teamStripHtml(conv) : ""}
+  </div>`);
+  wrap.appendChild(threadPaneEl());
+
+  wrap.querySelector("#newchat")!.addEventListener("click", newChat);
+  wrap.querySelector("#backbtn")?.addEventListener("click", () => openTeamThread(null));
+  wrap.querySelector("#backconv")?.addEventListener("click", () => openTeamThread(null));
+  wrap.querySelector("#brieftgl")?.addEventListener("click", () => {
+    const box = document.getElementById("briefbox");
+    if (box) box.style.display = box.style.display === "none" ? "block" : "none";
+  });
+  wrap.querySelector("#teamstrip")?.addEventListener("click", (e) => {
+    const chip = (e.target as HTMLElement).closest("[data-agent]") as HTMLElement | null;
+    if (chip) openTeamThread(chip.dataset.agent!);
+  });
+  wrap.querySelector("#taskbar")?.addEventListener("click", (e) => {
+    const b = (e.target as HTMLElement).closest("[data-task]") as HTMLElement | null;
+    if (!b) return;
+    selectTask(b.dataset.task as TaskId);
+  });
+  return wrap;
+}
+
+/**
+ * The thread itself: the log, the activity bar and the composer. The Chat view
+ * and the Code view both mount THIS, with the same element ids, so every paint
+ * function (paintChat, paintPlan, restoreActivity, setSendState) keeps finding
+ * what it looks up and both views drive the very same Agent, the very same
+ * permission queue and the very same tool cards. There is one thread; the Code
+ * view simply shows it beside the files.
+ */
+function threadPaneEl(): HTMLElement {
+  const ready = server.running && server.phase === "ready";
+  const sess = active();
+  const sub = sess.sub;
+  const generating = sess.generating;
+
+  const wrap = el(`<div class="threadpane">
     <div class="chat-scroll" id="scroller"><div class="thread"><div id="plan"></div><div id="log"></div></div></div>
     <div class="actbar" id="actbar" style="display:none"><div class="pxhost" id="pixelhost"></div></div>
     ${taskOffer ? `<div class="task-switch-hint" id="taskhint"><span class="tx">${esc(t("task.better").replace("%m", taskOffer.modelName))}</span><button class="bs" id="taskswap">${esc(t("task.switch"))}</button><span class="x" id="taskdismiss">×</span></div>` : ""}
@@ -1040,17 +1085,6 @@ function chatView(): HTMLElement {
   </div>`);
 
   const input = wrap.querySelector<HTMLTextAreaElement>("#ci")!;
-  wrap.querySelector("#newchat")!.addEventListener("click", newChat);
-  wrap.querySelector("#backbtn")?.addEventListener("click", () => openTeamThread(null));
-  wrap.querySelector("#backconv")?.addEventListener("click", () => openTeamThread(null));
-  wrap.querySelector("#brieftgl")?.addEventListener("click", () => {
-    const box = document.getElementById("briefbox");
-    if (box) box.style.display = box.style.display === "none" ? "block" : "none";
-  });
-  wrap.querySelector("#teamstrip")?.addEventListener("click", (e) => {
-    const chip = (e.target as HTMLElement).closest("[data-agent]") as HTMLElement | null;
-    if (chip) openTeamThread(chip.dataset.agent!);
-  });
   wrap.querySelector("#gotoconn")!.addEventListener("click", () => { view = "connectors"; render(); });
   wrap.querySelector("#deepbtn")?.addEventListener("click", (e) => {
     deepResearch = !deepResearch;
@@ -1077,11 +1111,6 @@ function chatView(): HTMLElement {
     const b = (e.target as HTMLElement).closest("[data-a]") as HTMLElement | null;
     if (!b) return;
     void setAutonomy(b.dataset.a as Autonomy);
-  });
-  wrap.querySelector("#taskbar")?.addEventListener("click", (e) => {
-    const b = (e.target as HTMLElement).closest("[data-task]") as HTMLElement | null;
-    if (!b) return;
-    selectTask(b.dataset.task as TaskId);
   });
   wrap.querySelector("#taskswap")?.addEventListener("click", () => { acceptTaskSwitch(); });
   wrap.querySelector("#taskdismiss")?.addEventListener("click", () => { taskOffer = null; render(); });
@@ -1180,8 +1209,24 @@ function chatView(): HTMLElement {
       }
     }
   });
-  setTimeout(() => { if (!input.disabled) input.focus(); }, 40);
+  // In the Code view the editor is what the user came for: the composer must
+  // not take the caret out of it on every repaint.
+  if (view === "chat") setTimeout(() => { if (!input.disabled) input.focus(); }, 40);
   return wrap;
+}
+
+/**
+ * Enable or disable the composer in place. Server events fire for minutes
+ * while a model loads; in the Code view a full rebuild would destroy the
+ * editor (and its pending diff) on every one of them.
+ */
+function paintComposerReady(): void {
+  const ready = server.running && server.phase === "ready";
+  const generating = active().generating;
+  const input = document.getElementById("ci") as HTMLTextAreaElement | null;
+  if (input) input.disabled = !ready && !generating;
+  const send = document.getElementById("send");
+  if (send) send.classList.toggle("off", !ready && !generating);
 }
 
 // ---------- chat painting (state -> DOM, never the reverse) ----------
@@ -1407,7 +1452,7 @@ function addPreviewButtons(container: HTMLElement): void {
 }
 
 function openPreview(code: string, kind: PreviewKind, title: string): void {
-  if (view !== "chat") return;
+  if (view !== "chat" && view !== "code") return;
   const host = document.querySelector<HTMLElement>(".main");
   if (!host) return;
   if (!previewPanel) previewPanel = new PreviewPanel(host);
@@ -1493,7 +1538,7 @@ async function ensureAgent(sess: Thread): Promise<void> {
         // Hand the answer to whoever delegated this turn (ask_agent).
         const answer = store.lastAssistantText(sess.data);
         for (const w of sess.waiters.splice(0)) w(answer);
-        store.refreshList().then(() => { if (view === "chat") renderSidebarOnly(); });
+        store.refreshList().then(() => { if (view === "chat" || view === "code") renderSidebarOnly(); });
         if (visible() || blockVisible()) { paintChat(); scrollChatDown(); }
         renderSidebarOnly();
         dispatchQueued(sess);
@@ -2866,7 +2911,8 @@ function render() {
   if (!root) { const l = el(`<div class="layout"></div>`); l.appendChild(onboardView()); app.appendChild(l); return; }
 
   const { pill, text: srvText } = serverPillState();
-  const nav = (v: View, ic: string, label: string) => `<div class="nav-item ${view === v ? "on" : ""}" data-v="${v}">${ic}<span>${esc(label)}</span></div>`;
+  const nav = (v: View, ic: string, label: string, badge = 0) =>
+    `<div class="nav-item ${view === v ? "on" : ""}" data-v="${v}">${ic}<span>${esc(label)}</span>${badge > 0 ? `<span class="navbadge" title="${esc(t("code.pendingNav"))}">${badge}</span>` : ""}</div>`;
 
   const layout = el(`<div class="layout">
     <div class="side">
@@ -2874,6 +2920,7 @@ function render() {
       <div class="brand2"><img class="mark" src="${LOGO}" alt="Galactus"/><div class="txt"><b>Galactus</b><span>${esc(t("brand.by"))}</span></div></div>
       <div class="nav">
         ${nav("chat", I.chat, t("nav.chat"))}
+        ${nav("code", I.code, t("nav.code"), codeview.pendingCount())}
         ${nav("models", I.models, t("nav.models"))}
         ${nav("connectors", I.conn, t("nav.connectors"))}
         ${nav("memory", I.mem, t("nav.memory"))}
@@ -2893,6 +2940,7 @@ function render() {
   });
   layout.appendChild(
     view === "chat" ? chatView()
+    : view === "code" ? codeview.codeView()
     : view === "models" ? modelsView()
     : view === "connectors" ? connectorsView()
     : view === "memory" ? memoryView()
@@ -2900,7 +2948,9 @@ function render() {
     : settingsView()
   );
   app.appendChild(layout);
-  if (view === "chat") {
+  // The Code view mounts the same thread pane as the Chat view, so both are
+  // painted the same way: one thread, two places to read it from.
+  if (view === "chat" || view === "code") {
     if (composerDraft) {
       const ci = document.getElementById("ci") as HTMLTextAreaElement | null;
       if (ci && !ci.value) {
@@ -3102,14 +3152,56 @@ async function exportConversation(id: string, trigger: HTMLElement): Promise<voi
   }
 }
 
+/**
+ * Everything the Code view needs from the shell. It never imports main.ts back
+ * (that would be a cycle): the shell hands it these, exactly like the Agent
+ * gets its team directory.
+ */
+const codeDeps: codeview.CodeDeps = {
+  toast,
+  ask: async (req: PermissionRequest) => {
+    // Same queue, same dialog, same z-order as a model's request. The owner is
+    // the view, not a thread: stopping an agent must not answer for the user
+    // here, and nothing else can settle it either.
+    const d = await askPermission(req, "code:view", t("nav.code"));
+    return d === "once" || d === "always";
+  },
+  mountAgent: (host: HTMLElement) => {
+    host.appendChild(
+      el(`<div class="cside-h"><span class="t">${esc(t("code.agentPane"))}</span><span class="grow"></span><div class="iconbtn" id="cnewchat" title="${esc(t("nav.newchat"))}">${I.plus}</div></div>`)
+    );
+    host.appendChild(threadPaneEl());
+    host.querySelector("#cnewchat")!.addEventListener("click", newChat);
+  },
+  paintNav: () => {
+    const item = document.querySelector<HTMLElement>('.nav [data-v="code"]');
+    if (!item) return;
+    const n = codeview.pendingCount();
+    const badge = item.querySelector(".navbadge");
+    if (!n) badge?.remove();
+    else if (badge) badge.textContent = String(n);
+    else item.appendChild(el(`<span class="navbadge" title="${esc(t("code.pendingNav"))}">${n}</span>`));
+  },
+  saveSetting: (key, value) => api.settingsSet(key, value),
+};
+
 async function boot() {
   // The Agent can now hand work to other conversations: give it the directory
   // before anything can create one.
   setAgentDirectory(teamDirectory);
+  codeview.setCodeDeps(codeDeps);
+  // A write inside the open workspace is a proposal, not a write. Installed
+  // before any agent exists so no turn can ever run without it.
+  setCodeWorkspace({
+    root: () => codeview.codeRoot(),
+    propose: (path, rel, content) => codeview.fileProposal(path, rel, content),
+  });
   await loadStandingPermissions().catch(() => {});
   const s = await api.settingsGet().catch(() => ({} as Record<string, string>));
   if (s["root"]) { root = s["root"]; try { registry = await api.registry(); if (!registry.length) root = null; } catch { root = null; } }
   if (s["autonomy"]) autonomy = s["autonomy"] as Autonomy;
+  // The Code workspace comes back where it was left.
+  await codeview.initCodeRoot(s["code_root"]).catch(() => {});
   if (s["ram_mode"] === "eco" || s["ram_mode"] === "perf") ramMode = s["ram_mode"];
   try { skillsOff = new Set(JSON.parse(s["skills_off"] ?? "[]")); } catch {}
   for (const [k, val] of Object.entries(s)) {
@@ -3190,8 +3282,12 @@ async function boot() {
     // while the user types in the Memory textarea or the custom-connector
     // form would wipe their edits; those views only show server state in
     // the sidebar pill, so repaint just that.
-    if (view === "memory" || view === "connectors") renderServerPill();
-    else render();
+    // The Code view holds a live editor, and possibly a pending diff nobody
+    // has answered yet: a rebuild on every load tick would throw both away.
+    if (view === "memory" || view === "connectors" || view === "code") {
+      renderServerPill();
+      paintComposerReady();
+    } else render();
   });
 
   // Loading elapsed ticker: refresh the counter without repainting the view.
@@ -3238,7 +3334,7 @@ async function boot() {
   });
 
   // Keyboard shortcuts: ⌘N new chat, ⌘1..6 navigation.
-  const NAV_ORDER: View[] = ["chat", "models", "connectors", "memory", "agent", "settings"];
+  const NAV_ORDER: View[] = ["chat", "code", "models", "connectors", "memory", "agent", "settings"];
   window.addEventListener("keydown", (e) => {
     if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
     if (!root || document.querySelector(".modal-bd")) return;
@@ -3246,7 +3342,7 @@ async function boot() {
     if (k === "n") {
       e.preventDefault();
       newChat();
-    } else if (k >= "1" && k <= "6" && k.length === 1) {
+    } else if (k >= "1" && k <= "7" && k.length === 1) {
       e.preventDefault();
       view = NAV_ORDER[Number(k) - 1];
       render();

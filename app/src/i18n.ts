@@ -4,6 +4,7 @@ export type Lang = "en" | "fr";
 const dict: Record<string, { en: string; fr: string }> = {
   "brand.by": { en: "by Noxalis Lab · v0.1", fr: "par Noxalis Lab · v0.1" },
   "nav.chat": { en: "Chat", fr: "Discussion" },
+  "nav.code": { en: "Code", fr: "Code" },
   "nav.models": { en: "Models", fr: "Modèles" },
   "nav.connectors": { en: "Connectors", fr: "Connecteurs" },
   "nav.memory": { en: "Memory", fr: "Mémoire" },
@@ -454,6 +455,104 @@ const dict: Record<string, { en: string; fr: string }> = {
     fr: "Cette tâche marche mieux avec %m",
   },
   "task.switch": { en: "Switch", fr: "Basculer" },
+
+  // ---- Code view ----
+  "code.openTitle": { en: "Open a folder", fr: "Ouvrir un dossier" },
+  "code.openBody": {
+    en: "Pick the folder you want to work on. Galactus reads its files, follows its git history, and proposes its edits there instead of writing them.",
+    fr: "Choisis le dossier sur lequel travailler. Galactus lit ses fichiers, suit son historique git, et y propose ses modifications au lieu de les écrire.",
+  },
+  "code.openFolder": { en: "Choose a folder", fr: "Choisir un dossier" },
+  "code.change": { en: "Change folder", fr: "Changer de dossier" },
+  "code.agentPane": { en: "Galactus", fr: "Galactus" },
+  "code.pickFile": { en: "Pick a file on the left.", fr: "Choisis un fichier à gauche." },
+  "code.cannotOpen": { en: "This file cannot be opened in the editor", fr: "Ce fichier ne peut pas être ouvert dans l'éditeur" },
+  "code.save": { en: "Save", fr: "Enregistrer" },
+  "code.unsaved": { en: "unsaved", fr: "non enregistré" },
+  "code.saveFail": { en: "Save failed: %s", fr: "Échec de l'enregistrement : %s" },
+  "code.saveBlocked": {
+    en: "Answer the pending hunks first: accept or reject them.",
+    fr: "Réponds d'abord aux blocs en attente : accepte-les ou refuse-les.",
+  },
+  "code.reviewing": { en: "proposed change", fr: "modification proposée" },
+  "code.reviewHint": {
+    en: "Galactus proposes this. Accept or reject each hunk: only what you accept is written to disk.",
+    fr: "Galactus propose ceci. Accepte ou refuse chaque bloc : seul ce que tu acceptes est écrit sur le disque.",
+  },
+  "code.acceptAll": { en: "Accept all", fr: "Tout accepter" },
+  "code.rejectAll": { en: "Reject all", fr: "Tout refuser" },
+  "code.pendingTitle": { en: "PROPOSED · %n", fr: "PROPOSÉ · %n" },
+  "code.pendingNav": { en: "Files with a change waiting for you", fr: "Fichiers avec une modification en attente" },
+  "code.discard": { en: "Discard this proposal", fr: "Abandonner cette proposition" },
+  "code.proposalToast": { en: "Change proposed: %s", fr: "Modification proposée : %s" },
+  "code.backToEditor": { en: "Back to the file", fr: "Retour au fichier" },
+
+  "code.tab.files": { en: "Files", fr: "Fichiers" },
+  // Short on purpose: four tabs share a 274 px column, and a label that
+  // overflows its neighbour is worse than a shorter word.
+  "code.tab.changes": { en: "Changes", fr: "État" },
+  "code.tab.history": { en: "History", fr: "Historique" },
+  "code.tab.branches": { en: "Branches", fr: "Branches" },
+
+  "code.noRepo": { en: "not a git repository", fr: "pas un dépôt git" },
+  "code.noRepoHint": {
+    en: "This folder is not a git repository, so there is no history to show.",
+    fr: "Ce dossier n'est pas un dépôt git : il n'y a pas d'historique à afficher.",
+  },
+  "code.clean": { en: "Working tree clean.", fr: "Rien à valider, l'arbre de travail est propre." },
+  "code.staged": { en: "STAGED", fr: "INDEXÉ" },
+  "code.unstaged": { en: "NOT STAGED", fr: "NON INDEXÉ" },
+  "code.untrackedGroup": { en: "UNTRACKED", fr: "NON SUIVI" },
+  "code.stageAll": { en: "stage all", fr: "tout indexer" },
+  "code.unstageAll": { en: "unstage all", fr: "tout désindexer" },
+  "code.stagedSide": { en: "staged against HEAD", fr: "indexé, comparé à HEAD" },
+  "code.unstagedSide": { en: "not staged yet", fr: "pas encore indexé" },
+  "code.untracked": { en: "untracked, whole file", fr: "non suivi, fichier entier" },
+  "code.noDiff": { en: "(no textual difference)", fr: "(aucune différence textuelle)" },
+  "code.commitPlaceholder": { en: "Commit message…", fr: "Message du commit…" },
+  "code.commit": { en: "Commit %n file(s)", fr: "Valider %n fichier(s)" },
+  "code.commitTitle": { en: "Commit", fr: "Valider" },
+  "code.commitSub": {
+    en: "%n file(s) go into this commit, on %b. It stays local until you push.",
+    fr: "%n fichier(s) entrent dans ce commit, sur %b. Il reste local tant que tu ne pousses pas.",
+  },
+  "code.commitDo": { en: "Commit", fr: "Valider" },
+  "code.commitDone": { en: "Committed: %s", fr: "Commit créé : %s" },
+  "code.commitNoMessage": { en: "A commit needs a message.", fr: "Un commit a besoin d'un message." },
+  "code.commitNothing": { en: "Nothing is staged.", fr: "Rien n'est indexé." },
+
+  "code.pull": { en: "Pull", fr: "Récupérer" },
+  "code.push": { en: "Push", fr: "Pousser" },
+  "code.pushDetail": {
+    en: "Push %n commit(s) from the local branch %b to %u. Other people will see them.",
+    fr: "Pousser %n commit(s) de la branche locale %b vers %u. Les autres les verront.",
+  },
+  "code.pullDetail": {
+    en: "Pull %n commit(s) from %u into %b, fast-forward only. Your files will change.",
+    fr: "Récupérer %n commit(s) depuis %u vers %b, en avance rapide seulement. Tes fichiers vont changer.",
+  },
+  "code.pushDone": { en: "Pushed", fr: "Poussé" },
+  "code.pullDone": { en: "Up to date", fr: "À jour" },
+  "code.nothingToPush": { en: "Nothing to push: no local commit ahead.", fr: "Rien à pousser : aucun commit local en avance." },
+  "code.noUpstream": {
+    en: "This branch tracks no remote branch.",
+    fr: "Cette branche ne suit aucune branche distante.",
+  },
+  "code.noCommits": { en: "No commit yet.", fr: "Aucun commit pour l'instant." },
+  "code.historyFile": { en: "only %s", fr: "seulement %s" },
+  "code.newBranch": { en: "New branch name", fr: "Nom de la nouvelle branche" },
+  "code.create": { en: "Create", fr: "Créer" },
+  "code.branchPending": {
+    en: "Answer the pending proposals before switching branch.",
+    fr: "Réponds aux propositions en attente avant de changer de branche.",
+  },
+
+  "perm.code": { en: "Propose a change to a file", fr: "Proposer une modification de fichier" },
+  "perm.codeNote": {
+    en: "Nothing is written now: the change opens in the editor and you accept or reject it hunk by hunk.",
+    fr: "Rien n'est écrit maintenant : la modification s'ouvre dans l'éditeur et tu l'acceptes ou la refuses bloc par bloc.",
+  },
+  "perm.git": { en: "Reach the git remote", fr: "Contacter le dépôt distant" },
 
   "preview.title": { en: "Preview", fr: "Aperçu" },
   "preview.refresh": { en: "Refresh", fr: "Rafraîchir" },

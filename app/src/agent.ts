@@ -26,12 +26,28 @@ export type PermissionKind =
   /** Hand work to another conversation's agent (ask_agent). */
   | "agent"
   /** Read the stored conversation history (search_conversations, read_conversation). */
-  | "conversations";
+  | "conversations"
+  /**
+   * Propose a change to a file of the open code workspace. It is its own kind
+   * because it is NOT a write: the edit lands in the editor as a pending diff
+   * the user accepts or rejects hunk by hunk, and only an accept touches the
+   * disk. Granting it always is therefore cheap, which granting fs_write is
+   * not.
+   */
+  | "code"
+  /** Push or pull: the network, and a branch other people share. */
+  | "git";
 
 export interface PermissionRequest {
   kind: PermissionKind;
   detail: string;
   elevated: boolean;
+  /**
+   * Hide "Always" for this request. Set on actions where a standing rule would
+   * make something irreversible silent (push, pull): the point of the dialog
+   * is that the user sees the branch and the count EVERY time.
+   */
+  noAlways?: boolean;
   /** Filled only for kind === "fs_write", via api.fsPreview, when a dialog will show. */
   diff?: {
     before: string;
@@ -193,19 +209,63 @@ function isStanding(kind: PermissionKind, detail: string): boolean {
     // An empty prefix would match EVERYTHING for this kind — never honour one
     // (legacy rules stored by older builds become inert).
     if (r.prefix === "") return false;
-    // Shell, vault, memory, file-write and history-read rules are exact: a
-    // prefix match would let "ls" grant "lsof", "Always" on one file grant
-    // the folder, or one search grant every other query.
+    // Shell, vault, memory, file-write, history-read and code-proposal rules
+    // are exact: a prefix match would let "ls" grant "lsof", "Always" on one
+    // file grant the folder, or one search grant every other query.
     if (
       kind === "shell" ||
       kind === "obsidian" ||
       kind === "memory" ||
       kind === "fs_write" ||
-      kind === "conversations"
+      kind === "conversations" ||
+      kind === "code"
     )
       return detail === r.prefix;
     return detail.startsWith(r.prefix);
   });
+}
+
+// ---------------- the code workspace ----------------
+//
+// When the Code view owns a folder, a write INSIDE that folder is not a write:
+// it is a proposal. The change goes to the editor as a pending diff the user
+// accepts or rejects hunk by hunk, and nothing reaches the disk until an
+// accept.
+//
+// This is deliberately NOT a second tool. A dedicated `propose_edit` would put
+// the containment guarantee in the model's hands: it would only hold as long
+// as the model picks the right tool, and a model that reached for write_file
+// inside the workspace would write straight to the disk, which is the one
+// thing this feature exists to prevent. Routing by PATH makes it a property of
+// the workspace instead: any write under the open folder becomes a proposal,
+// whatever the model intended, whatever view it was called from, and the tool
+// schema the model already knows does not change.
+
+export interface CodeWorkspace {
+  /** Absolute root of the open workspace, null when the Code view has none. */
+  root(): string | null;
+  /**
+   * File the proposal against the workspace. `path` is absolute, `rel` is
+   * relative to the root. Resolves with the message handed back to the model.
+   */
+  propose(path: string, rel: string, content: string): Promise<string>;
+}
+
+let codeWorkspace: CodeWorkspace | null = null;
+
+export function setCodeWorkspace(w: CodeWorkspace | null): void {
+  codeWorkspace = w;
+}
+
+/** The open workspace root, when there is one. */
+function workspaceRoot(): string | null {
+  const r = codeWorkspace?.root() ?? null;
+  return r && r.startsWith("/") ? r.replace(/\/+$/, "") : null;
+}
+
+/** True when an absolute path sits inside the open workspace. */
+function inWorkspace(root: string, path: string): boolean {
+  return path === root || path.startsWith(root + "/");
 }
 
 const KNOWLEDGE_TOOL: ToolDef = {
@@ -802,6 +862,16 @@ export class Agent {
       p +=
         " The user has indexed local knowledge folders: search them FIRST with search_knowledge whenever the question may touch their own documents, notes or code.";
     }
+    const wsRoot = workspaceRoot();
+    if (wsRoot) {
+      p +=
+        `\n\nA CODE WORKSPACE is open at ${wsRoot}. Paths you give may be relative to it. ` +
+        "Read a file before you rewrite it, and pass write_file the COMPLETE new content of the file. " +
+        "Inside this workspace a write is not applied: it becomes a pending diff in the user's editor, " +
+        "which they accept or reject hunk by hunk. Say what you changed and why, and do not claim the file " +
+        "has been modified: it has not until they accept. Keep unrelated regions byte-identical so each " +
+        "hunk is one decision.";
+    }
     p +=
       " Earlier conversations with this user are searchable (search_conversations) and readable (read_conversation): " +
       "use them when the user refers to something discussed before, and always say which thread and which date a fact comes from. " +
@@ -1245,6 +1315,35 @@ export class Agent {
     ]);
   }
 
+  // ---------------- code workspace ----------------
+
+  /**
+   * A write inside the open workspace, turned into a pending diff. The gate
+   * still runs, with the "code" kind: what it approves is the PROPOSAL, which
+   * costs nothing and is worth granting always for a file being worked on.
+   * The disk is touched later, by the user accepting a hunk in the editor.
+   */
+  private async proposeCodeEdit(root: string, path: string, content: string): Promise<string> {
+    const rel = path.slice(root.length + 1) || path;
+    const req: PermissionRequest = { kind: "code", detail: rel, elevated: false };
+    // Same preview as an ordinary write: the dialog shows the whole change
+    // before the user lets it into the editor at all.
+    let preview: { before: string; existed: boolean } | null = null;
+    const silent = isStanding("code", rel) || this.autoApprove;
+    try {
+      const d = await api.fsPreview(path, content);
+      preview = { before: d.before, existed: d.existed };
+      if (!silent) {
+        req.diff = { before: d.before, after: d.after, added: d.added, removed: d.removed, existed: d.existed };
+      }
+    } catch {
+      /* preview failure must not block the flow */
+    }
+    if (!(await this.gate(req))) return "denied by user";
+    const note = await codeWorkspace!.propose(path, rel, content);
+    return preview ? `${note}\n\n${plainDiff(preview.before, content, preview.existed)}` : note;
+  }
+
   private async gate(req: PermissionRequest): Promise<boolean> {
     if (this.abort?.signal.aborted) return false;
     if (!req.elevated && isStanding(req.kind, req.detail)) return true;
@@ -1259,7 +1358,7 @@ export class Agent {
     // alone made anything unexpected (a hook resolving undefined, a dialog
     // dismissed by something other than its buttons) read as consent.
     if (decision !== "once" && decision !== "always") return false;
-    if (decision === "always" && !req.elevated) {
+    if (decision === "always" && !req.elevated && !req.noAlways) {
       let prefix = req.detail;
       if (req.kind === "fs_read" || req.kind === "fs_list") {
         const i = req.detail.lastIndexOf("/");
@@ -1315,12 +1414,17 @@ export class Agent {
     // path is normalized so standing-rule matching compares one canonical
     // spelling ("." segments, duplicate slashes).
     if (name === "read_file" || name === "write_file" || name === "list_directory" || name === "read_document") {
-      const p = normalizePath(String(args.path ?? ""));
+      let p = normalizePath(String(args.path ?? ""));
       if (hasParentTraversal(p)) {
         const msg = 'error: path contains a ".." component; use a fully resolved absolute path';
         this.hooks.onToolResult(name, msg);
         return msg;
       }
+      // A model working in the Code view names files the way the tree shows
+      // them ("src/main.ts"). With a workspace open, resolve that against its
+      // root instead of failing on a path with no anchor; ".." is already out.
+      const wsRoot = workspaceRoot();
+      if (wsRoot && !p.startsWith("/") && p.length > 0) p = `${wsRoot}/${p}`;
       args.path = p;
     }
 
@@ -1335,6 +1439,10 @@ export class Agent {
       } else if (name === "write_file") {
         const p = String(args.path ?? "");
         const content = String(args.content ?? "");
+        const wsRoot = workspaceRoot();
+        if (wsRoot && codeWorkspace && inWorkspace(wsRoot, p)) {
+          result = await this.proposeCodeEdit(wsRoot, p, content);
+        } else {
         const elevated = isElevatedWrite(p);
         const req: PermissionRequest = { kind: "fs_write", detail: p, elevated };
         // The preview is ALWAYS computed: shown in the dialog when one opens,
@@ -1354,6 +1462,7 @@ export class Agent {
         result = ok ? await api.fsWrite(p, content) : "denied by user";
         if (ok && preview) {
           result += "\n\n" + plainDiff(preview.before, content, preview.existed);
+        }
         }
       } else if (name === "list_directory") {
         const p = String(args.path ?? "");

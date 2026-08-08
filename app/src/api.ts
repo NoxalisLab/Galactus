@@ -91,6 +91,49 @@ export interface SkillInfo {
   scope: string; // "global" | "workspace"
 }
 
+// ---- code workspace (code.rs) ----
+
+/** One entry of a directory level, decorated with its git worktree status. */
+export interface CodeEntry {
+  name: string;
+  /** Path relative to the workspace root. */
+  path: string;
+  dir: boolean;
+  size: number;
+  /** "M", "A", "D", "?" or "". */
+  status: string;
+}
+
+export interface GitCommitInfo {
+  hash: string;
+  short: string;
+  author: string;
+  when: string;
+  subject: string;
+}
+
+export interface GitInfo {
+  repo: boolean;
+  branch: string;
+  upstream: string;
+  ahead: number;
+  behind: number;
+  staged: number;
+  unstaged: number;
+  untracked: number;
+  dirty: boolean;
+}
+
+export interface GitChange {
+  path: string;
+  index: string;
+  work: string;
+  staged: boolean;
+  unstaged: boolean;
+  untracked: boolean;
+  from: string;
+}
+
 export const api = {
   // Hands the preview document to the app's own scheme and returns its URL:
   // served that way it carries its own content policy instead of inheriting
@@ -178,6 +221,32 @@ export const api = {
     invoke<{ files: number; chunks: number; folders: string[]; indexed_at: number } | null>("kb_stats"),
   kbSearch: (query: string, k?: number) =>
     invoke<{ path: string; snippet: string; score: number; line: number }[]>("kb_search", { query, k }),
+
+  // Code workspace. Every path is relative to `root` and confined to it in
+  // Rust, not merely here: the model reaches these commands too.
+  codeTree: (root: string, sub: string) => invoke<CodeEntry[]>("code_tree", { root, sub }),
+  codeRead: (root: string, path: string) => invoke<string>("code_read", { root, path }),
+  codeWrite: (root: string, path: string, content: string) =>
+    invoke<void>("code_write", { root, path, content }),
+  gitInfo: (root: string) => invoke<GitInfo>("git_info", { root }),
+  gitStatus: (root: string) => invoke<GitChange[]>("git_status", { root }),
+  gitLog: (root: string, limit?: number, path?: string) =>
+    invoke<GitCommitInfo[]>("git_log", { root, limit, path }),
+  gitDiff: (root: string, path?: string, rev?: string) =>
+    invoke<string>("git_diff", { root, path, rev }),
+  gitFileDiff: (root: string, path: string, staged: boolean) =>
+    invoke<string>("git_file_diff", { root, path, staged }),
+  gitShowFile: (root: string, rev: string, path: string) =>
+    invoke<string>("git_show_file", { root, rev, path }),
+  gitStage: (root: string, paths: string[], unstage: boolean) =>
+    invoke<void>("git_stage", { root, paths, unstage }),
+  gitCommit: (root: string, message: string, all: boolean) =>
+    invoke<string>("git_commit", { root, message, all }),
+  gitPush: (root: string) => invoke<string>("git_push", { root }),
+  gitPull: (root: string, rebase: boolean) => invoke<string>("git_pull", { root, rebase }),
+  gitBranches: (root: string) => invoke<string[]>("git_branches", { root }),
+  gitCheckout: (root: string, branch: string, create: boolean) =>
+    invoke<string>("git_checkout", { root, branch, create }),
 };
 
 export function onEvent(

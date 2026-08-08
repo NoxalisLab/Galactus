@@ -739,3 +739,203 @@ textarea.mem:focus { border-color: rgba(138, 124, 255, 0.4); }
   color: var(--win); background: var(--acc-tx, #8a7cff); animation: gx-askpulse 1.4s ease-in-out infinite; }
 .conv.asking .ct, .tchip.asking .rl { color: #a89cff; }
 @keyframes gx-askpulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+
+/* ---------------- code workspace (code.ts) ----------------
+   Three columns: the files, the file, and the thread. Same surfaces, same
+   accent, same borders as everywhere else — the editor is a panel of the app,
+   not an IDE bolted to its side. */
+.threadpane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.codebody { flex: 1; min-height: 0; display: flex; }
+.codeleft { width: 274px; flex: none; min-width: 0; display: flex; flex-direction: column;
+  border-right: 1px solid var(--bd); background: var(--side); }
+.codemid { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--win); }
+.codeside { width: 400px; flex: none; min-width: 0; display: flex; flex-direction: column;
+  border-left: 1px solid var(--bd); }
+.codeside .composer { padding: 12px 14px 14px; }
+.codeside .comp-box { max-width: none; }
+.codeside .chat-scroll { padding: 18px 14px 8px; }
+.codeside .thread { max-width: none; gap: 22px; }
+.codeside .actbar { padding: 0 14px 10px; }
+/* The composer has 400 px here instead of 720: the two chips that are about
+   research and connectors go, the three that drive this turn stay. */
+.codeside .comp-bar { gap: 6px; padding: 6px 8px 9px 10px; }
+.codeside .comp-bar .hint, .codeside .comp-bar .tool-btn.deep, .codeside #gotoconn { display: none; }
+.codeside .comp-bar .seg-mode button { padding: 4px 9px; font-size: 11.5px; }
+.cside-h { height: 40px; flex: none; display: flex; align-items: center; gap: 8px;
+  padding: 0 10px 0 16px; border-bottom: 1px solid var(--bd); }
+.cside-h .t { font-size: 11px; font-weight: 700; letter-spacing: 0.9px; color: var(--dim3);
+  text-transform: uppercase; }
+.cside-h .grow { flex: 1; }
+
+/* top bar: workspace path, branch, network actions */
+.topbar .cpath { font-size: 11.5px; color: var(--dim); max-width: 300px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.cpill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 20px;
+  background: rgba(138, 124, 255, 0.1); border: 1px solid rgba(138, 124, 255, 0.22);
+  font-size: 11.5px; color: var(--acc-tx2); white-space: nowrap; }
+.cpill .d { width: 6px; height: 6px; border-radius: 50%; background: var(--acc); flex: none; }
+.cpill .s { font-family: var(--mono); font-size: 10.5px; color: #8b86a8; }
+.cpill.off { background: rgba(255, 255, 255, 0.04); border-color: var(--bd2); color: var(--dim); }
+
+/* left column: tabs */
+.ctabs { flex: none; display: flex; gap: 2px; padding: 8px 8px 6px; border-bottom: 1px solid var(--bd); }
+.ctab { flex: 1 1 0; min-width: 0; display: flex; align-items: center; justify-content: center; gap: 4px;
+  border: none; background: transparent; color: var(--dim2); font-size: 11px; font-weight: 500;
+  padding: 5px 3px; border-radius: 7px; cursor: default; transition: all 0.15s;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ctab:hover { background: rgba(255, 255, 255, 0.05); color: var(--tx); }
+.ctab.on { background: rgba(138, 124, 255, 0.13); color: var(--acc-tx2); }
+.ctab .n { font-size: 9.5px; font-weight: 700; color: var(--win); background: var(--acc);
+  border-radius: 5px; padding: 0 4px; }
+.cpanel { flex: 1; min-height: 0; overflow: auto; padding: 6px 0 14px; }
+.cempty { font-size: 11.5px; color: var(--dim3); padding: 14px 16px; line-height: 1.55; }
+.cempty.big { flex: 1; display: flex; align-items: center; justify-content: center; font-size: 13px; }
+
+/* pending proposals, always visible whatever the tab shows */
+.cpending { flex: none; border-bottom: 1px solid rgba(138, 124, 255, 0.22);
+  background: rgba(138, 124, 255, 0.06); padding: 7px 0 8px; max-height: 26vh; overflow: auto; }
+.cpending .ph { font-size: 9.5px; font-weight: 700; letter-spacing: 0.9px; color: var(--acc-tx);
+  padding: 2px 12px 6px; }
+.cpending .prow { display: flex; align-items: center; gap: 7px; padding: 5px 10px 5px 12px;
+  cursor: default; color: var(--tx2); }
+.cpending .prow:hover { background: rgba(138, 124, 255, 0.1); }
+.cpending .prow.on { background: rgba(138, 124, 255, 0.14); }
+.cpending .prow .dot { flex: none; font-size: 8px; color: var(--acc); }
+.cpending .prow .nm { flex: 1; min-width: 0; font-size: 11.5px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.cpending .prow .x { flex: none; color: transparent; font-size: 14px; line-height: 1; padding: 0 3px; }
+.cpending .prow:hover .x { color: var(--dim3); }
+.cpending .prow .x:hover { color: var(--bad); }
+
+/* the tree */
+.ctree { padding: 4px 0; }
+.trow { display: flex; align-items: center; gap: 6px; padding: 3px 10px 3px 0; cursor: default;
+  color: var(--dim2); font-size: 12.5px; }
+.trow:hover { background: rgba(255, 255, 255, 0.045); color: var(--tx); }
+.trow.on { background: rgba(138, 124, 255, 0.12); color: var(--tx); }
+.trow .tw { flex: none; width: 10px; font-size: 9px; color: var(--dim3); }
+.trow .tn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trow.dir .tn { color: var(--tx2); }
+.trow.pending .tn { color: var(--acc-tx2); }
+.gs { flex: none; font-family: var(--mono); font-size: 10px; font-weight: 500; width: 12px;
+  text-align: center; color: var(--dim3); }
+.gs.mod { color: #d9a441; } .gs.add { color: var(--good); }
+.gs.del { color: var(--bad); } .gs.unt { color: var(--dim2); }
+.gs.prop { color: var(--acc); }
+
+/* changes panel */
+.cgh { display: flex; align-items: center; gap: 7px; padding: 10px 12px 5px; font-size: 9.5px;
+  font-weight: 700; letter-spacing: 0.9px; color: var(--dim3); }
+.cgh .n { font-weight: 600; letter-spacing: 0; color: var(--dim2); }
+.cgh .all { margin-left: auto; font-size: 10.5px; font-weight: 500; letter-spacing: 0;
+  color: #9a8cff; text-transform: none; }
+.cgh .all:hover { color: #c9bcff; }
+.crow { display: flex; align-items: center; gap: 7px; padding: 4px 10px 4px 12px; cursor: default;
+  color: var(--dim2); }
+.crow:hover { background: rgba(255, 255, 255, 0.045); color: var(--tx); }
+.crow .nm { flex: 1; min-width: 0; font-size: 11.5px; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; direction: rtl; text-align: left; }
+.crow .act { flex: none; width: 18px; text-align: center; border-radius: 5px; color: transparent;
+  font-size: 13px; line-height: 18px; }
+.crow:hover .act { color: var(--dim2); background: rgba(255, 255, 255, 0.07); }
+.crow .act:hover { color: var(--acc-tx); background: rgba(138, 124, 255, 0.18); }
+.cbox { display: flex; flex-direction: column; gap: 8px; margin: 12px 12px 0; padding-top: 12px;
+  border-top: 1px solid var(--bd); }
+.cbox textarea, .cbox input { width: 100%; resize: none; padding: 9px 11px; border-radius: 9px;
+  background: var(--inset); border: 1px solid var(--bd2); color: var(--tx2); font-size: 12px;
+  line-height: 1.55; outline: none; font-family: var(--sans); transition: border-color 0.15s; }
+.cbox textarea:focus, .cbox input:focus { border-color: rgba(138, 124, 255, 0.4); }
+.cfilter { padding: 8px 12px; font-size: 11.5px; color: var(--dim2); }
+.cfilter input { vertical-align: -1px; margin-right: 5px; accent-color: var(--acc); }
+
+/* history + branches */
+.hrow { padding: 7px 12px; cursor: default; border-left: 2px solid transparent; }
+.hrow:hover { background: rgba(255, 255, 255, 0.045); border-left-color: var(--acc); }
+.hrow .l1 { display: flex; align-items: baseline; gap: 8px; }
+.hrow .sh { flex: none; font-size: 10.5px; color: var(--acc-tx); }
+.hrow .sj { flex: 1; min-width: 0; font-size: 12px; color: var(--tx2); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.hrow .l2 { font-size: 10.5px; color: var(--dim3); padding-top: 2px; }
+.brow { display: flex; align-items: center; gap: 8px; padding: 6px 12px; cursor: default;
+  color: var(--dim2); font-size: 12px; }
+.brow:hover { background: rgba(255, 255, 255, 0.045); color: var(--tx); }
+.brow .d { width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--bd3); }
+.brow.on { color: var(--tx); } .brow.on .d { background: var(--acc); box-shadow: 0 0 8px var(--acc); }
+
+/* middle column: file header, review banner, editor, patch */
+.cfilehead { height: 40px; flex: none; display: flex; align-items: center; gap: 9px;
+  padding: 0 12px 0 16px; border-bottom: 1px solid var(--bd); }
+.cfilehead .fp { font-size: 12px; color: var(--tx2); max-width: 45%; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.cfilehead .fsub { font-size: 11px; color: var(--dim3); overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.cfilehead .grow { flex: 1; }
+.cfilehead .fbadge { flex: none; font-size: 10.5px; font-weight: 500; color: var(--acc-tx);
+  background: rgba(138, 124, 255, 0.13); border-radius: 6px; padding: 2px 8px; }
+.cfilehead .fbadge.dirty { color: #d9a441; background: rgba(217, 164, 65, 0.13); }
+.creviewbar { flex: none; padding: 8px 16px; font-size: 11.5px; color: var(--acc-tx2);
+  background: linear-gradient(180deg, rgba(138, 124, 255, 0.1), rgba(138, 124, 255, 0.03));
+  border-bottom: 1px solid rgba(138, 124, 255, 0.22); }
+.cmhost { flex: 1; min-height: 0; overflow: hidden; }
+.cerror { margin: 18px; padding: 14px 16px; border-radius: 11px; display: flex; flex-direction: column;
+  gap: 6px; border: 1px solid rgba(209, 107, 111, 0.35);
+  background: linear-gradient(180deg, rgba(209, 107, 111, 0.08), rgba(209, 107, 111, 0.02)); }
+.cerror b { font-size: 13px; font-weight: 600; }
+.cerror .mono { font-size: 11.5px; color: #b39c9e; word-break: break-word; }
+.cpatch { flex: 1; min-height: 0; max-height: none; margin: 0; border: none; border-radius: 0;
+  overflow: auto; }
+.cpatch .dl.meta { color: var(--dim3); }
+.cpatch .dl.hunk { color: var(--acc-tx); background: rgba(138, 124, 255, 0.07); }
+
+/* commit confirmation */
+.ccommit { margin-bottom: 16px; }
+.ccommit .cmsg { padding: 10px 13px; border-radius: 10px; background: var(--inset);
+  border: 1px solid var(--bd2); color: var(--tx2); font-size: 12.5px; line-height: 1.55;
+  white-space: pre-wrap; word-break: break-word; margin-bottom: 10px; }
+.ccommit .cfiles { max-height: 240px; overflow: auto; border: 1px solid var(--bd2);
+  border-radius: 10px; background: var(--pre); padding: 6px 0; }
+.ccommit .cf { display: flex; align-items: center; gap: 8px; padding: 3px 12px; font-size: 11.5px;
+  color: var(--tx2); }
+
+/* pending-proposal count on the Code nav item */
+.nav-item .navbadge { margin-left: auto; font-size: 9.5px; font-weight: 700; color: var(--win);
+  background: var(--acc); border-radius: 6px; padding: 1px 5px; }
+
+/* permission dialog: sentences read better than monospace paths */
+.modal .pd.sentence { font-family: var(--sans); font-size: 13px; line-height: 1.6;
+  word-break: normal; }
+.modal .pnote { font-size: 11.5px; color: var(--dim2); margin: -6px 0 14px; line-height: 1.5; }
+
+/* CodeMirror, dressed in the app's palette. one-dark carries the grammar
+   colours; the chrome around it has to be ours. */
+.cmhost .cm-editor { height: 100%; font-family: var(--mono); font-size: 12.5px; }
+.cmhost .cm-editor.cm-focused { outline: none; }
+.cmhost .cm-scroller { font-family: var(--mono); line-height: 1.62; }
+.cmhost .cm-gutters { background: var(--side); border-right: 1px solid var(--bd); color: var(--dim3); }
+.cmhost .cm-activeLineGutter { background: rgba(138, 124, 255, 0.08); color: var(--acc-tx); }
+.cmhost .cm-content { caret-color: var(--acc); }
+.cmhost .cm-cursor { border-left-color: var(--acc); }
+.cmhost .cm-selectionBackground, .cmhost .cm-focused .cm-selectionBackground,
+.cmhost .cm-line ::selection { background: rgba(138, 124, 255, 0.28) !important; }
+.cmhost .cm-panels { background: var(--card); border-color: var(--bd2); color: var(--tx2); }
+.cmhost .cm-textfield { background: var(--inset); border: 1px solid var(--bd2); color: var(--tx); }
+.cmhost .cm-button { background: rgba(255, 255, 255, 0.05); border: 1px solid var(--bd3);
+  border-radius: 7px; color: var(--tx); background-image: none; }
+/* merge view: the pending diff */
+.cmhost .cm-deletedChunk { background: rgba(209, 107, 111, 0.09); }
+.cmhost .cm-deletedChunk .cm-deletedText { background: rgba(209, 107, 111, 0.22); }
+.cmhost .cm-changedLine { background: rgba(95, 191, 138, 0.09); }
+.cmhost .cm-changedText { background: rgba(95, 191, 138, 0.2); }
+.cmhost .cm-changedLineGutter { background: rgba(95, 191, 138, 0.22); }
+.cmhost .cm-deletedLineGutter { background: rgba(209, 107, 111, 0.22); }
+.cmhost .cm-chunkButtons { display: flex; gap: 5px; padding-right: 6px; }
+.cmhost .cm-chunkButtons button { font-family: var(--sans); font-size: 10.5px; font-weight: 600;
+  line-height: 1; padding: 3px 8px; border-radius: 6px; cursor: default; border: 1px solid var(--bd3);
+  background: rgba(255, 255, 255, 0.06); color: var(--tx2); }
+.cmhost .cm-chunkButtons button[name="accept"] { background: var(--grad); border-color: transparent;
+  color: var(--win); }
+.cmhost .cm-chunkButtons button[name="accept"]:hover { filter: brightness(1.14); }
+.cmhost .cm-chunkButtons button[name="reject"]:hover { border-color: rgba(209, 107, 111, 0.55);
+  color: var(--bad); }
+.cmhost .cm-collapsedLines { background: rgba(255, 255, 255, 0.03); color: var(--dim3);
+  font-size: 11px; }
