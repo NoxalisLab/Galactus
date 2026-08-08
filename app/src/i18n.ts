@@ -196,6 +196,8 @@ const dict: Record<string, { en: string; fr: string }> = {
   "perm.agent": { en: "Work with a sub-agent", fr: "Travailler avec un sous-agent" },
   "perm.conversations": { en: "Read your stored conversations", fr: "Lire tes discussions enregistrées" },
   "perm.origin": { en: "Asked by « %s »", fr: "Demandé par « %s »" },
+  "perm.more": { en: "%n more waiting", fr: "%n autre(s) en attente" },
+  "perm.waiting": { en: "waiting for your answer", fr: "en attente de ta réponse" },
   "tool.web": { en: "Fetch URL", fr: "Consulter l'URL" },
   "tool.kb": { en: "Search knowledge", fr: "Chercher dans les connaissances" },
 

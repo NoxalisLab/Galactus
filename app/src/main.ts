@@ -200,6 +200,7 @@ function pruneConversations(): void {
       if (t < oldest) { oldest = t; victimId = id; }
     }
     if (!victimId) return; // everything is busy: the cap yields, memory is bounded by the slots
+    cancelPermissionsOfConv(victimId);
     for (const th of [...threads.values()]) {
       if (th.conv.id !== victimId) continue;
       th.agent?.stop();
@@ -538,6 +539,9 @@ function checkpointConv(conv: Conversation): void {
  * engine away (model stop, model swap): a thread switch must never do this.
  */
 function stopAllThreads(): void {
+  // Every agent is going away: a dialog left open would answer for nobody, and
+  // the gate waiting on it would hold its turn open forever.
+  cancelPermissions(() => true);
   for (const th of threads.values()) {
     checkpoint(th);
     th.agent?.stop();
@@ -550,6 +554,17 @@ function stopAllThreads(): void {
     if (th.holdsSlot) { th.holdsSlot = false; releaseSlot(); }
   }
   hideActivity();
+}
+
+/**
+ * Stop ONE thread. Stopping must also cancel whatever that thread is asking
+ * the user, or a turn parked on a permission dialog would keep its decode slot
+ * and never finish: the gate awaits a promise only the dialog can settle, and
+ * the abort flag alone never reaches it.
+ */
+function stopThread(sess: Thread): void {
+  sess.agent?.stop();
+  cancelPermissions((k) => k === sess.key);
 }
 
 /**
@@ -765,26 +780,144 @@ function installLabel(l: string): string {
   return v === k ? l : v;
 }
 
-// ---------- permission modal ----------
+// ---------- permission requests ----------
+//
+// A conversation runs a team, so several threads can ask for permission at the
+// same time and the user is looking at one of them at most. Requests are
+// therefore QUEUED, never stacked: two dialogs appended to the body cover each
+// other, the one underneath is invisible and unclickable, and the thread behind
+// it looks exactly like a thread running a tool with nothing asking. One dialog
+// is on screen at a time, it names the thread that asked, it says how many
+// requests are behind it, and every request ends in one of two ways only: the
+// user answers it, or the thread that asked is stopped and it is cancelled.
+// Nothing else settles it, and nothing removes it from the screen.
+
+interface PendingPermission {
+  req: PermissionRequest;
+  /** Key of the thread that asked, and the name to show for it. */
+  owner: string;
+  origin: string;
+  resolve: (d: PermissionDecision) => void;
+  settled: boolean;
+}
+
+const permQueue: PendingPermission[] = [];
+let permOpen: { entry: PendingPermission; el: HTMLElement } | null = null;
+
+/** True while that thread has a dialog on screen, or one waiting behind it. */
+function permWaiting(key: string): boolean {
+  return permOpen?.entry.owner === key || permQueue.some((p) => p.owner === key);
+}
+
+/** True while ANY thread of that conversation is waiting for an answer. */
+function permWaitingIn(conv: Conversation): boolean {
+  if (permOpen && permOpen.entry.owner.split("#")[0] === conv.id) return true;
+  return permQueue.some((p) => p.owner.split("#")[0] === conv.id);
+}
+
+function settlePermission(entry: PendingPermission, decision: PermissionDecision): void {
+  if (entry.settled) return;
+  entry.settled = true;
+  entry.resolve(decision);
+}
+
 /**
- * `origin` names the conversation the request comes from. It is filled only
- * when that thread is NOT the one on screen: with several conversations live,
- * a dialog appearing over an unrelated thread must say who is asking.
+ * Show the next request, or keep the current one alive. Called after every
+ * answer AND at the end of every render(): the dialog lives on the body,
+ * outside the app root a rebuild empties, and if anything ever detaches it it
+ * is put back rather than left pending with nothing on screen to answer.
  */
-function askPermission(req: PermissionRequest, origin?: string): Promise<PermissionDecision> {
-  return new Promise((resolve) => {
-    const kind =
-      req.kind === "fs_read" ? t("perm.readFile")
-      : req.kind === "fs_write" ? t("perm.writeFile")
-      : req.kind === "fs_list" ? t("perm.listDir")
-      : req.kind === "shell" ? t("perm.runCommand")
-      : req.kind === "obsidian" ? t("perm.obsidian")
-      : req.kind === "memory" ? t("perm.memory")
-      : req.kind === "web" ? t("perm.web")
-      : req.kind === "agent" ? t("perm.agent")
-      : req.kind === "conversations" ? t("perm.conversations")
-      : t("perm.mcpTool");
-    const m = el(`<div class="modal-bd"><div class="modal ${req.elevated ? "elev" : ""} ${req.diff ? "wide" : ""}">
+function pumpPermissions(): void {
+  if (permOpen) {
+    if (!document.body.contains(permOpen.el)) document.body.appendChild(permOpen.el);
+    return;
+  }
+  const entry = permQueue.shift();
+  if (!entry) return;
+  permOpen = { entry, el: permissionDialogEl(entry) };
+  document.body.appendChild(permOpen.el);
+}
+
+/**
+ * Repaint the places that say a thread is waiting for the user: the queue
+ * counter on the open dialog, and the marks on every thread listed behind it
+ * (the backdrop dims the app, it does not hide it).
+ */
+function permPaintWaiting(): void {
+  if (permOpen) {
+    const acts = permOpen.el.querySelector(".acts");
+    const badge = acts?.querySelector(".pqueue");
+    if (acts) {
+      if (!permQueue.length) badge?.remove();
+      else if (badge) badge.textContent = t("perm.more").replace("%n", String(permQueue.length));
+      else acts.prepend(el(`<span class="pqueue">${esc(t("perm.more").replace("%n", String(permQueue.length)))}</span>`));
+    }
+  }
+  if (view === "chat") renderSidebarOnly();
+}
+
+/**
+ * Deny and dismiss every pending request of the matching threads. Called
+ * whenever a thread stops or goes away: the gate awaits a promise only this
+ * dialog can settle, so without this the turn would never end, the decode slot
+ * would never come back, and the dialog would sit on the screen answering for
+ * an agent that no longer exists.
+ */
+function cancelPermissions(match: (ownerKey: string) => boolean): void {
+  for (let i = permQueue.length - 1; i >= 0; i--) {
+    if (!match(permQueue[i].owner)) continue;
+    settlePermission(permQueue.splice(i, 1)[0], "deny");
+  }
+  if (permOpen && match(permOpen.entry.owner)) {
+    const entry = permOpen.entry;
+    permOpen.el.remove();
+    permOpen = null;
+    settlePermission(entry, "deny");
+  }
+  pumpPermissions();
+  permPaintWaiting();
+}
+
+/** Cancel everything pending for one conversation, its team included. */
+function cancelPermissionsOfConv(convId: string): void {
+  cancelPermissions((k) => k === convId || k.startsWith(`${convId}#`));
+}
+
+/**
+ * Ask the user. `owner` is the thread's key: it is what a later Stop cancels,
+ * and what the "waiting" marks in the sidebar are keyed on. `origin` is that
+ * thread's name, shown whenever the request does not come from the thread the
+ * user is looking at.
+ */
+function askPermission(req: PermissionRequest, owner: string, origin: string): Promise<PermissionDecision> {
+  return new Promise<PermissionDecision>((resolve) => {
+    permQueue.push({ req, owner, origin, resolve, settled: false });
+    pumpPermissions();
+    permPaintWaiting();
+  });
+}
+
+function permissionDialogEl(entry: PendingPermission): HTMLElement {
+  const req = entry.req;
+  // Whose request this is: only worth saying when it is not the thread on
+  // screen, which is decided when the dialog OPENS, not when it was queued.
+  const origin = entry.owner === active().key ? "" : entry.origin;
+  const behind = permQueue.length;
+  const kind =
+    req.kind === "fs_read" ? t("perm.readFile")
+    : req.kind === "fs_write" ? t("perm.writeFile")
+    : req.kind === "fs_list" ? t("perm.listDir")
+    : req.kind === "shell" ? t("perm.runCommand")
+    : req.kind === "obsidian" ? t("perm.obsidian")
+    : req.kind === "memory" ? t("perm.memory")
+    : req.kind === "web" ? t("perm.web")
+    : req.kind === "agent" ? t("perm.agent")
+    : req.kind === "conversations" ? t("perm.conversations")
+    : t("perm.mcpTool");
+  // "perm" lifts it above every other full-screen layer (the constellation
+  // overlay, the install dialogs): a permission dialog nobody can see is a
+  // thread blocked with no way out.
+  const m = el(`<div class="modal-bd perm"><div class="modal ${req.elevated ? "elev" : ""} ${req.diff ? "wide" : ""}">
       <h3>${esc(t("perm.title"))}</h3>
       <div class="ps">${esc(t("perm.sub"))} <b>${esc(kind)}</b></div>
       ${origin ? `<div class="porigin">${esc(t("perm.origin").replace("%s", origin))}</div>` : ""}
@@ -792,24 +925,31 @@ function askPermission(req: PermissionRequest, origin?: string): Promise<Permiss
       ${req.diff ? diffPanelHtml(req.detail, req.diff) : `<div class="pd">${esc(req.detail)}</div>`}
       ${req.elevated ? `<input class="confirm" id="pc" placeholder="${esc(t("perm.elevatedPlaceholder"))}" autocomplete="off"/>` : ""}
       <div class="acts">
+        ${behind > 0 ? `<span class="pqueue">${esc(t("perm.more").replace("%n", String(behind)))}</span>` : ""}
         <button class="bs" data-d="deny">${esc(t("perm.deny"))}</button>
         ${!req.elevated ? `<button class="bs" data-d="always">${esc(t("perm.allowAlways"))}</button>` : ""}
         <button class="${req.elevated ? "bd" : "bp"}" data-d="once" ${req.elevated ? "disabled" : ""}>${esc(t("perm.allowOnce"))}</button>
       </div></div></div>`);
-    if (req.elevated) {
-      const inp = m.querySelector<HTMLInputElement>("#pc")!;
-      const ok = m.querySelector<HTMLButtonElement>('[data-d="once"]')!;
-      inp.addEventListener("input", () => (ok.disabled = inp.value.trim() !== "ALLOW"));
-      setTimeout(() => inp.focus(), 30);
-    }
-    m.addEventListener("click", (e) => {
-      const b = (e.target as HTMLElement).closest("[data-d]") as HTMLElement | null;
-      if (!b) return;
-      m.remove();
-      resolve(b.dataset.d as PermissionDecision);
-    });
-    document.body.appendChild(m);
+  if (req.elevated) {
+    const inp = m.querySelector<HTMLInputElement>("#pc")!;
+    const ok = m.querySelector<HTMLButtonElement>('[data-d="once"]')!;
+    inp.addEventListener("input", () => (ok.disabled = inp.value.trim() !== "ALLOW"));
+    setTimeout(() => inp.focus(), 30);
+  }
+  m.addEventListener("click", (e) => {
+    const b = (e.target as HTMLElement).closest("[data-d]") as HTMLElement | null;
+    if (!b) return;
+    // Only a button ever settles a request, and only the one it belongs to:
+    // the dialog on screen may not be this element any more if the owning
+    // thread was stopped while it was open.
+    if (permOpen?.entry !== entry) { m.remove(); return; }
+    m.remove();
+    permOpen = null;
+    settlePermission(entry, b.dataset.d as PermissionDecision);
+    permPaintWaiting();
+    pumpPermissions();
   });
+  return m;
 }
 
 // ---------- chat ----------
@@ -834,9 +974,12 @@ function teamStripHtml(conv: Conversation): string {
     .map((sub) => {
       const th = threads.get(threadKey(conv.id, sub.id));
       const busy = !!th?.generating;
-      const label = busy && th?.activity?.label ? prettyTool(th.activity.label) : sub.role || t("team.noRole");
-      return `<button class="tchip ${busy ? "busy" : ""}" data-agent="${esc(sub.id)}" title="${esc(sub.role)}">
-        ${busy ? `<span class="runpip"></span>` : `<span class="subdot"></span>`}
+      const asking = permWaiting(threadKey(conv.id, sub.id));
+      const label = asking
+        ? t("perm.waiting")
+        : busy && th?.activity?.label ? prettyTool(th.activity.label) : sub.role || t("team.noRole");
+      return `<button class="tchip ${busy ? "busy" : ""} ${asking ? "asking" : ""}" data-agent="${esc(sub.id)}" title="${esc(asking ? t("perm.waiting") : sub.role)}">
+        ${asking ? `<span class="askpip">?</span>` : busy ? `<span class="runpip"></span>` : `<span class="subdot"></span>`}
         <b>${esc(sub.name)}</b><span class="rl">${esc(label)}</span><span class="n">${sub.items.length}</span>
       </button>`;
     })
@@ -1010,14 +1153,16 @@ function chatView(): HTMLElement {
       if (e.key === "Escape") { slashBox.style.display = "none"; return; }
     }
     // ⇧Tab cycles Manual → Assisted → Autonomous without leaving the keyboard.
-    if (e.key === "Tab" && e.shiftKey) { e.preventDefault(); cycleAutonomy(); return; }
+    // Not from a teammate's thread: the switch is disabled there, so the flip
+    // would be invisible, and Autonomous is exactly what stops asking.
+    if (e.key === "Tab" && e.shiftKey) { e.preventDefault(); if (!sub) cycleAutonomy(); return; }
     // Enter always submits: during generation a typed message is queued for
     // the next turn (an empty Enter stays inert, never an accidental stop).
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       if (!active().generating || input.value.trim()) void submitChat();
     }
-    if (e.key === "Escape" && active().generating) { active().agent?.stop(); }
+    if (e.key === "Escape" && active().generating) { stopThread(active()); }
   });
   input.addEventListener("input", () => {
     input.style.height = "auto";
@@ -1405,7 +1550,10 @@ async function ensureAgent(sess: Thread): Promise<void> {
       askPermission: (req) => {
         // A stale agent must not pop dialogs over the new thread.
         if (!mine()) return Promise.resolve("deny" as PermissionDecision);
-        return askPermission(req, visible() ? undefined : threadLabel(sess));
+        // The request is filed under THIS thread whether or not it is the one
+        // on screen: a teammate working in the background still gets its
+        // dialog, in turn, named, and cancellable with that thread's Stop.
+        return askPermission(req, sess.key, threadLabel(sess));
       },
     },
     server.port,
@@ -1551,7 +1699,7 @@ async function submitChat(): Promise<void> {
       paintChat();
       scrollChatDown();
     } else {
-      sess.agent?.stop();
+      stopThread(sess);
     }
     return;
   }
@@ -2765,6 +2913,10 @@ function render() {
     // The rebuild destroyed the activity canvas: restore the current scene.
     restoreActivity();
   }
+  // A rebuild must never orphan an open permission dialog. It lives on the
+  // body, not in the app root, so it survives on its own; this puts it back if
+  // anything ever detaches it, and opens the next queued one if none is up.
+  pumpPermissions();
 }
 
 /**
@@ -2845,10 +2997,11 @@ function convListEl(): HTMLElement {
 function teamRowEl(conv: Conversation, sub: SubAgent, convActive: boolean): HTMLElement {
   const th = threads.get(threadKey(conv.id, sub.id));
   const busy = !!th?.generating;
+  const asking = permWaiting(threadKey(conv.id, sub.id));
   const on = convActive && focusAgent === sub.id;
-  const row = el(`<div class="conv sub ${on ? "on" : ""} ${busy ? "busy" : ""}" title="${esc(sub.role || sub.name)}">
+  const row = el(`<div class="conv sub ${on ? "on" : ""} ${busy ? "busy" : ""} ${asking ? "asking" : ""}" title="${esc(asking ? t("perm.waiting") : sub.role || sub.name)}">
     <span class="tw"></span>
-    ${busy ? `<span class="runpip" title="${esc(t("conv.running"))}"></span>` : `<span class="subdot"></span>`}
+    ${asking ? `<span class="askpip" title="${esc(t("perm.waiting"))}">?</span>` : busy ? `<span class="runpip" title="${esc(t("conv.running"))}"></span>` : `<span class="subdot"></span>`}
     <span class="ct">${esc(sub.name)}</span>
     <span class="cn">${sub.items.length}</span>
   </div>`);
@@ -2868,8 +3021,9 @@ function convRowEl(m: ConvMeta, activeId: string): HTMLElement {
   const busy = conv ? busyIn(conv) : own?.generating ? 1 : 0;
   const queued = own ? own.queued.length : 0;
   const teamSize = conv?.team.length ?? 0;
-  const row = el(`<div class="conv ${m.id === activeId ? "on" : ""} ${busy ? "busy" : ""}" data-c="${esc(m.id)}">
-    ${busy ? `<span class="runpip" title="${esc(t("conv.running"))}"></span>` : ""}
+  const asking = conv ? permWaitingIn(conv) : permWaiting(m.id);
+  const row = el(`<div class="conv ${m.id === activeId ? "on" : ""} ${busy ? "busy" : ""} ${asking ? "asking" : ""}" data-c="${esc(m.id)}" ${asking ? `title="${esc(t("perm.waiting"))}"` : ""}>
+    ${asking ? `<span class="askpip" title="${esc(t("perm.waiting"))}">?</span>` : busy ? `<span class="runpip" title="${esc(t("conv.running"))}"></span>` : ""}
     <span class="ct">${esc(m.title || t("conv.untitled"))}</span>
     ${teamSize ? `<span class="cteam" title="${esc(t("team.size").replace("%n", String(teamSize)))}">${teamSize}</span>` : ""}
     ${queued > 0 ? `<span class="cq" title="${esc(t("conv.queued"))}">+${queued}</span>` : ""}
@@ -2887,6 +3041,7 @@ function convRowEl(m: ConvMeta, activeId: string): HTMLElement {
     if (del) {
       e.stopPropagation();
       const delId = del.dataset.del!;
+      cancelPermissionsOfConv(delId);
       // The whole tree goes with the file: leaving an agent alive would keep
       // streaming into a thread that no longer exists, and the debounced save
       // would recreate the conversation on disk.

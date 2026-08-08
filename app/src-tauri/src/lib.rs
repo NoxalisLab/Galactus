@@ -5,6 +5,7 @@
 // download/profile/plan/pack install pipeline, the file/shell tools that sit
 // behind the permission gate, the settings store and the MCP stdio clients.
 
+mod code;
 mod knowledge;
 pub mod cli;
 
@@ -3895,6 +3896,19 @@ pub fn run() {
             knowledge::kb_set_folders,
             knowledge::kb_reindex,
             knowledge::kb_stats,
+            code::code_tree,
+            code::code_read,
+            code::code_write,
+            code::git_info,
+            code::git_log,
+            code::git_diff,
+            code::git_show_file,
+            code::git_stage,
+            code::git_commit,
+            code::git_push,
+            code::git_pull,
+            code::git_branches,
+            code::git_checkout,
             knowledge::kb_search,
             preview_publish
         ])

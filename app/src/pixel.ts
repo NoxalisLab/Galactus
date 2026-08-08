@@ -18,15 +18,18 @@ export type PixelMode =
 
 const SCALE = 3;
 const GRID = 16; // sprite 16x16
-const STAGE = 30; // largeur de scene (planetes, satellite) en pixels logiques
+// Largeur MINIMALE de scene. La scene reelle occupe toute la largeur du
+// conteneur : le personnage traverse la fenetre au lieu d'etre confine aux 30
+// premiers pixels logiques, et les decors s'etalent avec elle.
+const STAGE_MIN = 30;
 const CANVAS_H = GRID * SCALE; // 48px
 const STEP_MS = 1000 / 12; // ~12 fps assumes
 // Duree minimale d'une scene d'action (~2 s a 12 fps) : les outils locaux
 // finissent en millisecondes, sans plancher la scene serait invisible.
 const MIN_SCENE_FRAMES = 24;
 
-// Scene "recherche" : centres des planetes visitees.
-const PLANET_X = [4, 13, 22];
+// Scene "recherche" : les centres des planetes sont calcules a la largeur
+// courante (voir planetX), pour que le personnage traverse toute la fenetre.
 const HOP_FRAMES = 22; // duree d'un saut de planete a planete
 
 // Palette (cf. src/styles.css : --acc / --acc2)
@@ -74,7 +77,7 @@ export class PixelViz {
 
     const canvas = document.createElement("canvas");
     canvas.height = CANVAS_H;
-    canvas.width = Math.max(container.clientWidth, STAGE * SCALE + 8);
+    canvas.width = Math.max(container.clientWidth, STAGE_MIN * SCALE + 8);
     canvas.style.display = "block";
     canvas.style.width = "100%";
     canvas.style.height = `${CANVAS_H}px`;
@@ -97,6 +100,41 @@ export class PixelViz {
     }
 
     this.raf = requestAnimationFrame(this.tick);
+  }
+
+  /** Largeur de scene en pixels logiques, suit la fenetre. */
+  private stageW(): number {
+    return Math.max(STAGE_MIN, Math.floor(this.canvas.width / SCALE));
+  }
+
+  /**
+   * Trois planetes reparties sur toute la scene. Une marge a droite laisse la
+   * place au label, et le personnage fait 16 pixels de large.
+   */
+  private planetX(): [number, number, number] {
+    const w = this.stageW();
+    const right = Math.max(STAGE_MIN, w - 26);
+    return [4, Math.round((4 + right) / 2), right];
+  }
+
+  /**
+   * Va-et-vient continu sur toute la largeur, en pixels logiques. Triangle
+   * plutot que sinus : la vitesse reste constante, ce qui lit mieux en
+   * pixel-art qu'une acceleration aux extremites.
+   */
+  private strollX(f: number, speed: number): number {
+    const span = Math.max(0, this.stageW() - GRID - 20);
+    if (span <= 0) return 0;
+    const period = (span * 2) / speed;
+    const t = (f * speed) % (span * 2);
+    void period;
+    return Math.round(t <= span ? t : span * 2 - t);
+  }
+
+  /** Sens du regard, aligne sur le sens de la marche. */
+  private strollForward(f: number, speed: number): number {
+    const span = Math.max(1, this.stageW() - GRID - 20);
+    return ((f * speed) % (span * 2)) <= span ? 1 : -1;
   }
 
   setMode(mode: PixelMode, label?: string): void {
@@ -213,7 +251,7 @@ export class PixelViz {
   // ------------------------------------------------------------------ rendu
 
   private syncSize(): void {
-    const w = Math.max(this.container.clientWidth, STAGE * SCALE + 8);
+    const w = Math.max(this.container.clientWidth, STAGE_MIN * SCALE + 8);
     if (w !== this.canvas.width) {
       this.canvas.width = w;
       this.ctx.imageSmoothingEnabled = false;
@@ -263,19 +301,26 @@ export class PixelViz {
       case "idle":
         oy = f % 16 < 8 ? 0 : 1;
         blink = f % 46 < 2;
+        // Deambulation lente d'un bord a l'autre : la scene fait toute la
+        // largeur de la fenetre, autant l'habiter.
+        ox = this.strollX(f, 0.12);
+        eyeDx = this.strollForward(f, 0.12);
         break;
       case "thinking":
         oy = f % 16 < 8 ? 0 : 1;
         headDx = f % 24 < 12 ? 0 : 1; // leger balancement
         eyeDx = f % 24 < 12 ? -1 : 1; // regarde en l'air, pensif
+        // Il fait les cent pas pendant qu'il reflechit.
+        ox = this.strollX(f, 0.2);
         break;
       case "reading": {
         // Exploration : le robot saute de planete en planete.
         const seq = [0, 1, 2, 1];
+        const planets = this.planetX();
         const k = Math.floor(mf / HOP_FRAMES) % seq.length;
         const t = (mf % HOP_FRAMES) / HOP_FRAMES;
-        const from = PLANET_X[seq[k]];
-        const to = PLANET_X[seq[(k + 1) % seq.length]];
+        const from = planets[seq[k]];
+        const to = planets[seq[(k + 1) % seq.length]];
         const ease = t * t * (3 - 2 * t); // smoothstep
         ox = Math.round(from + (to - from) * ease) - 7;
         oy = -2 - Math.round(4.5 * Math.sin(Math.PI * t));
@@ -384,8 +429,9 @@ export class PixelViz {
 
     // ---- label a droite de la scene
     if (this.label) {
-      const wide = mode === "reading" || mode === "web" || mode === "fleet" || mode === "responding";
-      const labelX = (wide ? STAGE : mode === "memory" ? GRID + 2 : GRID) * SCALE + 10;
+      // Le personnage traverse desormais toute la scene, donc le label ne peut
+      // plus vivre a sa droite : il est cale au bord droit du canvas.
+      const labelX = Math.max(GRID * SCALE + 10, this.canvas.width - 260);
       c.font = '11px "IBM Plex Mono", ui-monospace, monospace';
       c.fillStyle = LABEL_COLOR;
       c.textBaseline = "middle";
@@ -500,7 +546,7 @@ export class PixelViz {
   /** Chapelet de planetes que le robot explore (mode reading/recherche). */
   private drawPlanets(robotOx: number): void {
     const robotCenter = robotOx + 7.5;
-    for (const cx of PLANET_X) {
+    for (const cx of this.planetX()) {
       const near = Math.abs(robotCenter - cx) < 3.5; // planete visitee : eclairee
       const body = near ? ACC2 : ACC;
       const glow = near ? 0.95 : 0.55;
@@ -589,7 +635,11 @@ export class PixelViz {
 
   /** Flotte de sous-agents au decollage (mode fleet). */
   private drawFleet(f: number): void {
-    const pads = [17, 21, 25];
+    // Pas de tir repartis sur la moitie droite, quelle que soit la largeur.
+    const w = this.stageW();
+    const base = Math.max(17, Math.floor(w * 0.45));
+    const step = Math.max(4, Math.floor((w - base - 6) / 3));
+    const pads = [base, base + step, base + 2 * step];
     for (let i = 0; i < pads.length; i++) {
       const x = pads[i];
       // Pas de tir
@@ -616,7 +666,8 @@ export class PixelViz {
     this.px(12, 10 + robotOy, WHITE, 0.95);
     this.px(12, 11 + robotOy, f % 8 < 4 ? ACC2 : WHITE, 0.9); // ecran qui clignote
     // Satellite qui traverse le ciel (droite vers gauche, en boucle)
-    const sx = 27 - ((f / 2) % 16);
+    const span = Math.max(16, this.stageW() - 4);
+    const sx = span - ((f / 2) % span);
     this.px(sx, 2, ACC2); // corps
     this.px(sx + 1, 2, ACC2);
     this.px(sx - 2, 2, ACC, 0.85); // panneau gauche
