@@ -809,7 +809,13 @@ fn measured_geometry(entry: &Value) -> Option<(u64, u64, u64, u64, u64, u64)> {
     Some((non_expert, expert_total, layers, record, used, experts))
 }
 
-fn plan_cache(entry: &Value, ram_gb: u64, override_gb: Option<u64>, ram_mode: &str) -> Result<(u64, f64, u32), String> {
+fn plan_cache(
+    entry: &Value,
+    ram_gb: u64,
+    override_gb: Option<u64>,
+    ram_mode: &str,
+    cpu_moe_regime: bool,
+) -> Result<(u64, f64, u32), String> {
     // Hard gate, mirrored by the UI card: below the registry minimum the
     // engine cannot hold the non-expert weights plus a viable cache, so the
     // model is refused everywhere (app start, CLI serve), not just greyed out.
@@ -943,22 +949,33 @@ fn plan_cache(entry: &Value, ram_gb: u64, override_gb: Option<u64>, ram_mode: &s
         protected = protected.clamp(1, quota - 1);
         let probation = quota - protected;
         if probation >= used {
-            // Largest physical micro-batch whose distinct experts fit in the
-            // probation segment: probation / experts_used, capped at 8.
+            // STREAMED regime: the largest physical micro-batch whose distinct
+            // experts fit in the probation segment, probation / experts_used,
+            // capped at 8. A cold batch inserts only into probation, so beyond
+            // that bound it would evict its own members.
             //
-            // The cap is a NUMERICS bound, not a cache bound. Full residency
-            // does lift the cache constraint (the engine stops evicting, so a
-            // batch can never evict its own members), and a micro-batch of 512
-            // measured 5 to 13 times faster on prompt. It is not shipped,
-            // because the Metal bit-exact expert kernels are only verified at
-            // n_tokens = 2 by the parity probe, and they are demonstrably wrong
-            // beyond small batches: gpt-oss perplexity on one corpus reads
-            // 139.6 / 129.9 / 119.0 / 166.8 / 162.7 at micro-batch 2 / 8 / 16 /
-            // 32 / 512, against 138.3 for stock llama.cpp at 512. A certified
-            // model runs bit-exact, so the engine stays inside the envelope the
-            // probe actually covers until the kernels are fixed and the probe
-            // extended to the shipped batch shape.
-            let ubatch = ((probation / used).max(1)).min(8) as u32;
+            // FULL RESIDENCY: every expert owns a permanent slot, the cache
+            // stops evicting (h4-expert-cache.cpp) and nothing constrains the
+            // micro-batch, so take llama.cpp's standard 512. Prompt processing
+            // measured 5 to 13 times faster.
+            //
+            // The numerics are verified AT that shape, not assumed: the parity
+            // probe now sweeps 11 quant types x 13 token counts from 1 to 512 x
+            // both projection shapes the MoE block emits, 286 cases, every bit
+            // identical to the CPU path. An earlier perplexity table seemed to
+            // show the kernels failing past micro-batch 32; the flaw was in the
+            // instrument, since llama.cpp pulls mul_mat_id back onto the GPU at
+            // batch 32 (op_offload_min_batch_size), so --n-cpu-moe stopped
+            // being a CPU reference exactly there.
+            //
+            // The cross-check regime keeps the small micro-batch: it exists to
+            // recompute experts on CPU, not to be fast, and llama.cpp asserts
+            // out of bounds on that path at 512.
+            let ubatch = if cache >= expert_total && !cpu_moe_regime {
+                512u32
+            } else {
+                ((probation / used).max(1)).min(8) as u32
+            };
             return Ok((cache, f, ubatch));
         }
     }
@@ -1100,7 +1117,11 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
         .filter(|s| matches!(*s, "eco" | "balanced" | "perf"))
         .unwrap_or("balanced")
         .to_string();
-    let (cache_bytes, fraction, ubatch) = plan_cache(&entry, ram_gb, override_gb, &ram_mode)?;
+    // Needed before planning: the cross-check regime keeps a small micro-batch.
+    let cpu_moe = entry["cpu_moe"].as_bool().unwrap_or(false)
+        || settings.get("cpu_moe").map(|v| v == "1").unwrap_or(false);
+    let (cache_bytes, fraction, ubatch) =
+        plan_cache(&entry, ram_gb, override_gb, &ram_mode, cpu_moe)?;
 
     // Engine resolution: a developer checkout build wins (always freshest);
     // otherwise the fully relocated llama-server shipped INSIDE the app
@@ -1155,9 +1176,7 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
     // mxfp4), verified 32768/32768 identical bits by the parity probe: Metal
     // experts ARE the certified numerics, and the default everywhere. CPU
     // experts stay as an explicit cross-check regime ("cpu_moe": true per
-    // model, or setting cpu_moe=1).
-    let cpu_moe = entry["cpu_moe"].as_bool().unwrap_or(false)
-        || settings.get("cpu_moe").map(|v| v == "1").unwrap_or(false);
+    // model, or setting cpu_moe=1). Resolved before planning, above.
     let metal_experts = !cpu_moe;
     let eff_ubatch: u32 = ubatch;
 

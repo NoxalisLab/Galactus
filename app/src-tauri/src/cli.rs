@@ -57,13 +57,14 @@ fn serve(root: &Path, model_id: &str, args: &[String]) -> Result<(), String> {
     }
     let ram_mode = ram_mode_from_args(args);
     let ram_gb = hw_info_impl().ram_gb.max(8);
-    let (cache_bytes, fraction, ubatch) = plan_cache(&entry, ram_gb, None, &ram_mode)?;
     // Same opt-in surface as the app: flag, registry entry, or the shared
     // setting — otherwise `galactus serve` would silently contradict the
-    // regime the user picked in the app.
+    // regime the user picked in the app. Resolved before planning, since the
+    // cross-check regime keeps a small micro-batch.
     let cpu_moe = args.iter().any(|a| a == "--cpu-moe")
         || entry["cpu_moe"].as_bool().unwrap_or(false)
         || settings_load().get("cpu_moe").map(|v| v == "1").unwrap_or(false);
+    let (cache_bytes, fraction, ubatch) = plan_cache(&entry, ram_gb, None, &ram_mode, cpu_moe)?;
     let port: u16 = args
         .windows(2)
         .find(|w| w[0] == "--port")
