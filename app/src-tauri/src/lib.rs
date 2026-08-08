@@ -137,6 +137,35 @@ fn bundled_engine() -> Option<PathBuf> {
 /// The isolated Python runtime shipped in the bundle. A virgin macOS has no
 /// /usr/bin/python3 (it is a Command Line Tools shim that pops an install
 /// dialog): the app must never depend on it.
+/// rust-analyzer embarque, et les sources de la bibliotheque standard qui vont
+/// avec. Retourne le binaire et la racine des sources, ou None si l'outillage
+/// n'a pas ete embarque a la construction.
+///
+/// Le serveur seul resout la navigation a l'interieur du projet mais pas
+/// `std::` : sans sysroot il signale des erreurs partout. Les sources
+/// suffisent, le toolchain complet (1,2 Go) n'a pas a etre livre. Si l'utilisateur
+/// a rustup, rust-analyzer utilisera en plus `cargo metadata` pour resoudre
+/// les dependances de son projet, ce que les sources seules ne donnent pas.
+pub(crate) fn bundled_rust_analyzer() -> Option<(PathBuf, PathBuf)> {
+    let root = resource_dir()?.join("rust-tooling");
+    let bin = root.join("rust-analyzer");
+    let src = root.join("rust-src/library");
+    if bin.is_file() && src.is_dir() {
+        Some((bin, src))
+    } else {
+        None
+    }
+}
+
+/// Chemin du serveur et de son sysroot, pour la vue Code. Expose au frontend
+/// afin que le badge de niveau dise la verite : Rust passe au niveau complet
+/// seulement si les deux sont reellement presents.
+#[tauri::command]
+fn rust_analyzer_paths() -> Option<(String, String)> {
+    bundled_rust_analyzer()
+        .map(|(b, s)| (b.display().to_string(), s.display().to_string()))
+}
+
 fn bundled_python() -> Option<PathBuf> {
     let bin = resource_dir()?.join("python/bin/python3");
     if bin.is_file() {
@@ -2688,6 +2717,72 @@ struct SkillInfo {
 /// Copy the skills shipped in the bundle into the global skills folder, so a
 /// fresh install starts with a curated set. User-modified or user-deleted
 /// skills are left alone (copy only when the skill folder does not exist).
+/// Coffre par defaut livre avec l'app : une base de connaissances par metier,
+/// semee au premier lancement pour que les outils obsidian_* et la
+/// Constellation aient de la matiere reelle des l'installation.
+///
+/// Trois garde-fous independants rendent l'operation non destructive : un
+/// marqueur de semis (un coffre supprime volontairement n'est jamais
+/// ressuscite), un test d'existence sur la racine de destination, et un test
+/// par fichier pendant la copie. Le reglage n'est ecrit que si l'utilisateur
+/// n'a pas deja choisi un coffre.
+fn seed_bundled_vault() {
+    let Some(res) = resource_dir() else { return };
+    let src = res.join("packaged/vault");
+    if !src.is_dir() {
+        return;
+    }
+    let marker = app_support().join("vault-seeded");
+    if marker.exists() {
+        return;
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    let dest = PathBuf::from(home).join("Documents/Galactus/Coffre");
+    // Un coffre deja present a cet endroit appartient a l'utilisateur : on n'y
+    // touche pas, et on pose le marqueur pour ne plus jamais y revenir.
+    if dest.exists() {
+        let _ = std::fs::write(&marker, b"existant");
+        return;
+    }
+    if copy_tree_no_clobber(&src, &dest).is_err() {
+        return;
+    }
+    // Obsidian reconnait un dossier comme coffre a ce repertoire, exactement
+    // comme le fait obsidian_create_vault.
+    let _ = std::fs::create_dir_all(dest.join(".obsidian"));
+    let _ = std::fs::write(&marker, dest.to_string_lossy().as_bytes());
+    // Pointer l'app dessus UNIQUEMENT si aucun coffre n'est configure.
+    let _ = settings_update(|map| {
+        let unset = map.get("obsidian_vault").map(|v| v.is_empty()).unwrap_or(true);
+        if unset {
+            map.insert("obsidian_vault".into(), dest.display().to_string());
+        }
+    });
+}
+
+/// Copie recursive qui n'ecrase jamais : un fichier existant est saute, un
+/// dossier existant est simplement parcouru. Profondeur bornee, comme toutes
+/// les marches de ce fichier.
+fn copy_tree_no_clobber(src: &Path, dest: &Path) -> std::io::Result<()> {
+    let mut stack = vec![(src.to_path_buf(), dest.to_path_buf(), 0u32)];
+    while let Some((from, to, depth)) = stack.pop() {
+        if depth > 8 {
+            continue;
+        }
+        std::fs::create_dir_all(&to)?;
+        for e in std::fs::read_dir(&from)?.flatten() {
+            let p = e.path();
+            let target = to.join(e.file_name());
+            if p.is_dir() {
+                stack.push((p, target, depth + 1));
+            } else if !target.exists() {
+                let _ = std::fs::copy(&p, &target);
+            }
+        }
+    }
+    Ok(())
+}
+
 fn seed_bundled_skills() {
     let Some(res) = resource_dir() else { return };
     let src = res.join("packaged/skills");
@@ -3833,6 +3928,7 @@ pub fn run() {
         .setup(|app| {
             let _ = app.get_webview_window("main");
             seed_bundled_skills();
+            seed_bundled_vault();
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -3929,6 +4025,7 @@ pub fn run() {
             snapshot::code_snapshot,
             // Tier B, Python: exact SyntaxError and outline from bundled CPython.
             pylang::py_analyze,
+            rust_analyzer_paths,
             knowledge::kb_search,
             preview_publish
         ])

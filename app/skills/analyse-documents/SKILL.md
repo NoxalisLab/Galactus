@@ -15,7 +15,7 @@ Tu ne rapportes QUE ce qui est écrit dans le document. Aucune connaissance exte
 ## 2. Gros document : lis par tranches
 - Sortie tronquée ou enregistrée dans un fichier scratch ? Relis le fichier scratch indiqué, tranche par tranche : `read_file(chemin_scratch, offset)` jusqu'à la fin. Jamais `read_file` directement sur un PDF/Word (binaire).
 - Après chaque tranche, note en 3-5 lignes : pages couvertes, faits clés, citations candidates. Ton contexte est court : ces notes remplacent toute relecture.
-- Document très long (> ~50 pages) ou plusieurs questions ? `run_workflow` : un sous-agent par bloc de pages, chaque goal = chemin exact + plage à lire + faits à extraire + consigne de citer ses pages.
+- Document très long (> ~50 pages) ou plusieurs questions ? `spawn_agent` : un coéquipier par bloc de pages, chaque brief = chemin exact + plage à lire + faits à extraire + consigne de citer ses pages ; interroge-les avec `ask_agent`.
 - Ne conclus qu'après avoir tout couvert ; à défaut, liste explicitement les parties non lues.
 
 ## 3. Cite, ne paraphrase pas
@@ -33,7 +33,7 @@ Tu ne rapportes QUE ce qui est écrit dans le document. Aucune connaissance exte
 3. `write_file` en CSV (en-têtes, UTF-8) ou JSON valide.
 
 ## 6. Comparatif multi-documents
-Dès 2 documents : `run_workflow`, un sous-agent par document (6 max ; au-delà, regroupe plusieurs documents par sous-agent). Chaque goal contient : le chemin exact de SON fichier, la même grille d'extraction (mêmes champs pour tous), la consigne de citer page/section et de marquer « absent » les champs manquants. À la réception, construis toi-même le tableau comparatif à partir des rapports ; ne fusionne jamais des champs non comparables.
+Dès 2 documents : `spawn_agent`, un coéquipier par document (6 max ; au-delà, regroupe plusieurs documents par coéquipier), puis `ask_agent`. Chaque brief contient : le chemin exact de SON fichier, la même grille d'extraction (mêmes champs pour tous), la consigne de citer page/section et de marquer « absent » les champs manquants. À la réception, construis toi-même le tableau comparatif à partir des rapports ; ne fusionne jamais des champs non comparables.
 
 ## 7. Restitue
 Objet du document, points clés avec citations localisées, zones d'incertitude, puis limites de lecture : pages sautées, OCR douteux, et ce que tu n'as PAS pu vérifier.

@@ -45,7 +45,8 @@
       "helpers/galactus-voice.swift",
       "engine",
       "packaged",
-      "python"
+      "python",
+      "rust-tooling"
     ]
   }
 }

@@ -34,3 +34,8 @@ _probe/
 app-backup-v1/
 *.tgz
 build-*/
+
+# Outillage telecharge a la construction (108 Mo), jamais versionne :
+# scripts/fetch-rust-tooling.sh le reconstruit avec ses empreintes epinglees.
+app/src-tauri/rust-tooling/
+.tmp-rust-cache/

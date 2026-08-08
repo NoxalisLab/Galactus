@@ -86,6 +86,19 @@ if [ -d "$ROOT/app/skills" ]; then
   echo "Skills embarquees : $(ls "$HERE/packaged/skills" | tr '\n' ' ')"
 fi
 
+# Outillage Rust embarque : rust-analyzer + sources de la stdlib. Sans les
+# sources, le serveur ne resout pas `std::` et signale des erreurs partout ;
+# la chaine de compilation complete (1,2 Go) n'est pas necessaire pour
+# l'analyse. Script separe car il telecharge et verifie des empreintes.
+"$ROOT/scripts/fetch-rust-tooling.sh" "$HERE/rust-tooling"
+
+# Coffre Obsidian livre avec l'app (seme au premier lancement, jamais ecrase).
+if [ -d "$ROOT/vault" ]; then
+  rm -rf "$HERE/packaged/vault"
+  cp -R "$ROOT/vault" "$HERE/packaged/vault"
+  echo "Coffre embarque : $(find "$HERE/packaged/vault" -name '*.md' | wc -l | tr -d ' ') notes"
+fi
+
 # Runtime Python isole (sandbox locale) : CPython autonome embarque dans le
 # bundle. Sur un macOS vierge, /usr/bin/python3 n'existe pas sans les Command
 # Line Tools ; l'app doit fonctionner sans rien installer.

@@ -10,7 +10,7 @@ description: "Concevoir ou critiquer une interface : audit UX classé par sévé
 - Code HTML/CSS/composants : `read_file` (gros fichiers : par sections via offset).
 - Capture d'écran, PDF, export design : `read_document`. Une image ne rend que le texte (OCR) : ne juge jamais couleurs, contraste ou espacements sans le code source.
 - Projet entier : `list_directory`, puis lis uniquement les fichiers UI pertinents.
-- 2 écrans ou plus : `run_workflow` (2 à 6 sous-tâches, 1 par écran ; chaque goal donne les chemins exacts des fichiers, les sous-agents partent de zéro), puis fusionne les rapports.
+- 2 écrans ou plus : `spawn_agent` un coéquipier par écran (2 à 6 max), chaque brief donne les chemins exacts des fichiers car un coéquipier part de zéro, puis `ask_agent` et fusionne les rapports.
 Relève : hiérarchie visuelle, espacements, couleurs/contraste, états manquants, parcours clavier.
 
 ## 2A. Critique structurée

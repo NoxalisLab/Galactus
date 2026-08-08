@@ -11,8 +11,8 @@ Recherche 100% via `run_command` + `curl` (pas de navigateur). Règle d'or : auc
 - Question ambiguë ? Pose UNE clarification avant de chercher.
 
 ## 2. Décompose et délègue
-- Sujet large ou multi-sources : découpe en 2 à 6 sous-questions indépendantes, puis `run_workflow`, une tâche par sous-question.
-- Chaque `goal` doit répéter les consignes ; les sous-agents partent d'un contexte vierge : « Web uniquement via run_command/curl. Chaque fait avec URL précise + date de publication. Minimum 2 sources indépendantes par affirmation importante. Liste ce que tu n'as pas trouvé. »
+- Sujet large ou multi-sources : découpe en 2 à 6 sous-questions indépendantes, puis `spawn_agent` un coéquipier par sous-question et interroge-les avec `ask_agent`.
+- Chaque brief doit répéter les consignes ; les coéquipiers partent d'un contexte vierge : « Web uniquement via run_command/curl. Chaque fait avec URL précise + date de publication. Minimum 2 sources indépendantes par affirmation importante. Liste ce que tu n'as pas trouvé. »
 - Question simple à source unique (un chiffre officiel, une doc) : cherche directement, sans workflow.
 
 ## 3. Récupère léger

@@ -5,7 +5,7 @@ description: "À utiliser pour rédiger ou retravailler un texte professionnel e
 
 ## 1. Cadre avant d'écrire
 Identifie : **destinataire** (qui, quel lien, connaît-il le dossier ?), **objectif** (informer, convaincre, obtenir une décision), **ton** (formel, cordial, direct), **format** et longueur attendus. S'il manque un élément clé, pose 1 à 3 questions courtes AVANT de rédiger.
-Matière source ? Lis-la d'abord : `read_file` pour le texte brut, `read_document` pour PDF/Word/images. Source longue : lis par sections (`read_file` avec `offset`), ne charge que l'utile. Plusieurs documents longs à synthétiser (ex. compte rendu à partir de 3 PDF) : délègue via `run_workflow` (une tâche de lecture-synthèse par document), puis rédige à partir des rapports.
+Matière source ? Lis-la d'abord : `read_file` pour le texte brut, `read_document` pour PDF/Word/images. Source longue : lis par sections (`read_file` avec `offset`), ne charge que l'utile. Plusieurs documents longs à synthétiser (ex. compte rendu à partir de 3 PDF) : délègue : `spawn_agent` un lecteur par document (brief autonome : chemin exact, faits à extraire, citations exigées), puis `ask_agent` ; rédige à partir des rapports.
 N'invente JAMAIS un fait, chiffre, nom ou date : demande, ou insère `[À COMPLÉTER : …]` et signale-le à la fin.
 
 ## 2. Structure selon le format
