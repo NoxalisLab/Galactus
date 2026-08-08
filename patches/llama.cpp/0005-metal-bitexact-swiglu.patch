@@ -1,0 +1,613 @@
+--- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
++++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
+@@ -10,10 +10,64 @@
+ 
+ #include <cassert>
+ #include <algorithm>
++#include <atomic>
++#include <cinttypes>
++#include <cstdio>
+ #include <cstdlib>
+ #include <limits>
+ #include <cmath>
+ 
++// galactus: bit-exact CPU-parity paths, activated with GALACTUS_METAL_BITEXACT=1
++static bool ggml_metal_galactus_bitexact_enabled(void) {
++    const char * env = getenv("GALACTUS_METAL_BITEXACT");
++    return env != NULL && env[0] == '1' && env[1] == '\0';
++}
++
++// galactus: the bit-exact path must never disable itself silently. When it is requested and
++// declined the tensor runs on the upstream kernels while the app still reports certified
++// numerics, so say so on stderr. One line per (tensor kind, reason), never in the decode loop.
++enum ggml_metal_galactus_decline {
++    GALACTUS_DECLINE_TYPE  = 0, // no bit-exact kernel for this weight type
++    GALACTUS_DECLINE_SRC1  = 1, // activations are not f32
++    GALACTUS_DECLINE_ALIGN = 2, // ne00 is not a multiple of the block size
++    GALACTUS_DECLINE_COUNT = 3,
++};
++
++static void ggml_metal_galactus_bitexact_warn(
++        int reason, const char * op_name, const ggml_tensor * src0, int64_t align) {
++    static std::atomic<uint64_t> seen[GALACTUS_DECLINE_COUNT];
++
++    // one bit per ggml_type, so the warning fires once per (tensor kind, reason)
++    const uint64_t bit = 1ull << ((int) src0->type & 63);
++    if ((seen[reason].fetch_or(bit) & bit) != 0) {
++        return;
++    }
++
++    char why_buf[128];
++    const char * why = "unknown";
++    switch (reason) {
++        case GALACTUS_DECLINE_TYPE:
++            why = "no bit-exact kernel for this weight type";
++            break;
++        case GALACTUS_DECLINE_SRC1:
++            why = "activations are not f32";
++            break;
++        case GALACTUS_DECLINE_ALIGN:
++            snprintf(why_buf, sizeof(why_buf), "ne00 is not a multiple of %" PRId64, align);
++            why = why_buf;
++            break;
++        default:
++            break;
++    }
++
++    fprintf(stderr,
++            "galactus: GALACTUS_METAL_BITEXACT=1 but the bit-exact path is DECLINED for %s: "
++            "tensor '%s' type %s ne00=%" PRId64 " (%s). This tensor runs on the upstream Metal kernels, "
++            "its results are NOT CPU-identical.\n",
++            op_name, src0->name, ggml_type_name(src0->type), src0->ne[0], why);
++    fflush(stderr);
++}
++
+ static ggml_metal_buffer_id ggml_metal_get_buffer_id(const ggml_tensor * t) {
+     if (!t) {
+         return { nullptr, 0 };
+@@ -864,6 +918,24 @@
+     }
+ 
+     auto pipeline = ggml_metal_library_get_pipeline_glu(lib, op);
++
++    // galactus: bit-exact CPU-parity path for SWIGLU_OAI (GALACTUS_METAL_BITEXACT=1). The upstream
++    // kernel differs from ggml_compute_forward_swiglu_oai_f32 on the min/clamp comparisons, on the
++    // division and, above all, on the exponential: metal::exp is 1 to 2 ulp away from Apple's
++    // libm expf. The bit-exact kernel replicates the whole expression, expf included.
++    if (ggml_metal_galactus_bitexact_enabled() && op->op == GGML_OP_GLU && ggml_get_glu_op(op) == GGML_GLU_OP_SWIGLU_OAI) {
++        if (op->src[0]->type == GGML_TYPE_F32) {
++            const char * name = "kernel_galactus_swiglu_oai_f32_bitexact";
++
++            auto pipeline_be = ggml_metal_library_get_pipeline(lib, name);
++            if (!pipeline_be.pipeline) {
++                pipeline_be = ggml_metal_library_compile_pipeline(lib, name, name, nullptr);
++            }
++            pipeline = pipeline_be;
++        } else {
++            ggml_metal_galactus_bitexact_warn(GALACTUS_DECLINE_SRC1, "SWIGLU_OAI", op->src[0], 0);
++        }
++    }
+ 
+     const int32_t swp = ggml_get_op_params_i32(op, 1);
+     const float alpha = ggml_get_op_params_f32(op, 2);
+@@ -2344,11 +2416,7 @@
+ 
+ // galactus: bit-exact CPU-parity path for mul_mat_id with the certified expert quant types
+ // (iq1_s, iq2_xxs, iq3_xxs, iq4_xs, q2_K, q3_K, q4_K, q6_K, q8_0, q5_0, mxfp4)
+-static bool ggml_metal_galactus_bitexact_enabled(void) {
+-    const char * env = getenv("GALACTUS_METAL_BITEXACT");
+-    return env != NULL && env[0] == '1' && env[1] == '\0';
+-}
+-
++//
+ // name of the bit-exact dot kernel for the given weight type; NULL when unsupported
+ static const char * ggml_metal_op_mul_mat_id_galactus_bitexact_kernel(enum ggml_type type) {
+     switch (type) {
+@@ -2382,9 +2450,17 @@
+ }
+ 
+ static bool ggml_metal_op_mul_mat_id_use_galactus_bitexact(const ggml_tensor * op) {
+-    if (!ggml_metal_galactus_bitexact_enabled() ||
+-        ggml_metal_op_mul_mat_id_galactus_bitexact_kernel(op->src[0]->type) == NULL ||
+-        op->src[1]->type != GGML_TYPE_F32) {
++    if (!ggml_metal_galactus_bitexact_enabled()) {
++        return false;
++    }
++
++    if (ggml_metal_op_mul_mat_id_galactus_bitexact_kernel(op->src[0]->type) == NULL) {
++        ggml_metal_galactus_bitexact_warn(GALACTUS_DECLINE_TYPE, "MUL_MAT_ID", op->src[0], 0);
++        return false;
++    }
++
++    if (op->src[1]->type != GGML_TYPE_F32) {
++        ggml_metal_galactus_bitexact_warn(GALACTUS_DECLINE_SRC1, "MUL_MAT_ID", op->src[0], 0);
+         return false;
+     }
+ 
+@@ -2392,7 +2468,12 @@
+     // NEON CPU loops; the Q8_K kernels need whole 256-element superblocks
+     const int64_t align = ggml_metal_op_mul_mat_id_galactus_bitexact_vec_dot_type(op->src[0]->type) == GGML_TYPE_Q8_0 ? 64 : 256;
+ 
+-    return op->src[0]->ne[0] % align == 0;
++    if (op->src[0]->ne[0] % align != 0) {
++        ggml_metal_galactus_bitexact_warn(GALACTUS_DECLINE_ALIGN, "MUL_MAT_ID", op->src[0], align);
++        return false;
++    }
++
++    return true;
+ }
+ 
+ size_t ggml_metal_op_mul_mat_id_extra_q8k(const ggml_tensor * op) {
+--- a/ggml/src/ggml-metal/ggml-metal.metal
++++ b/ggml/src/ggml-metal/ggml-metal.metal
+@@ -12402,5 +12402,470 @@
+     if (tiisg == 0) {
+         device float * dst_row = (device float *)(dst) + (int64_t) idx*args.ne0 + (int64_t) iid1*args.ne1*args.ne0;
+         dst_row[r0] = sumf;
++    }
++}
++
++// ------------------------------------------------------------------------------------------------
++// galactus: bit-exact CPU-parity path for SWIGLU_OAI
++// (activated on the host side via GALACTUS_METAL_BITEXACT=1)
++//
++// The CPU reference is ggml_compute_forward_swiglu_oai_f32 (ggml/src/ggml-cpu/ops.cpp):
++//     const float x = std::min(src0_p[k], limit);
++//     const float y = std::clamp(src1_p[k], -limit, limit);
++//     const float out_glu = x / (1.f + expf(alpha * (-x)));
++//     dst_p[k] = out_glu * (y + 1.f);
++// Three things differ from the upstream Metal kernel and all three are fixed here:
++//   - min/clamp: std::min/std::clamp are ordered comparisons, not fmin/fmax
++//   - the division: metal's default divide is not IEEE, precise::divide is
++//   - expf: metal::exp is 1 to 2 ulp away from Apple's libm expf, see below
++// ------------------------------------------------------------------------------------------------
++
++// GALACTUS-EXPF-BEGIN
++// Bit-exact expf: replicates, operation by operation, the expf shipped in Apple's
++// libsystem_m on arm64 (the function the CPU backend calls in ggml_compute_forward_swiglu_oai_f32).
++//
++// That expf is NOT correctly rounded: measured over all 2^32 float inputs it differs from the
++// correctly-rounded result on 2041856 of the 2239889410 inputs whose result is neither a
++// guaranteed overflow nor a guaranteed zero. So a correctly-rounded expf cannot be bit-exact
++// with the CPU; the only way to match is to reproduce Apple's algorithm exactly.
++//
++// Apple's algorithm (disassembled), all intermediates in binary64:
++//   if (((bits(x) >> 23) & 0xff) >= 0x86)            // |x| >= 128, or inf/nan
++//       return x < 0 ? underflow_to_zero() : x*FLT_MAX;
++//   xd    = (double) x                                // exact
++//   t     = fma(C3, xd, MAGIC)                        // C3 = 128*log2(e), MAGIC = 1.5*2^52
++//   n     = t - MAGIC                                 // exact, integer, |n| <= 23637
++//   r     = fma(C3, xd, -n)                           // |r| <= 0.5
++//   scale = bitcast(TAB[bits(t) & 127] + (bits(t) << 45))   // 2^(n/128)
++//   u     = fma(C2, r, C1)                            // minimax poly for 2^(r/128)
++//   v     = u*r
++//   res   = fma(v, scale, scale)
++//   return (float) res
++//
++// Metal has no binary64, so every one of those double operations is emulated exactly on
++// 64-bit integers (galactus_dfma / galactus_dmul, round-to-nearest-even, 128-bit exact
++// products with a sticky bit). No approximation is involved: the emulation is exact, so the
++// result is bit-identical to the CPU by construction, not by error budget.
++//
++// Edge cases, deliberately (all inherited from the disassembled control flow, all verified
++// exhaustively by galactus-h4-expf-parity-probe over the full 2^32 input space):
++//   x >= 128            -> x*FLT_MAX -> +inf (overflow), also covers +inf
++//   nan                 -> x*FLT_MAX -> quiet nan
++//   -inf                -> +0
++//   x <= -128           -> +0 (via 2^-126 squared, i.e. with the underflow flag on the CPU)
++//   88.7228 < x < 128   -> the binary64 result is finite, the final double->float rounding
++//                          produces +inf
++//   -103.973 < x < -87.3-ish -> the final double->float rounding produces float subnormals
++//                          (gradual underflow) with round-to-nearest-even
++//   x <= -103.973       -> the final rounding produces +0
++//   x = +-0             -> exactly 1.0f
++// The saturation boundaries are exactly: largest x with a finite result 0x42b17217
++// (88.7228317), smallest x with a nonzero result 0xc2cff1b4 (-103.972084).
++
++// 2^(i/128) pre-compensated so that TAB[i] + ((ulong) i << 45) == bits(2^(i/128)).
++constant ulong GALACTUS_EXPF_TAB[128] = {
++    0x3ff0000000000000UL, 0x3feff63da9fb3335UL, 0x3fefec9a3e778061UL, 0x3fefe315e86e7f85UL,
++    0x3fefd9b0d3158574UL, 0x3fefd06b29ddf6deUL, 0x3fefc74518759bc8UL, 0x3fefbe3ecac6f383UL,
++    0x3fefb5586cf9890fUL, 0x3fefac922b7247f7UL, 0x3fefa3ec32d3d1a2UL, 0x3fef9b66affed31bUL,
++    0x3fef9301d0125b51UL, 0x3fef8abdc06c31ccUL, 0x3fef829aaea92de0UL, 0x3fef7a98c8a58e51UL,
++    0x3fef72b83c7d517bUL, 0x3fef6af9388c8deaUL, 0x3fef635beb6fcb75UL, 0x3fef5be084045cd4UL,
++    0x3fef54873168b9aaUL, 0x3fef4d5022fcd91dUL, 0x3fef463b88628cd6UL, 0x3fef3f49917ddc96UL,
++    0x3fef387a6e756238UL, 0x3fef31ce4fb2a63fUL, 0x3fef2b4565e27cddUL, 0x3fef24dfe1f56381UL,
++    0x3fef1e9df51fdee1UL, 0x3fef187fd0dad990UL, 0x3fef1285a6e4030bUL, 0x3fef0cafa93e2f56UL,
++    0x3fef06fe0a31b715UL, 0x3fef0170fc4cd831UL, 0x3feefc08b26416ffUL, 0x3feef6c55f929ff1UL,
++    0x3feef1a7373aa9cbUL, 0x3feeecae6d05d866UL, 0x3feee7db34e59ff7UL, 0x3feee32dc313a8e5UL,
++    0x3feedea64c123422UL, 0x3feeda4504ac801cUL, 0x3feed60a21f72e2aUL, 0x3feed1f5d950a897UL,
++    0x3feece086061892dUL, 0x3feeca41ed1d0057UL, 0x3feec6a2b5c13cd0UL, 0x3feec32af0d7d3deUL,
++    0x3feebfdad5362a27UL, 0x3feebcb299fddd0dUL, 0x3feeb9b2769d2ca7UL, 0x3feeb6daa2cf6642UL,
++    0x3feeb42b569d4f82UL, 0x3feeb1a4ca5d920fUL, 0x3feeaf4736b527daUL, 0x3feead12d497c7fdUL,
++    0x3feeab07dd485429UL, 0x3feea9268a5946b7UL, 0x3feea76f15ad2148UL, 0x3feea5e1b976dc09UL,
++    0x3feea47eb03a5585UL, 0x3feea34634ccc320UL, 0x3feea23882552225UL, 0x3feea155d44ca973UL,
++    0x3feea09e667f3bcdUL, 0x3feea012750bdabfUL, 0x3fee9fb23c651a2fUL, 0x3fee9f7df9519484UL,
++    0x3fee9f75e8ec5f74UL, 0x3fee9f9a48a58174UL, 0x3fee9feb564267c9UL, 0x3feea0694fde5d3fUL,
++    0x3feea11473eb0187UL, 0x3feea1ed0130c132UL, 0x3feea2f336cf4e62UL, 0x3feea427543e1a12UL,
++    0x3feea589994cce13UL, 0x3feea71a4623c7adUL, 0x3feea8d99b4492edUL, 0x3feeaac7d98a6699UL,
++    0x3feeace5422aa0dbUL, 0x3feeaf3216b5448cUL, 0x3feeb1ae99157736UL, 0x3feeb45b0b91ffc6UL,
++    0x3feeb737b0cdc5e5UL, 0x3feeba44cbc8520fUL, 0x3feebd829fde4e50UL, 0x3feec0f170ca07baUL,
++    0x3feec49182a3f090UL, 0x3feec86319e32323UL, 0x3feecc667b5de565UL, 0x3feed09bec4a2d33UL,
++    0x3feed503b23e255dUL, 0x3feed99e1330b358UL, 0x3feede6b5579fdbfUL, 0x3feee36bbfd3f37aUL,
++    0x3feee89f995ad3adUL, 0x3feeee07298db666UL, 0x3feef3a2b84f15fbUL, 0x3feef9728de5593aUL,
++    0x3feeff76f2fb5e47UL, 0x3fef05b030a1064aUL, 0x3fef0c1e904bc1d2UL, 0x3fef12c25bd71e09UL,
++    0x3fef199bdd85529cUL, 0x3fef20ab5fffd07aUL, 0x3fef27f12e57d14bUL, 0x3fef2f6d9406e7b5UL,
++    0x3fef3720dcef9069UL, 0x3fef3f0b555dc3faUL, 0x3fef472d4a07897cUL, 0x3fef4f87080d89f2UL,
++    0x3fef5818dcfba487UL, 0x3fef60e316c98398UL, 0x3fef69e603db3285UL, 0x3fef7321f301b460UL,
++    0x3fef7c97337b9b5fUL, 0x3fef864614f5a129UL, 0x3fef902ee78b3ff6UL, 0x3fef9a51fbc74c83UL,
++    0x3fefa4afa2a490daUL, 0x3fefaf482d8e67f1UL, 0x3fefba1bee615a27UL, 0x3fefc52b376bba97UL,
++    0x3fefd0765b6e4540UL, 0x3fefdbfdad9cbe14UL, 0x3fefe7c1819e90d8UL, 0x3feff3c22b8f71f1UL,};
++
++#define GALACTUS_EXPF_C3    0x40671547652b82feUL // 128*log2(e)
++#define GALACTUS_EXPF_MAGIC 0x4338000000000000UL // 1.5*2^52
++#define GALACTUS_EXPF_C1    0x3f762e4453e10daeUL // minimax c1 for 2^(r/128)
++#define GALACTUS_EXPF_C2    0x3eeebfbdff30d656UL // minimax c2 for 2^(r/128)
++
++// 128-bit unsigned value plus a sticky bit (nonzero bits lost by a right shift)
++struct galactus_u128 {
++    ulong hi;
++    ulong lo;
++    bool  st;
++};
++
++static inline int galactus_clz64(ulong v) {
++    if (v == 0) {
++        return 64;
++    }
++    const uint h = (uint) (v >> 32);
++    return h != 0 ? (int) clz(h) : 32 + (int) clz((uint) v);
++}
++
++static inline int galactus_bitlen128(galactus_u128 v) {
++    if (v.hi != 0) {
++        return 128 - galactus_clz64(v.hi);
+     }
++    return v.lo != 0 ? 64 - galactus_clz64(v.lo) : 0;
+ }
++
++// exact 64x64 -> 128 product, on 32-bit limbs
++static inline galactus_u128 galactus_mul64(ulong a, ulong b) {
++    const ulong m32 = 0xffffffffUL;
++    const ulong a0 = a & m32, a1 = a >> 32;
++    const ulong b0 = b & m32, b1 = b >> 32;
++    const ulong p00 = a0*b0;
++    const ulong p01 = a0*b1;
++    const ulong p10 = a1*b0;
++    const ulong p11 = a1*b1;
++    const ulong mid = (p00 >> 32) + (p01 & m32) + (p10 & m32);
++
++    galactus_u128 r;
++    r.lo = (p00 & m32) | (mid << 32);
++    r.hi = p11 + (p01 >> 32) + (p10 >> 32) + (mid >> 32);
++    r.st = false;
++    return r;
++}
++
++// left shift, 0 <= s < 128, no bit may be lost (callers guarantee it)
++static inline galactus_u128 galactus_shl128(galactus_u128 v, int s) {
++    galactus_u128 r;
++    r.st = v.st;
++    if (s == 0) {
++        r.hi = v.hi;
++        r.lo = v.lo;
++    } else if (s < 64) {
++        r.hi = (v.hi << s) | (v.lo >> (64 - s));
++        r.lo = v.lo << s;
++    } else {
++        r.hi = v.lo << (s - 64);
++        r.lo = 0;
++    }
++    return r;
++}
++
++// right shift, s >= 0, the lost bits are OR-ed into the sticky bit
++static inline galactus_u128 galactus_shr128(galactus_u128 v, int s) {
++    galactus_u128 r;
++    if (s == 0) {
++        return v;
++    }
++    if (s >= 128) {
++        r.hi = 0;
++        r.lo = 0;
++        r.st = v.st || (v.hi | v.lo) != 0;
++        return r;
++    }
++    if (s < 64) {
++        const ulong mask = (1UL << s) - 1UL;
++        r.st = v.st || (v.lo & mask) != 0;
++        r.lo = (v.lo >> s) | (v.hi << (64 - s));
++        r.hi = v.hi >> s;
++    } else {
++        const int   k    = s - 64;
++        const ulong mask = k == 0 ? 0UL : (1UL << k) - 1UL;
++        r.st = v.st || v.lo != 0 || (v.hi & mask) != 0;
++        r.lo = v.hi >> k;
++        r.hi = 0;
++    }
++    return r;
++}
++
++// round (m + frac)*2^e to binary64, round-to-nearest-even.
++// m is the 128-bit magnitude, frac in [0,1) is summarised by m.st, sgn is the sign bit in place.
++static inline ulong galactus_round128(ulong sgn, galactus_u128 m, int e) {
++    const int L = galactus_bitlen128(m);
++    if (L == 0) {
++        return sgn;
++    }
++
++    ulong mant;
++    int   ex;
++
++    if (L > 53) {
++        const int s = L - 53;
++
++        // guard bit = bit s-1, sticky = m.st | (bits below s-1)
++        const galactus_u128 g = galactus_shr128(m, s - 1);
++        const ulong rbit = g.lo & 1UL;
++        const bool  st   = s >= 2 ? g.st : m.st;
++
++        mant = galactus_shr128(m, s).lo;
++        ex   = e + s;
++
++        if (rbit != 0 && (st || (mant & 1UL) != 0)) {
++            mant++;
++            if (mant == (1UL << 53)) {
++                mant >>= 1;
++                ex++;
++            }
++        }
++    } else {
++        // no rounding to do: exact, and m.st is always false here (see the probe)
++        const int s = 53 - L;
++        mant = galactus_shl128(m, s).lo;
++        ex   = e - s;
++    }
++
++    const int be = ex + 1075;
++    if (be <= 0) {
++        return sgn; // binary64 subnormal: unreachable on this pipeline
++    }
++    if (be >= 0x7ff) {
++        return sgn | 0x7ff0000000000000UL;
++    }
++    return sgn | ((ulong) be << 52) | (mant & 0xfffffffffffffUL);
++}
++
++// exact binary64 fused multiply-add, RN(a*b + c). Operands are finite, normal or zero;
++// the SWIGLU_OAI pipeline never reaches the binary64 overflow or subnormal range.
++static inline ulong galactus_dfma(ulong a, ulong b, ulong c) {
++    const ulong sa = a >> 63, sb = b >> 63, sc = c >> 63;
++    const int   ea = (int) ((a >> 52) & 0x7ff);
++    const int   eb = (int) ((b >> 52) & 0x7ff);
++    const int   ec = (int) ((c >> 52) & 0x7ff);
++    const ulong ma = a & 0xfffffffffffffUL;
++    const ulong mb = b & 0xfffffffffffffUL;
++    const ulong mc = c & 0xfffffffffffffUL;
++
++    const ulong ga = ea != 0 ? (ma | (1UL << 52)) : ma;
++    const ulong gb = eb != 0 ? (mb | (1UL << 52)) : mb;
++    const ulong gc = ec != 0 ? (mc | (1UL << 52)) : mc;
++    const int   xa = ea != 0 ? ea - 1075 : -1074;
++    const int   xb = eb != 0 ? eb - 1075 : -1074;
++    const int   xc = ec != 0 ? ec - 1075 : -1074;
++
++    if (ga == 0 || gb == 0) {
++        return c;
++    }
++
++    const ulong         sp   = sa ^ sb;
++    const galactus_u128 p    = galactus_mul64(ga, gb);
++    const int           pexp = xa + xb;
++
++    if (gc == 0) {
++        return galactus_round128(sp << 63, p, pexp);
++    }
++
++    // align both operands so the larger one has its top bit at position 125
++    const int ptop = pexp + galactus_bitlen128(p);
++    const int ctop = xc + 64 - galactus_clz64(gc);
++    const int R    = (ptop > ctop ? ptop : ctop) - 126;
++
++    const int shp = pexp - R;
++    const int shc = xc   - R;
++
++    galactus_u128 cv;
++    cv.hi = 0;
++    cv.lo = gc;
++    cv.st = false;
++
++    const galactus_u128 pa = shp >= 0 ? galactus_shl128(p,  shp) : galactus_shr128(p,  -shp);
++    const galactus_u128 ca = shc >= 0 ? galactus_shl128(cv, shc) : galactus_shr128(cv, -shc);
++
++    galactus_u128 m;
++    ulong         sr;
++
++    if (sp == sc) {
++        m.lo = pa.lo + ca.lo;
++        m.hi = pa.hi + ca.hi + (m.lo < pa.lo ? 1UL : 0UL);
++        m.st = pa.st || ca.st;
++        sr   = sp;
++    } else {
++        int cmp;
++        if (pa.hi != ca.hi) {
++            cmp = pa.hi > ca.hi ? 1 : -1;
++        } else if (pa.lo != ca.lo) {
++            cmp = pa.lo > ca.lo ? 1 : -1;
++        } else {
++            cmp = (pa.st ? 1 : 0) - (ca.st ? 1 : 0);
++        }
++        if (cmp == 0) {
++            return 0UL; // exact cancellation: +0 in round-to-nearest
++        }
++
++        const galactus_u128 big   = cmp > 0 ? pa : ca;
++        const galactus_u128 small = cmp > 0 ? ca : pa;
++        sr = cmp > 0 ? sp : sc;
++
++        m.lo = big.lo - small.lo;
++        m.hi = big.hi - small.hi - (big.lo < small.lo ? 1UL : 0UL);
++        if (small.st) {
++            // the discarded tail of the smaller operand is subtracted too
++            if (m.lo == 0UL) {
++                m.hi--;
++                m.lo = ~0UL;
++            } else {
++                m.lo--;
++            }
++            m.st = true;
++        } else {
++            m.st = big.st;
++        }
++    }
++
++    return galactus_round128(sr << 63, m, R);
++}
++
++static inline ulong galactus_dmul(ulong a, ulong b) {
++    return galactus_dfma(a, b, 0UL);
++}
++
++// exact float -> binary64 widening (fcvt d, s)
++static inline ulong galactus_f2d(float x) {
++    const uint  b = as_type<uint>(x);
++    const ulong s = (ulong) (b >> 31) << 63;
++    const uint  e = (b >> 23) & 0xff;
++    uint        m = b & 0x7fffff;
++
++    if (e == 0) {
++        if (m == 0) {
++            return s;
++        }
++        int n = 0;
++        while ((m & 0x800000u) == 0) {
++            m <<= 1;
++            n++;
++        }
++        m &= 0x7fffff;
++        return s | ((ulong) (897 - n) << 52) | ((ulong) m << 29);
++    }
++    return s | ((ulong) (e + 896) << 52) | ((ulong) m << 29);
++}
++
++// exact int -> binary64, |n| < 2^24
++static inline ulong galactus_i2d(int n) {
++    if (n == 0) {
++        return 0UL;
++    }
++    const ulong s = n < 0 ? (1UL << 63) : 0UL;
++    const ulong u = (ulong) (n < 0 ? -n : n);
++    const int   L = 64 - galactus_clz64(u);
++    return s | ((ulong) (1022 + L) << 52) | ((u << (53 - L)) & 0xfffffffffffffUL);
++}
++
++// binary64 -> float, round-to-nearest-even (fcvt s, d), with subnormals and overflow
++static inline float galactus_d2f(ulong d) {
++    const uint sb = (uint) (d >> 63) << 31;
++    const int  e  = (int) ((d >> 52) & 0x7ff);
++    const ulong m = d & 0xfffffffffffffUL;
++
++    if (e == 0x7ff) {
++        return as_type<float>(sb | 0x7f800000u | (m != 0 ? 0x400000u : 0u));
++    }
++    if (e == 0) {
++        return as_type<float>(sb); // binary64 subnormal: unreachable, flushes to zero
++    }
++
++    const ulong sig = m | (1UL << 52);
++    int         E   = e - 1023;
++
++    if (E >= 128) {
++        return as_type<float>(sb | 0x7f800000u);
++    }
++
++    if (E >= -126) {
++        ulong      q  = sig >> 29;
++        const ulong rb = (sig >> 28) & 1UL;
++        const bool  st = (sig & 0xfffffffUL) != 0;
++        if (rb != 0 && (st || (q & 1UL) != 0)) {
++            q++;
++            if (q == (1UL << 24)) {
++                q >>= 1;
++                E++;
++                if (E > 127) {
++                    return as_type<float>(sb | 0x7f800000u);
++                }
++            }
++        }
++        return as_type<float>(sb | ((uint) (E + 127) << 23) | ((uint) q & 0x7fffffu));
++    }
++
++    // float subnormal: value = sig*2^(E-52), quantum 2^-149
++    const int sh = -97 - E;
++    ulong     q  = 0UL;
++    if (sh < 128) {
++        const ulong base = sh < 64 ? (sig >> sh) : 0UL;
++        const ulong rb   = sh <= 64 ? ((sig >> (sh - 1)) & 1UL) : 0UL;
++        const bool  st   = sh >= 2 ? (sh - 1 < 64 ? (sig & ((1UL << (sh - 1)) - 1UL)) != 0 : sig != 0) : false;
++        q = base;
++        if (rb != 0 && (st || (q & 1UL) != 0)) {
++            q++;
++        }
++    }
++    return as_type<float>(sb | (uint) q);
++}
++
++// expf, bit-identical to Apple's libm expf on every one of the 2^32 float inputs
++static inline float galactus_expf_bitexact(float x) {
++    const uint xb = as_type<uint>(x);
++
++    if (((xb >> 23) & 0xff) >= 0x86) {
++        if (!(x < 0.0f)) {
++            return x*0x1.fffffep+127f; // +inf on overflow, quiet nan on nan
++        }
++        uint w = 0x800000u;
++        if ((ulong) w + (ulong) xb >= 0x100000000UL) {
++            w = 0; // -inf
++        }
++        const float s = as_type<float>(w);
++        return s*s; // +0, with the underflow condition
++    }
++
++    const ulong xd = galactus_f2d(x);
++    const ulong t  = galactus_dfma(GALACTUS_EXPF_C3, xd, GALACTUS_EXPF_MAGIC);
++    const int   n  = (int) (long) (t - GALACTUS_EXPF_MAGIC);
++    const ulong nd = galactus_i2d(n);
++    const ulong r  = galactus_dfma(GALACTUS_EXPF_C3, xd, nd == 0UL ? 0UL : (nd ^ (1UL << 63)));
++
++    const ulong scale = GALACTUS_EXPF_TAB[t & 0x7f] + (t << 45);
++
++    const ulong u   = galactus_dfma(GALACTUS_EXPF_C2, r, GALACTUS_EXPF_C1);
++    const ulong v   = galactus_dmul(u, r);
++    const ulong res = galactus_dfma(v, scale, scale);
++
++    return galactus_d2f(res);
++}
++// GALACTUS-EXPF-END
++
++kernel void kernel_galactus_swiglu_oai_f32_bitexact(
++        constant ggml_metal_kargs_glu & args,
++        device const char * src0,
++        device const char * src1,
++        device       char * dst,
++        uint tgpig[[threadgroup_position_in_grid]],
++        uint tpitg[[thread_position_in_threadgroup]],
++        uint   ntg[[threads_per_threadgroup]]) {
++    device const float * src0_row = (device const float *) ((device const char *) src0 + tgpig*args.nb01) + args.i00;
++    device const float * src1_row = (device const float *) ((device const char *) src1 + tgpig*args.nb11) + args.i10;
++    device       float * dst_row  = (device       float *) ((device       char *) dst  + tgpig*args.nb1);
++
++    for (int i0 = tpitg; i0 < args.ne0; i0 += ntg) {
++        const float s0 = src0_row[i0];
++        const float s1 = src1_row[i0];
++
++        // std::min(s0, limit)                : (limit < s0) ? limit : s0
++        const float x = args.limit < s0 ? args.limit : s0;
++        // std::clamp(s1, -limit, limit)      : (s1 < lo) ? lo : ((hi < s1) ? hi : s1)
++        const float y = s1 < -args.limit ? -args.limit : (args.limit < s1 ? args.limit : s1);
++
++        const float out_glu = precise::divide(x, 1.0f + galactus_expf_bitexact(args.alpha*(-x)));
++
++        dst_row[i0] = out_glu*(y + 1.0f);
++    }
++}
