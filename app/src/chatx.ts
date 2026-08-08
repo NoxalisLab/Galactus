@@ -42,6 +42,8 @@ function toolLabel(name: string): string {
     obsidian_search: t("tool.osearch"),
     obsidian_read: t("tool.oread"),
     obsidian_append: t("tool.owrite"),
+    search_workspace: t("tool.searchWorkspace"),
+    find_files: t("tool.findFiles"),
   };
   return map[name] ?? name;
 }

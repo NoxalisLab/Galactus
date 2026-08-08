@@ -6,11 +6,19 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "prebuild": "node tools/tsintel/copy-libs.mjs",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "tslib": "node tools/tsintel/copy-libs.mjs",
+    "test:editor": "tsc -p tools/editor-core/tsconfig.json && node --test \"tools/editor-core/out/**/*.test.js\"",
+    "test:nav": "tsc -p tools/nav/tsconfig.json && node --test \"tools/nav/out/**/*.test.js\"",
+    "test:tsintel": "tsc -p tools/tsintel/tsconfig.json && node --test \"tools/tsintel/out/**/*.test.js\"",
+    "test:lang": "tsc -p tools/universal-lang/tsconfig.json && node --test \"tools/universal-lang/out/**/*.test.js\""
   },
   "dependencies": {
+    "@codemirror/autocomplete": "^6.20.3",
+    "@codemirror/commands": "^6.10.4",
     "@codemirror/lang-css": "^6.3.1",
     "@codemirror/lang-html": "^6.4.12",
     "@codemirror/lang-javascript": "^6.2.5",
@@ -18,16 +26,23 @@
     "@codemirror/lang-markdown": "^6.5.2",
     "@codemirror/lang-python": "^6.2.1",
     "@codemirror/lang-rust": "^6.0.2",
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/lint": "^6.9.7",
     "@codemirror/merge": "^6.12.2",
+    "@codemirror/search": "^6.7.1",
+    "@codemirror/state": "^6.7.1",
     "@codemirror/theme-one-dark": "^6.1.3",
+    "@codemirror/view": "^6.43.8",
+    "@lezer/common": "^1.5.2",
+    "@lezer/highlight": "^1.2.3",
     "@tauri-apps/api": "^2.9.0",
     "@tauri-apps/plugin-dialog": "^2.4.2",
     "@tauri-apps/plugin-opener": "^2.5.3",
-    "codemirror": "^6.0.2"
+    "codemirror": "^6.0.2",
+    "typescript": "^5.9.3"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.9.6",
-    "typescript": "^5.6.0",
     "vite": "^6.0.0"
   }
 }

@@ -1,0 +1,41 @@
+{
+  // Headless build of the Tier A language service.
+  //
+  // The whole point of this file: `ts.createLanguageService` runs natively in
+  // Node, so every claim this module makes about hover, definitions,
+  // diagnostics and rename can be proved with `node --test` and no window at
+  // all. The app's own tsconfig is `noEmit`; this one emits, into out/, next to
+  // the tests that drive it.
+  //
+  //   ./node_modules/.bin/tsc -p tools/tsintel/tsconfig.json
+  //   node --test tools/tsintel/out/
+  //
+  // NodeNext, not bundler, because the emitted JavaScript has to run under
+  // Node's ESM loader (app/package.json says "type": "module"). That is why
+  // every relative import in src/tsintel carries an explicit .js extension:
+  // Node demands it, TypeScript maps it back to the .ts, and Vite resolves it
+  // the same way for a TypeScript importer.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "noUnusedLocals": false,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    // @types/node is deliberately NOT a dependency of this app, so the ambient
+    // Node globals are absent on purpose and the harness reaches built-ins
+    // through a computed import specifier instead.
+    "types": [],
+    "rootDir": "../..",
+    "outDir": "./out",
+    "sourceMap": false,
+    "declaration": false
+  },
+  "include": ["./*.ts", "../../src/tsintel/**/*.ts"],
+  // The fixtures carry a seeded type error on purpose: compiling them here
+  // would fail the build that is supposed to detect it.
+  "exclude": ["./fixtures/**", "./out/**"]
+}

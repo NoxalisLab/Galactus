@@ -74,7 +74,7 @@ echo "Moteur embarque dans $DEST ($(du -sh "$DEST" | cut -f1))"
 
 # Scripts + registre embarques (racine auto-provisionnee sans checkout).
 mkdir -p "$HERE/packaged/scripts"
-for f in models-registry.json moe-profile.py galactus-pack-plan.py galactus-pack-write.py; do
+for f in models-registry.json moe-profile.py galactus-pack-plan.py galactus-pack-write.py galactus_pylang.py; do
   cp "$ROOT/scripts/$f" "$HERE/packaged/scripts/$f"
 done
 echo "Scripts embarques dans $HERE/packaged/scripts"

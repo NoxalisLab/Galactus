@@ -546,6 +546,212 @@ const dict: Record<string, { en: string; fr: string }> = {
     en: "Answer the pending proposals before switching branch.",
     fr: "Réponds aux propositions en attente avant de changer de branche.",
   },
+  "code.switchPendingTitle": {
+    en: "Pending proposals will be discarded",
+    fr: "Les propositions en attente seront abandonnées",
+  },
+  "code.switchPendingSub": {
+    en: "%n proposal(s) have not been answered. Opening another folder throws them away: nothing was written to disk and there is no other copy.",
+    fr: "%n proposition(s) n'ont pas reçu de réponse. Ouvrir un autre dossier les supprime : rien n'a été écrit sur le disque et il n'en existe aucune autre copie.",
+  },
+  "code.switchPendingDo": {
+    en: "Discard and open",
+    fr: "Abandonner et ouvrir",
+  },
+  "code.reloadKeptDirty": {
+    en: "%n file(s) with unsaved edits were left as they are, not reloaded from disk: %s",
+    fr: "%n fichier(s) avec des modifications non enregistrées ont été laissés tels quels, sans relecture du disque : %s",
+  },
+
+  // ---- editor tabs (code/tabs.ts) ----
+  "code.tabClose": { en: "Close", fr: "Fermer" },
+  "code.tab.search": { en: "Search", fr: "Recherche" },
+  "code.tab.outline": { en: "Outline", fr: "Plan" },
+  "code.tab.refs": { en: "References", fr: "Références" },
+
+  // ---- empty and loading states ----
+  "code.pickFileTitle": { en: "No file open", fr: "Aucun fichier ouvert" },
+  "code.emptyFolder": { en: "This folder is empty.", fr: "Ce dossier est vide." },
+  "code.loading": { en: "Loading…", fr: "Chargement…" },
+
+  // ---- git absent, as a stated fact and never an installer dialog ----
+  "code.gitUnavailable": { en: "git is not installed on this Mac", fr: "git n'est pas installé sur ce Mac" },
+  "code.gitUnavailableBody": {
+    en: "Changes, History and Branches need git. Galactus never triggers Apple's Command Line Tools installer: install git yourself to turn version control on here.",
+    fr: "État, Historique et Branches ont besoin de git. Galactus ne déclenche jamais l'installateur des Command Line Tools d'Apple : installe git toi-même pour activer le contrôle de version ici.",
+  },
+
+  // ---- project search panel (code/searchpanel.ts) ----
+  "code.search.placeholder": { en: "Search in the project", fr: "Chercher dans le projet" },
+  "code.search.case": { en: "Match case", fr: "Respecter la casse" },
+  "code.search.word": { en: "Whole word", fr: "Mot entier" },
+  "code.search.globs": { en: "Files to include or exclude", fr: "Fichiers à inclure ou exclure" },
+  "code.search.include": { en: "include, e.g. *.ts, src/**", fr: "inclure, ex. *.ts, src/**" },
+  "code.search.exclude": { en: "exclude, e.g. vendor/**", fr: "exclure, ex. vendor/**" },
+  "code.search.replaceToggle": { en: "Replace", fr: "Remplacer" },
+  "code.search.replacePlaceholder": { en: "Replace with", fr: "Remplacer par" },
+  "code.search.replaceDo": { en: "Propose in %f files", fr: "Proposer dans %f fichiers" },
+  "code.search.hint": {
+    en: "Type to search the whole project. Literal text, no regular expressions.",
+    fr: "Tape pour chercher dans tout le projet. Texte littéral, pas d'expressions régulières.",
+  },
+  "code.search.running": { en: "Searching… %n found", fr: "Recherche… %n trouvés" },
+  "code.search.results": { en: "%n results in %f files", fr: "%n résultats dans %f fichiers" },
+  "code.search.none": { en: "No match in the project.", fr: "Aucune correspondance dans le projet." },
+  "code.search.cancel": { en: "Stop", fr: "Arrêter" },
+  "code.search.capped": {
+    en: "Too many matches: the search stopped early and this list is incomplete.",
+    fr: "Trop de correspondances : la recherche s'est arrêtée, cette liste est incomplète.",
+  },
+  "code.search.timedOut": {
+    en: "The search ran out of time and this list is incomplete.",
+    fr: "La recherche a dépassé son temps imparti, cette liste est incomplète.",
+  },
+  "code.search.clientCapped": {
+    en: "Only the first %n matches are kept. Narrow the search.",
+    fr: "Seules les %n premières correspondances sont conservées. Affine la recherche.",
+  },
+  "code.search.rowsShown": { en: "showing %n of %m", fr: "%n affichés sur %m" },
+  "code.symbols.heuristic": {
+    en: "Heuristic index: a symbol produced by a macro can be missing.",
+    fr: "Index heuristique : un symbole produit par une macro peut manquer.",
+  },
+
+  // ---- palettes (code/palette.ts) ----
+  "code.pal.filesPlaceholder": { en: "Go to file", fr: "Aller au fichier" },
+  "code.pal.symbolsPlaceholder": { en: "Go to symbol", fr: "Aller au symbole" },
+  "code.pal.footer": {
+    en: "↑↓ to move · ⏎ to open · esc to close",
+    fr: "↑↓ pour naviguer · ⏎ pour ouvrir · échap pour fermer",
+  },
+  "code.pal.loading": { en: "Indexing the workspace…", fr: "Indexation de l'espace de travail…" },
+  "code.pal.none": { en: "Nothing matches.", fr: "Aucune correspondance." },
+
+  // ---- project-wide replace, as proposals (code/replace.ts) ----
+  "code.replace.title": { en: "Propose this replacement", fr: "Proposer ce remplacement" },
+  "code.replace.sub": {
+    en: "%n matches in %f files. Each file becomes a pending diff you review hunk by hunk. Nothing is written yet.",
+    fr: "%n correspondances dans %f fichiers. Chaque fichier devient une modification en attente, revue bloc par bloc. Rien n'est encore écrit.",
+  },
+  "code.replace.do": { en: "Propose", fr: "Proposer" },
+  "code.replace.tooMany": {
+    en: "%f files is too many to review at once (limit %c). Narrow the search first.",
+    fr: "%f fichiers, c'est trop à revoir d'un coup (limite %c). Affine d'abord la recherche.",
+  },
+  "code.replace.none": { en: "Nothing changed: those matches are stale.", fr: "Rien n'a changé : ces correspondances sont périmées." },
+  "code.replace.partial": {
+    en: "%n of %m files changed. The rest moved under the search.",
+    fr: "%n fichiers sur %m ont changé. Les autres ont bougé sous la recherche.",
+  },
+
+  // ---- outline (code/outline.ts, code/pylang.ts) ----
+  "outline.empty": { en: "Nothing to outline in this file.", fr: "Rien à lister dans ce fichier." },
+  "outline.partial": { en: "Parsing, the outline is still filling in.", fr: "Analyse en cours, le plan se complète." },
+  "outline.pythonExact": { en: "Exact, from the bundled Python 3.12.", fr: "Exact, via le Python 3.12 embarqué." },
+  "outline.noGrammar": {
+    en: "No bundled grammar for this file type, so there is nothing to outline.",
+    fr: "Aucune grammaire embarquée pour ce type de fichier : il n'y a rien à lister.",
+  },
+
+  // ---- diagnostics scope, said plainly (code/treediag.ts) ----
+  "diag.syntaxOnly": {
+    en: "Syntax only. Not types, not undefined variables, not unused imports: a file with no error here is a file the grammar could parse, nothing more.",
+    fr: "Syntaxe uniquement. Ni types, ni variables inconnues, ni imports inutilisés : un fichier sans erreur ici est un fichier que la grammaire a su lire, rien de plus.",
+  },
+  "diag.pythonNoTypes": {
+    en: "Python: exact syntax errors, no type inference. No hover types and no member completion.",
+    fr: "Python : erreurs de syntaxe exactes, pas d'inférence de types. Pas de type au survol ni de complétion de membres.",
+  },
+  "diag.syntax.rust": {
+    en: "Rust syntax: the parser cannot continue here%s.",
+    fr: "Syntaxe Rust : l'analyseur ne peut pas continuer ici%s.",
+  },
+  "diag.syntax.python": {
+    en: "Python syntax: the parser cannot continue here%s.",
+    fr: "Syntaxe Python : l'analyseur ne peut pas continuer ici%s.",
+  },
+  "diag.syntax.javascript": {
+    en: "JavaScript syntax: the parser cannot continue here%s.",
+    fr: "Syntaxe JavaScript : l'analyseur ne peut pas continuer ici%s.",
+  },
+  "diag.syntax.typescript": {
+    en: "TypeScript syntax: the parser cannot continue here%s.",
+    fr: "Syntaxe TypeScript : l'analyseur ne peut pas continuer ici%s.",
+  },
+  "diag.syntax.json": {
+    en: "JSON syntax: the parser cannot continue here%s.",
+    fr: "Syntaxe JSON : l'analyseur ne peut pas continuer ici%s.",
+  },
+  "diag.syntax.markdown": {
+    en: "Markdown syntax: the parser cannot continue here%s.",
+    fr: "Syntaxe Markdown : l'analyseur ne peut pas continuer ici%s.",
+  },
+  "diag.syntax.html": {
+    en: "HTML syntax: unclosed or misplaced markup here%s.",
+    fr: "Syntaxe HTML : balise non fermée ou mal placée ici%s.",
+  },
+  "diag.syntax.css": {
+    en: "CSS syntax: the parser cannot continue here%s.",
+    fr: "Syntaxe CSS : l'analyseur ne peut pas continuer ici%s.",
+  },
+
+  // ---- the tier badge (code/tiers.ts) ----
+  "tier.a.label": { en: "Full", fr: "Complet" },
+  "tier.b.label": { en: "Syntax", fr: "Syntaxe" },
+  "tier.none.label": { en: "Plain", fr: "Brut" },
+  "tier.a.hint": {
+    en: "Types, hover, go to definition, references and rename, from the TypeScript service running inside the app. It reads a snapshot taken at the last open, pull or checkout: a file changed outside Galactus is stale to it until one of those happens.",
+    fr: "Types, survol, aller à la définition, références et renommage, via le service TypeScript exécuté dans l'app. Il lit un instantané pris à la dernière ouverture, au dernier pull ou au dernier changement de branche : un fichier modifié hors de Galactus lui reste invisible jusque-là.",
+  },
+  "tier.b.hint": {
+    en: "Outline, breadcrumb and syntax errors, from the bundled grammar. No types, no cross-file resolution, no go to definition. Rust and C get this tier only.",
+    fr: "Plan, fil d'Ariane et erreurs de syntaxe, via la grammaire embarquée. Pas de types, pas de résolution inter-fichiers, pas d'aller à la définition. Rust et C n'ont que ce niveau.",
+  },
+  "tier.none.hint": {
+    en: "No bundled grammar for this file type: line numbers, search and undo only. Nothing is analysed.",
+    fr: "Aucune grammaire embarquée pour ce type de fichier : numéros de ligne, recherche et annulation seulement. Rien n'est analysé.",
+  },
+
+  // ---- the TypeScript service (src/tsintel) ----
+  "tsintel.tierB": { en: "Basic highlighting only: %s", fr: "Coloration simple uniquement : %s" },
+  "tsintel.references": { en: "References", fr: "Références" },
+  "tsintel.noRefs": { en: "no references", fr: "aucune référence" },
+  "tsintel.refCount": { en: "%n references in %f files", fr: "%n références dans %f fichiers" },
+  "tsintel.needsImport": { en: "needs an import", fr: "nécessite un import" },
+  "tsintel.stale": {
+    en: "Types reflect the last pull or checkout, not changes made outside Galactus.",
+    fr: "Les types reflètent le dernier pull ou changement de branche, pas les modifications faites hors de Galactus.",
+  },
+  "tsintel.renameTitle": { en: "Rename this symbol", fr: "Renommer ce symbole" },
+  "tsintel.renameBody": {
+    en: "Every file the rename touches becomes a pending diff you review hunk by hunk. Nothing is written yet.",
+    fr: "Chaque fichier touché par le renommage devient une modification en attente, revue bloc par bloc. Rien n'est encore écrit.",
+  },
+  "tsintel.renamePrompt": { en: "New name", fr: "Nouveau nom" },
+  "tsintel.renameProposed": { en: "Rename proposed in %n files", fr: "Renommage proposé dans %n fichiers" },
+  "tsintel.renameFail": { en: "Rename refused: %s", fr: "Renommage refusé : %s" },
+  "tsintel.needsTierA": {
+    en: "Rename needs the TypeScript service, which is not running for this file.",
+    fr: "Le renommage a besoin du service TypeScript, qui ne tourne pas pour ce fichier.",
+  },
+
+  // ---- workspace tools the model may call ----
+  "tool.searchWorkspace": { en: "Search the workspace", fr: "Chercher dans l'espace de travail" },
+  "tool.findFiles": { en: "Find files", fr: "Trouver des fichiers" },
+
+  // ---- page section headings ----
+  "sect.appearance": { en: "Appearance", fr: "Apparence" },
+  "sect.appearanceHint": { en: "Language and where Galactus keeps its data", fr: "Langue et emplacement des données de Galactus" },
+  "sect.engine": { en: "Engine", fr: "Moteur" },
+  "sect.engineHint": { en: "How the model is loaded and how much of the Mac it takes", fr: "Comment le modèle est chargé et ce qu'il prend de la machine" },
+  "sect.access": { en: "Access", fr: "Accès" },
+  "sect.accessHint": { en: "What other programs and the agent are allowed to reach", fr: "Ce que les autres programmes et l'agent ont le droit d'atteindre" },
+  "sect.memory": { en: "Memory", fr: "Mémoire" },
+  "sect.memoryHint": { en: "What Galactus remembers about you between conversations", fr: "Ce que Galactus retient de toi d'une conversation à l'autre" },
+  "sect.knowledge": { en: "Knowledge", fr: "Connaissances" },
+  "sect.knowledgeHint": { en: "Local folders indexed for full-text search, offline", fr: "Dossiers locaux indexés pour la recherche plein texte, hors ligne" },
+  "sect.obsidian": { en: "Obsidian", fr: "Obsidian" },
+  "sect.obsidianHint": { en: "An existing vault, read and written in place", fr: "Un coffre existant, lu et écrit sur place" },
 
   "perm.code": { en: "Propose a change to a file", fr: "Proposer une modification de fichier" },
   "perm.codeNote": {

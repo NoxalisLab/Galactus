@@ -1,0 +1,31 @@
+{
+  "//": "Compiles the navigation module and its tests to plain ESM, so they can be run by `node --test` with no bundler, no test framework and no new dependency. Run from app/: ./node_modules/.bin/tsc -p tools/nav/tsconfig.json && node --test tools/nav/out/",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "types": [],
+    "sourceMap": false,
+    "removeComments": true,
+    "declaration": false,
+    "rootDir": "../..",
+    "outDir": "out"
+  },
+  "//files": "An explicit list, never a glob: src/code/ also holds modules owned by other parts of the app, and this project must compile exactly the navigation surface and its tests.",
+  "files": [
+    "../../src/i18n.ts",
+    "../../src/code/fuzzy.ts",
+    "../../src/code/workspace-api.ts",
+    "../../src/code/palette.ts",
+    "../../src/code/searchpanel.ts",
+    "../../src/code/replace.ts",
+    "fake.ts",
+    "fuzzy.test.ts",
+    "replace.test.ts",
+    "searchpanel.test.ts"
+  ]
+}

@@ -7,6 +7,11 @@
 
 mod code;
 mod knowledge;
+mod pylang;
+mod search;
+mod snapshot;
+mod symbols;
+mod toolchain;
 pub mod cli;
 
 use serde::Serialize;
@@ -3911,6 +3916,19 @@ pub fn run() {
             code::git_pull,
             code::git_branches,
             code::git_checkout,
+            // Workspace engine: enumeration, project search, symbol index.
+            // The toolchain probe is NOT exposed as a command: git availability
+            // reaches the front end through GitInfo.available, and nothing in
+            // the app acts on node, cargo or make.
+            search::search_start,
+            search::search_cancel,
+            search::search_files,
+            symbols::symbols_index,
+            symbols::symbols_query,
+            // Tier A: the bulk snapshot the in-app TypeScript service reads.
+            snapshot::code_snapshot,
+            // Tier B, Python: exact SyntaxError and outline from bundled CPython.
+            pylang::py_analyze,
             knowledge::kb_search,
             preview_publish
         ])
@@ -3929,6 +3947,9 @@ pub fn run() {
             // llama-server keeps tens of GB of RAM pinned, and every MCP
             // server would linger as an orphan.
             if let tauri::RunEvent::Exit = event {
+                // A workspace scan is a plain OS thread: tell it to stop before
+                // the window goes, or it outlives the app it was painting into.
+                search::cancel_all();
                 if let Ok(mut s) = server_state().lock() {
                     if let Some(mut child) = s.child.take() {
                         let _ = child.kill();

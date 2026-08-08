@@ -1,0 +1,39 @@
+{
+  // Headless proof for the Lezer tier. Compiles the shipped modules in
+  // src/code plus the tests next to this file, then:
+  //
+  //   ./node_modules/.bin/tsc -p tools/universal-lang/tsconfig.json \
+  //     && node --test tools/universal-lang/out/
+  //
+  // The tests run against the REAL installed @lezer grammars under plain Node,
+  // with no browser, no Tauri and no window. Relative imports carry an
+  // explicit .js extension so the emitted ESM resolves natively in Node; Vite
+  // maps those back onto the .ts sources when it bundles the app.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "noUnusedLocals": false,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "sourceMap": true,
+    "outDir": "out",
+    "rootDir": "../..",
+    // @types/node is not a dependency of this plug-and-play app, and adding
+    // one for a test harness would be a poor trade. The few node: imports the
+    // tests need are suppressed at their import site instead.
+    "types": []
+  },
+  // Named one by one, not globbed: src/code holds modules owned by other
+  // parts of the plan, and this harness must not fail because a neighbour is
+  // mid-edit.
+  "include": [
+    "*.ts",
+    "../../src/code/outline.ts",
+    "../../src/code/treediag.ts",
+    "../../src/code/tiers.ts",
+    "../../src/code/pylang.ts"
+  ]
+}

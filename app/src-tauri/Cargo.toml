@@ -26,3 +26,29 @@ lto = true
 [[bin]]
 name = "galactus"
 path = "src/bin/galactus.rs"
+
+# The three headless drivers below prove the workspace engine, the snapshot
+# walk and the Python analysis without launching the app. They are NOT part of
+# the product: cargo auto-discovers anything in src/bin/, and tauri-bundler
+# copies every binary of the crate into Galactus.app/Contents/MacOS, so without
+# `required-features` they would ship to users as dead weight.
+#
+#   cargo test --features devtools --bin gx-workspace
+#   cargo run  --features devtools --bin gx-snapshot -- --json .
+[features]
+devtools = []
+
+[[bin]]
+name = "gx-workspace"
+path = "src/bin/gx-workspace.rs"
+required-features = ["devtools"]
+
+[[bin]]
+name = "gx-snapshot"
+path = "src/bin/gx-snapshot.rs"
+required-features = ["devtools"]
+
+[[bin]]
+name = "gx-pylang"
+path = "src/bin/gx-pylang.rs"
+required-features = ["devtools"]

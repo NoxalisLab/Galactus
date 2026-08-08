@@ -2,13 +2,13 @@
 
 # Galactus, run the full GLM-5.2 (744B) on a MacBook Pro
 
-![model](https://img.shields.io/badge/model-GLM--5.2%20744B--A40B-7c60e6) ![quant](https://img.shields.io/badge/quant-UD--IQ1__S%20·%201.58%20bpw-4a90d9) ![hw](https://img.shields.io/badge/hardware-M5%20Max%20·%20128%20GB-38b2ac) ![speed](https://img.shields.io/badge/measured-5.9–6.4%20tok%2Fs-2ea44f) ![app](https://img.shields.io/badge/app-macOS%20·%2028%20MB%20dmg-1a7f37)
+![model](https://img.shields.io/badge/model-GLM--5.2%20744B--A40B-7c60e6) ![quant](https://img.shields.io/badge/quant-UD--IQ1__S%20·%201.58%20bpw-4a90d9) ![hw](https://img.shields.io/badge/hardware-M5%20Max%20·%20128%20GB-38b2ac) ![speed](https://img.shields.io/badge/measured-5.9–6.4%20tok%2Fs-2ea44f) ![app](https://img.shields.io/badge/app-macOS%20·%2030%20MB%20dmg-1a7f37)
 
 The complete, unpruned GLM-5.2 checkpoint, 744 billion parameters, 202 GB quantized, running locally on a 128 GB laptop, at **~6 tokens/s**, with output **bit-identical** to stock llama.cpp.
 
 The model is 1.6× larger than the machine's entire RAM. Its routed experts alone weigh 197.6 GB. Galactus treats two NVMe SSDs as an expert-serving tier behind a resident cache, wired into llama.cpp with zero copies between the cache and the compute graph.
 
-It now ships two ways: a **desktop app** that wraps the whole thing (catalog, agent, voice, knowledge, connectors) in a 28 MB download, and the **engine** itself for people who want the raw llama.cpp patch and the numbers.
+It now ships two ways: a **desktop app** that wraps the whole thing (catalog, agent, voice, knowledge, connectors) in a 30 MB download, and the **engine** itself for people who want the raw llama.cpp patch and the numbers.
 
 ![Live demo](docs/media/demo.gif)
 
@@ -23,6 +23,22 @@ A native macOS app (Apple Silicon), fully self-contained and fully offline: the 
 Grab `Galactus_x.y.z_aarch64.dmg` from the Releases page, drag, launch.
 
 > *Video placeholder: two-minute tour of the app.*
+
+### The Code view, and what it honestly knows
+
+Open a folder and the app becomes an editor with the same agent thread beside it. Everything the model writes inside that folder is a **proposal**: a pending diff you accept or reject hunk by hunk. Nothing reaches the disk any other way.
+
+Code intelligence ships in two tiers, and the file header says which one you are getting, per file, live:
+
+| tier | what you get | where |
+|---|---|---|
+| **Full** | types, hover, go to definition, references, rename | JavaScript and TypeScript, from the TypeScript language service running inside the app, in a worker |
+| **Syntax** | outline, breadcrumb, syntax errors, project search, symbol palette | Python, **Rust**, **C**, JSON, Markdown, HTML, CSS, from the bundled Lezer grammars. Python additionally gets exact `SyntaxError` and an exact outline from the bundled CPython 3.12 |
+| **Plain** | line numbers, search, undo | anything with no bundled grammar |
+
+**Rust and C get Syntax only.** There is no rust-analyzer and no clangd in the bundle, and there will not be one that the app downloads behind your back: a plug-and-play, fully offline app ships what it ships. The badge states the limit instead of hiding it.
+
+Project search, the file palette (`⌘P`), the symbol palette (`⇧⌘O`) and project-wide search (`⇧⌘F`) are native Rust, no index daemon, no crate added. Version control runs through your real `git`; when this Mac has none, the panel says so and never raises Apple's Command Line Tools installer.
 
 ### Certified models
 

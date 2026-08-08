@@ -11,7 +11,9 @@ import {
   ToolDef,
   McpToolInfo,
   SkillInfo,
+  onEvent,
 } from "./api";
+import type { SearchEvent, SearchOptsWire } from "./api";
 import { getLang, t } from "./i18n";
 
 export type PermissionKind =
@@ -284,6 +286,158 @@ const KNOWLEDGE_TOOL: ToolDef = {
     },
   },
 };
+
+/**
+ * Two workspace tools, offered only while a Code workspace is open.
+ *
+ * They exist mostly to remove the model's incentive to reach for `run_command`
+ * with a `grep`, which goes through the far heavier shell gate and can do
+ * anything. These two cannot: Rust confines both to the folder the user chose,
+ * they are read-only, and they never touch a path outside it.
+ */
+const SEARCH_WORKSPACE_TOOL: ToolDef = {
+  type: "function",
+  function: {
+    name: "search_workspace",
+    description:
+      "Search the open code workspace for a literal string (never a regular expression). Returns path:line:column with the matching line. Prefer this over run_command with grep: it is confined to the workspace and needs no shell.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Literal text to find" },
+        case_sensitive: { type: "boolean", description: "Default false" },
+        whole_word: { type: "boolean", description: "Default false" },
+        include: {
+          type: "string",
+          description: "Glob filter, e.g. '*.rs' or 'src/**'. Comma separated.",
+        },
+        limit: { type: "number", description: "Maximum hits to return (default 60, max 300)" },
+      },
+      required: ["query"],
+    },
+  },
+};
+
+const FIND_FILES_TOOL: ToolDef = {
+  type: "function",
+  function: {
+    name: "find_files",
+    description:
+      "List files in the open code workspace whose path contains the query, respecting .gitignore. Use it to locate a file before reading it.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Substring of the path. Empty lists the workspace." },
+        limit: { type: "number", description: "Maximum paths to return (default 60, max 300)" },
+      },
+      required: ["query"],
+    },
+  },
+};
+
+
+/**
+ * Run one project search to completion and render it for the model.
+ *
+ * The Rust command streams over `galactus://search`; the model wants one
+ * answer, so the batches are folded here behind a deadline of the backend's
+ * own budget plus a margin. Both ceilings are reported in the text rather than
+ * silently truncating: a search that stopped early must never read as a search
+ * that found everything.
+ */
+async function searchWorkspaceTool(
+  root: string,
+  query: string,
+  opts: SearchOptsWire,
+  limit: number
+): Promise<string> {
+  if (!query) return "error: the query is empty";
+  const lines: string[] = [];
+  let capped = false;
+  let timedOut = false;
+  let cancelled = false;
+  let failed: string | null = null;
+  let total = 0;
+  let mine = -1;
+  return await new Promise<string>((resolve) => {
+    let off: (() => void) | null = null;
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(guard);
+      off?.();
+      // A run the backend abandoned is NOT a result set. Reporting "no match"
+      // for a search that errored, or a truncated list for one that was
+      // cancelled, is the model being told the project does not contain what
+      // it was looking for. Both states are surfaced first, and an error wins
+      // over any partial hits: the walk stopped for a reason the model has to
+      // see before it concludes anything.
+      if (failed) {
+        resolve(`error: the search failed: ${failed}`);
+        return;
+      }
+      if (!lines.length) {
+        resolve(
+          cancelled
+            ? "(the search was cancelled before it finished: no conclusion can be drawn from this)"
+            : "(no match in the workspace)"
+        );
+        return;
+      }
+      let out = lines.slice(0, limit).join("\n");
+      if (total > lines.slice(0, limit).length) {
+        out += `\n… ${total - Math.min(lines.length, limit)} more matches not shown`;
+      }
+      if (capped) out += "\n(the backend stopped at its match ceiling: this list is incomplete)";
+      if (timedOut) out += "\n(the search ran out of time: this list is incomplete)";
+      if (cancelled) out += "\n(the search was cancelled before it finished: this list is incomplete)";
+      resolve(out);
+    };
+    const guard = setTimeout(finish, 35_000);
+    // The Rust side spawns its worker before `search_start` resolves, so a
+    // fast backend can emit before this side knows its generation number.
+    // Those events are parked and drained the moment it does.
+    const early: SearchEvent[] = [];
+    const fold = (payload: SearchEvent): void => {
+      for (const h of payload.hits ?? []) {
+        total++;
+        if (lines.length < limit) lines.push(`${h.path}:${h.line}:${h.col}\t${h.text.trim()}`);
+      }
+      if (payload.capped) capped = true;
+      if (payload.timed_out) timedOut = true;
+      if (payload.cancelled) cancelled = true;
+      if (payload.error) failed = payload.error;
+      if (payload.done) finish();
+    };
+    void onEvent("galactus://search", (payload: SearchEvent) => {
+      if (mine < 0) {
+        if (early.length < 512) early.push(payload);
+        return;
+      }
+      if (payload.gen !== mine) return;
+      fold(payload);
+    }).then(
+      (u) => {
+        off = u;
+        if (settled) u();
+      },
+      () => {}
+    );
+    api.searchStart(root, query, opts).then(
+      (gen) => {
+        mine = gen;
+        for (const p of early.splice(0)) if (p.gen === mine) fold(p);
+      },
+      (e: unknown) => {
+        settled = true;
+        clearTimeout(guard);
+        off?.();
+        resolve(`error: ${String((e as Error)?.message ?? e)}`);
+      }
+    );
+  });
+}
 
 // ---------------- the team ----------------
 //
@@ -648,6 +802,9 @@ function builtinTools(
   // discovering it may not delegate.
   if (canDelegate) tools.push(LIST_AGENTS_TOOL, ASK_AGENT_TOOL);
   if (hasKb) tools.push(KNOWLEDGE_TOOL);
+  // Only while a workspace is open: offering a search over a folder that does
+  // not exist teaches the model to call it and read an error.
+  if (workspaceRoot()) tools.push(SEARCH_WORKSPACE_TOOL, FIND_FILES_TOOL);
   return tools;
 }
 
@@ -667,6 +824,8 @@ function activityModeFor(tool: string): import("./pixel").PixelMode {
     case "obsidian_search":
     case "search_knowledge":
     case "search_conversations":
+    case "search_workspace":
+    case "find_files":
       return "reading";
     // Lecture posee : page en main.
     case "read_document":
@@ -1325,11 +1484,19 @@ export class Agent {
    */
   private async proposeCodeEdit(root: string, path: string, content: string): Promise<string> {
     const rel = path.slice(root.length + 1) || path;
-    const req: PermissionRequest = { kind: "code", detail: rel, elevated: false };
+    // The standing rule is keyed on the ABSOLUTE path, never on `rel`.
+    // "src/main.rs" is not an identity: it names a different file in every
+    // workspace, so a grant made once travelled to every project the user
+    // opened afterwards, silently. The absolute path names exactly one file
+    // on this machine, so the rule the user granted is the rule they get.
+    // `rel` stays what the MODEL is told, because that is how it named the
+    // file, but it never reaches the permission store.
+    const key = path;
+    const req: PermissionRequest = { kind: "code", detail: key, elevated: false };
     // Same preview as an ordinary write: the dialog shows the whole change
     // before the user lets it into the editor at all.
     let preview: { before: string; existed: boolean } | null = null;
-    const silent = isStanding("code", rel) || this.autoApprove;
+    const silent = isStanding("code", key) || this.autoApprove;
     try {
       const d = await api.fsPreview(path, content);
       preview = { before: d.before, existed: d.existed };
@@ -1500,12 +1667,81 @@ export class Agent {
       } else if (name === "search_knowledge") {
         // The user opted in by configuring the folders: no dialog, but the
         // call stays visible as a tool card.
-        const hits = await api.kbSearch(String(args.query ?? ""), Number(args.k) > 0 ? Math.floor(Number(args.k)) : undefined);
+        // Spend what is actually free in the window, not a fixed slice. The
+        // reserve keeps room for the rest of the turn: the thread so far, the
+        // tool definitions and the answer being generated.
+        const ctx = await this.ensureCtxSize();
+        const budget = Math.max(512, Math.floor(ctx * 0.35) - this.estimateTokens());
+        const hits = await api.kbSearch(
+          String(args.query ?? ""),
+          Number(args.k) > 0 ? Math.floor(Number(args.k)) : undefined,
+          budget > 512 ? budget : 512
+        );
         result = hits.length
           ? hits
               .map((h) => `${h.path}:${h.line} (score ${h.score.toFixed(2)})\n${h.snippet}`)
               .join("\n\n---\n\n")
           : "(no match in the knowledge folders)";
+      } else if (name === "search_workspace") {
+        // GATED with fs_read, on the workspace ROOT, before anything is read.
+        //
+        // This tool hands back the matching LINE of every hit, so it returns
+        // file content, exactly like read_file. Leaving it ungated made the
+        // gate optional: a model refused a read_file on secrets.env could ask
+        // for the same bytes by searching for them. Choosing the root rather
+        // than each hit path is deliberate:
+        //   * per-hit gating means up to 300 dialogs for one call, which
+        //     trains the user to click through them, and the paths are only
+        //     known AFTER the scan has already read every file;
+        //   * fs_read grants are stored as the folder prefix, so one "Always"
+        //     on the workspace is exactly the rule the user would end up with
+        //     after approving a handful of reads inside it, and no more.
+        // The detail carries the trailing slash so gate()'s "Always" rule is
+        // the workspace tree itself: without it, the prefix would be cut back
+        // to the PARENT folder, which grants more than the user was shown.
+        // fs_read is also the kind read_file uses, so the two tools share one
+        // rule in both directions and neither can be a way around the other.
+        const wsRoot = workspaceRoot();
+        if (!wsRoot) {
+          result = "error: no code workspace is open";
+        } else if (!(await this.gate({ kind: "fs_read", detail: `${wsRoot}/`, elevated: false }))) {
+          result = "denied by user";
+        } else {
+          const q = String(args.query ?? "");
+          const limit = Number(args.limit) > 0 ? Math.min(Math.floor(Number(args.limit)), 300) : 60;
+          const include = String(args.include ?? "")
+            .split(/[,\s]+/)
+            .map((g) => g.trim())
+            .filter(Boolean);
+          result = await searchWorkspaceTool(wsRoot, q, {
+            case_sensitive: !!args.case_sensitive,
+            whole_word: !!args.whole_word,
+            include_globs: include,
+            exclude_globs: [],
+          }, limit);
+        }
+      } else if (name === "find_files") {
+        // GATED with fs_list, on the workspace root, for the same reason:
+        // this enumerates the whole tree, which is what list_directory does
+        // one folder at a time behind a dialog. It returns names and never
+        // content, so fs_list is the honest kind rather than fs_read, and a
+        // standing folder rule the user already granted to list_directory
+        // covers it instead of asking twice for the same thing.
+        const wsRoot = workspaceRoot();
+        if (!wsRoot) {
+          result = "error: no code workspace is open";
+        } else if (!(await this.gate({ kind: "fs_list", detail: `${wsRoot}/`, elevated: false }))) {
+          result = "denied by user";
+        } else {
+          const q = String(args.query ?? "").toLowerCase();
+          const limit = Number(args.limit) > 0 ? Math.min(Math.floor(Number(args.limit)), 300) : 60;
+          const all = await api.searchFiles(wsRoot, false);
+          const hit = q ? all.filter((p) => p.toLowerCase().includes(q)) : all;
+          result = hit.length
+            ? hit.slice(0, limit).join("\n") +
+              (hit.length > limit ? `\n… ${hit.length - limit} more, narrow the query` : "")
+            : "(no file in the workspace matches)";
+        }
       } else if (name === "list_agents") {
         // Reading the roster is not an action on the user's behalf: no gate,
         // but the call stays visible as a tool card like every other one.

@@ -15,7 +15,7 @@
         "title": "Galactus",
         "width": 1180,
         "height": 780,
-        "minWidth": 860,
+        "minWidth": 960,
         "minHeight": 560,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true

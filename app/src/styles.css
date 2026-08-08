@@ -48,15 +48,36 @@
   --tx3: #dcdce6;
   --dim: #7c7c8c;
   --dim2: #8b8b99;
-  --dim3: #5c5c6a;
+  /* Raised from #5c5c6a (3.01:1 on --side, below AA) to 4.85:1. It carries
+     real reading text: commit authors, dates, hints, empty states. */
+  --dim3: #7c7c92;
+  /* The old value, kept for glyphs that carry no text: twist arrows, close
+     crosses, separators. Decoration may be quiet; sentences may not. */
+  --dim4: #5c5c6a;
   --acc: #8a7cff;
   --acc2: #b06cff;
   --acc-tx: #c0b4ff;
   --acc-tx2: #cfc8ff;
   --good: #5fbf8a;
   --bad: #d16b6b;
+  /* One amber. A modified file and a starting server used to disagree by
+     #d9a441 versus #f0b849 about what "attention" looks like. */
+  --warn: #d9a441;
+  --acc-lo: #9a8cff;
+  /* The one reading measure of the app: thread, composer, activity bar and
+     the task banner all sit on it instead of 760 / full-bleed / 720. */
+  --col: 760px;
   --grad: linear-gradient(135deg, #8a7cff, #b06cff);
   --grad140: linear-gradient(140deg, #8a7cff, #b06cff);
+  /* Syntax palette, ONE table. styles.css paints the chat's code blocks with
+     it and code.ts hands the same five hexes to CodeMirror, so a keyword is
+     the same violet whether it is pasted in a message or open in the editor. */
+  --syn-k: #b06cff;
+  --syn-s: #7fd6a4;
+  --syn-c: #5c5c6a;
+  --syn-n: #e0a86a;
+  --syn-f: #8ab4ff;
+  --syn-t: #c0b4ff;
   --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
   --sans: "IBM Plex Sans", -apple-system, "Segoe UI", sans-serif;
 }
@@ -118,7 +139,7 @@ svg { display: block; }
 .srv { margin: 12px; display: flex; align-items: center; gap: 9px; padding: 10px 12px; border-radius: 10px; background: rgba(255, 255, 255, 0.03); border: 1px solid var(--bd); cursor: default; }
 .srv .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--dim); }
 .srv.ready .dot { background: var(--good); box-shadow: 0 0 10px var(--good); }
-.srv.starting .dot { background: #f0b849; animation: gx-pulse 1.1s infinite; }
+.srv.starting .dot { background: var(--warn); animation: gx-pulse 1.1s infinite; }
 .srv .t { display: flex; flex-direction: column; line-height: 1.3; }
 .srv .t b { font-size: 12px; font-weight: 500; }
 .srv .t span { font-size: 11px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 150px; }
@@ -126,7 +147,7 @@ svg { display: block; }
 /* ---------------- main ---------------- */
 .main { flex: 1; min-width: 0; display: flex; flex-direction: column; position: relative; }
 .topbar { height: 52px; flex: none; display: flex; align-items: center; justify-content: space-between; padding: 0 22px; border-bottom: 1px solid var(--bd); -webkit-app-region: drag; }
-.topbar .ttl { font-size: 14px; font-weight: 600; letter-spacing: -0.01em; }
+.topbar .ttl { font-size: 15px; font-weight: 600; letter-spacing: -0.015em; }
 .topbar .right { display: flex; align-items: center; gap: 10px; -webkit-app-region: no-drag; }
 .topbar .sub { font-size: 12px; color: var(--dim); }
 .livebar { display: flex; align-items: center; gap: 6px; }
@@ -144,7 +165,7 @@ svg { display: block; }
 
 /* ---------------- chat ---------------- */
 .chat-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 34px 26px 12px; }
-.thread { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 30px; }
+.thread { max-width: var(--col); margin: 0 auto; display: flex; flex-direction: column; gap: 30px; }
 .row-u { display: flex; gap: 12px; justify-content: flex-end; }
 .bub-u { max-width: 78%; padding: 14px 18px; border-radius: 16px 16px 5px 16px; background: rgba(255, 255, 255, 0.055); line-height: 1.68; white-space: pre-wrap; word-break: break-word; }
 .av { width: 28px; height: 28px; flex: none; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; }
@@ -162,7 +183,7 @@ svg { display: block; }
 .tool-h .nm { font-size: 12.5px; font-weight: 500; }
 .tool-h .arg { font-size: 11.5px; color: var(--dim); font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 .tool-h .st { font-size: 11px; color: var(--good); flex: none; }
-.tool-h .chev { color: #6c6c7c; font-size: 11px; transition: transform 0.18s; flex: none; }
+.tool-h .chev { color: var(--dim4); font-size: 11px; transition: transform 0.18s; flex: none; }
 .tool.open .tool-h .chev { transform: rotate(180deg); }
 .tool-b { display: none; padding: 0 13px 12px; }
 .tool.open .tool-b { display: block; }
@@ -186,7 +207,7 @@ svg { display: block; }
 
 /* composer */
 .composer { flex: none; padding: 14px 26px 20px; }
-.comp-box { max-width: 720px; margin: 0 auto; border: 1px solid rgba(255, 255, 255, 0.09); border-radius: 14px; background: var(--card); box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35); transition: border-color 0.18s; }
+.comp-box { max-width: var(--col); margin: 0 auto; border: 1px solid rgba(255, 255, 255, 0.09); border-radius: 14px; background: var(--card); box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35); transition: border-color 0.18s; }
 .comp-box:focus-within { border-color: rgba(138, 124, 255, 0.35); }
 .comp-box textarea { width: 100%; resize: none; border: none; outline: none; background: transparent; color: var(--tx); font-size: 14px; line-height: 1.55; padding: 14px 16px 6px; max-height: 200px; }
 .comp-bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px 10px 12px; }
@@ -217,7 +238,7 @@ svg { display: block; }
 
 /* agent activity bar (PixelViz host) */
 .actbar { flex: none; padding: 0 26px 14px; animation: gx-fade 0.18s ease both; }
-.actbar .pxhost { max-width: none; margin: 0 auto; height: 38px; border: 1px solid rgba(138, 124, 255, 0.22); border-radius: 11px; background: linear-gradient(180deg, rgba(138, 124, 255, 0.07), rgba(138, 124, 255, 0.02)); overflow: hidden; display: flex; align-items: center; padding: 0 12px; }
+.actbar .pxhost { max-width: var(--col); margin: 0 auto; height: 38px; border: 1px solid rgba(138, 124, 255, 0.22); border-radius: 11px; background: linear-gradient(180deg, rgba(138, 124, 255, 0.07), rgba(138, 124, 255, 0.02)); overflow: hidden; display: flex; align-items: center; padding: 0 12px; }
 
 /* model loading card */
 @keyframes gx-spin { to { transform: rotate(360deg); } }
@@ -237,13 +258,13 @@ svg { display: block; }
 .errcard .eh b { font-size: 13px; font-weight: 600; }
 .errcard .eh .code { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--bad); flex: none; }
 .errcard .eb { font-size: 11.5px; color: var(--dim2); }
-.errcard pre.etail { margin: 0; padding: 10px 12px; border-radius: 8px; background: var(--pre); border: 1px solid var(--bd); font-family: var(--mono); font-size: 11px; line-height: 1.65; color: #b39c9e; white-space: pre-wrap; word-break: break-all; max-height: 180px; overflow: auto; }
+.errcard pre.etail { margin: 0; padding: 10px 12px; border-radius: 8px; background: var(--pre); border: 1px solid var(--bd); font-family: var(--mono); font-size: 11px; line-height: 1.65; color: #b39c9e; white-space: pre-wrap; word-break: break-word; max-height: 180px; overflow: auto; }
 .errcard .ea { display: flex; gap: 8px; }
 .srv.failed .dot { background: var(--bad); box-shadow: 0 0 10px var(--bad); }
 
 /* ---------------- pages ---------------- */
-.page { flex: 1; min-height: 0; overflow-y: auto; padding: 20px 22px 26px; }
-.hold { max-width: 820px; display: flex; flex-direction: column; gap: 14px; }
+.page { flex: 1; min-height: 0; overflow-y: auto; padding: 24px 22px 32px; }
+.hold { max-width: 820px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
 .hold.narrow { max-width: 660px; gap: 0; }
 
 /* hw banner */
@@ -268,7 +289,7 @@ svg { display: block; }
 .mcard .meta { font-size: 11.5px; color: var(--dim); }
 .mcard .spd { text-align: right; display: flex; flex-direction: column; line-height: 1.2; }
 .mcard .spd b { font-family: var(--mono); font-size: 16px; font-weight: 500; }
-.mcard .spd small { font-size: 10px; color: #6c6c7c; }
+.mcard .spd small { font-size: 10px; color: var(--dim3); }
 .bar { height: 3px; border-radius: 2px; background: rgba(255, 255, 255, 0.05); overflow: hidden; }
 .bar > div { height: 100%; background: linear-gradient(90deg, #8a7cff, #b06cff); border-radius: 2px; }
 .mcard .foot { display: flex; align-items: center; gap: 10px; }
@@ -282,6 +303,11 @@ svg { display: block; }
 .bs { padding: 6px 13px; border-radius: 8px; font-size: 12.5px; font-weight: 500; cursor: default; background: rgba(255, 255, 255, 0.05); color: var(--tx); border: 1px solid var(--bd3); transition: background 0.15s, transform 0.1s; white-space: nowrap; }
 .bs:hover { background: rgba(255, 255, 255, 0.09); }
 .bs:active { transform: scale(0.97); }
+.bs:disabled { opacity: 0.42; filter: saturate(0.4); }
+.bs:disabled:hover { background: rgba(255, 255, 255, 0.05); }
+.bs:disabled:active { transform: none; }
+.seg button:disabled, .iconbtn[aria-disabled="true"], .tgl[aria-disabled="true"] {
+  opacity: 0.42; pointer-events: none; }
 /* Glyph-only variant of .bs: same frame, squared padding, dimmed until hover
    so a secondary action sits next to a labelled one without competing. */
 .bs.bglyph { padding: 6px 9px; font-size: 13px; line-height: 1; color: var(--dim2); }
@@ -325,6 +351,39 @@ svg { display: block; }
 .seg { display: inline-flex; padding: 3px; border-radius: 9px; background: rgba(255, 255, 255, 0.045); border: 1px solid var(--bd); }
 .seg button { border: none; background: transparent; color: var(--dim2); padding: 5px 15px; border-radius: 7px; font-size: 12.5px; font-weight: 500; cursor: default; transition: all 0.18s; }
 .seg button.on { background: var(--grad); color: var(--win); }
+.seg button:hover:not(.on):not(:disabled) { color: var(--tx); background: rgba(255, 255, 255, 0.05); }
+/* The small variant, for a sidebar or a toolbar; `fill` spreads it. */
+.seg.sm button { padding: 4px 10px; font-size: 11.5px; }
+.seg.fill { display: flex; }
+.seg.fill button { flex: 1 1 0; min-width: 0; display: flex; align-items: center;
+  justify-content: center; gap: 4px; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; }
+.seg button .n { font-size: 9.5px; font-weight: 700; color: var(--win);
+  background: var(--acc); border-radius: 5px; padding: 0 4px; }
+.seg button.on .n { background: rgba(0, 0, 0, 0.3); color: var(--tx); }
+
+/* One section heading, so a page is a structure and not a flat list of rows. */
+.sect { display: flex; align-items: baseline; gap: 10px; padding: 10px 2px 2px; }
+.sect b { font-size: 13px; font-weight: 600; color: var(--tx); }
+.sect span { font-size: 11.5px; color: var(--dim); }
+.hold .sect:first-child { padding-top: 0; }
+
+/* One micro-label. Eight variants of the same uppercase eyebrow used to
+   disagree about size, weight and tracking. */
+.eyebrow { font-size: 10px; font-weight: 700; letter-spacing: 0.9px;
+  text-transform: uppercase; color: var(--dim2); }
+
+/* One loading primitive. "Still loading" and "there is nothing here" are two
+   different screens, and the app used to paint the same blank for both. */
+.skel { position: relative; overflow: hidden; background: rgba(255, 255, 255, 0.04);
+  border-radius: 7px; }
+.skel::after { content: ""; position: absolute; inset: 0; transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.05), transparent);
+  animation: gx-shimmer 1.1s infinite; }
+@keyframes gx-shimmer { to { transform: translateX(100%); } }
+.skelbox { display: flex; flex-direction: column; gap: 7px; padding: 8px 10px; }
+.skelbox .skrow { height: 16px; }
+@media (prefers-reduced-motion: reduce) { .skel::after { animation: none; } }
 
 /* generic card + rows */
 .card { border: 1px solid rgba(255, 255, 255, 0.07); border-radius: 12px; background: var(--card); padding: 16px; display: flex; flex-direction: column; gap: 14px; }
@@ -375,7 +434,7 @@ textarea.mem:focus { border-color: rgba(138, 124, 255, 0.4); }
 .onb .chk { display: flex; align-items: center; gap: 11px; padding: 13px 15px; border-bottom: 1px solid var(--bd); }
 .onb .chk:last-child { border-bottom: none; }
 .onb .chk .mark { width: 16px; height: 16px; border-radius: 50%; background: rgba(95, 191, 138, 0.15); color: var(--good); font-size: 10px; display: flex; align-items: center; justify-content: center; flex: none; }
-.onb .chk .mark.wait { background: rgba(240, 184, 73, 0.15); color: #f0b849; }
+.onb .chk .mark.wait { background: rgba(217, 164, 65, 0.15); color: var(--warn); }
 .onb .chk .l { font-size: 12.5px; color: var(--tx2); flex: 1; }
 .onb .chk .v { font-size: 12px; font-weight: 500; }
 .onb .row { display: flex; gap: 10px; margin-top: 22px; }
@@ -388,7 +447,7 @@ textarea.mem:focus { border-color: rgba(138, 124, 255, 0.4); }
 .modal h3 { font-size: 15px; margin-bottom: 6px; }
 .modal .ps { font-size: 12.5px; color: var(--dim); margin-bottom: 14px; }
 .modal .ps b { color: var(--acc-tx); }
-.modal .pd { font-family: var(--mono); font-size: 12px; background: var(--inset); border: 1px solid var(--bd2); border-radius: 10px; padding: 11px 13px; margin-bottom: 16px; word-break: break-all; max-height: 150px; overflow: auto; color: var(--tx2); }
+.modal .pd { font-family: var(--mono); font-size: 12px; background: var(--inset); border: 1px solid var(--bd2); border-radius: 10px; padding: 11px 13px; margin-bottom: 16px; word-break: break-word; max-height: 150px; overflow: auto; color: var(--tx2); }
 .modal .warn { color: var(--bad); font-weight: 500; font-size: 12.5px; margin-bottom: 12px; background: rgba(209, 107, 111, 0.08); border: 1px solid rgba(209, 107, 111, 0.25); border-radius: 10px; padding: 10px 12px; }
 .modal input.confirm { width: 100%; background: var(--inset); border: 1px solid var(--bad); border-radius: 9px; padding: 9px 11px; color: var(--tx); font-size: 13px; outline: none; margin-bottom: 15px; }
 .modal .acts { display: flex; gap: 8px; justify-content: flex-end; }
@@ -408,7 +467,7 @@ textarea.mem:focus { border-color: rgba(138, 124, 255, 0.4); }
 .voldlg .bwline.warn { color: var(--bad); min-height: 0; }
 .dellink { color: var(--dim2); }
 .dellink:hover { color: var(--bad); }
-.logpre { margin: 0 0 16px; padding: 12px 14px; border-radius: 10px; background: var(--pre); border: 1px solid var(--bd); font-family: var(--mono); font-size: 11.5px; line-height: 1.7; color: #9a9aac; white-space: pre-wrap; word-break: break-all; max-height: 55vh; overflow: auto; }
+.logpre { margin: 0 0 16px; padding: 12px 14px; border-radius: 10px; background: var(--pre); border: 1px solid var(--bd); font-family: var(--mono); font-size: 11.5px; line-height: 1.7; color: #9a9aac; white-space: pre-wrap; word-break: break-word; max-height: 55vh; overflow: auto; }
 
 /* fs_write diff (Cursor-style) */
 .diffhead { display: flex; align-items: center; gap: 7px; margin-bottom: 10px; }
@@ -418,9 +477,18 @@ textarea.mem:focus { border-color: rgba(138, 124, 255, 0.4); }
 .bdg.rem { color: var(--bad); background: rgba(209, 107, 111, 0.13); }
 .bdg.new { color: var(--acc-tx); background: rgba(138, 124, 255, 0.13); font-family: var(--sans); }
 .diffpane { border: 1px solid var(--bd2); border-radius: 10px; background: var(--pre); max-height: 320px; overflow: auto; font-family: var(--mono); font-size: 11.5px; line-height: 1.6; margin-bottom: 16px; padding: 6px 0; }
-.diffpane .dl { padding: 0 12px; white-space: pre-wrap; word-break: break-all; color: #8f8f9e; min-height: 18px; }
-.diffpane .dl.add { background: rgba(95, 191, 138, 0.1); color: #a9d8bd; }
-.diffpane .dl.rem { background: rgba(209, 107, 111, 0.1); color: #dba3a3; }
+.diffpane .dl { display: block; min-width: max-content; padding: 0 12px; white-space: pre;
+  word-break: normal; color: #8f8f9e; min-height: 18px; }
+/* Same weights as the merge view, and a sign column that cannot wrap away
+   from its line: the dialog rehearses the editor the change will land in
+   instead of teaching a second diff language. */
+.diffpane .dl.add { background: rgba(95, 191, 138, 0.09); color: var(--tx2); }
+.diffpane .dl.rem { background: rgba(209, 107, 111, 0.09); color: var(--tx2); }
+.diffpane .dsign { display: inline-block; width: 12px; flex: none; text-align: center;
+  color: var(--dim3); user-select: none; }
+.diffpane .dl.add .dsign { color: var(--good); }
+.diffpane .dl.rem .dsign { color: var(--bad); }
+.diffpane .dtx { white-space: pre; }
 .diffpane .dl.skip { color: var(--dim3); font-style: italic; padding: 2px 12px; }
 
 /* revert link on finished write cards */
@@ -467,11 +535,11 @@ textarea.mem:focus { border-color: rgba(138, 124, 255, 0.4); }
 .md .cb-c.ok { color: var(--good); border-color: rgba(95,191,138,0.4); }
 .md .cb pre { margin: 0; padding: 12px 13px; overflow-x: auto; }
 .md .cb pre code { display: block; background: none; border: none; padding: 0; font-size: 12.2px; line-height: 1.65; color: #cfcfe0; white-space: pre; }
-.md .cb .k { color: #b06cff; }
-.md .cb .s { color: #7fd6a4; }
-.md .cb .c { color: #5c5c6a; font-style: italic; }
-.md .cb .n { color: #e0a86a; }
-.md .cb .f { color: #8ab4ff; }
+.md .cb .k { color: var(--syn-k); }
+.md .cb .s { color: var(--syn-s); }
+.md .cb .c { color: var(--syn-c); font-style: italic; }
+.md .cb .n { color: var(--syn-n); }
+.md .cb .f { color: var(--syn-f); }
 
 /* tables */
 .md .md-tw { overflow-x: auto; margin: 0 0 12px; }
@@ -554,11 +622,11 @@ textarea.mem:focus { border-color: rgba(138, 124, 255, 0.4); }
 .task-chip .dot { width: 6px; height: 6px; border-radius: 50%; flex: none;
        background: var(--dim3); }
 .task-chip .dot.ok { background: var(--good); }
-.task-chip .dot.swap { background: #f0b849; }
+.task-chip .dot.swap { background: var(--warn); }
 .task-chip.active .dot { box-shadow: 0 0 0 1px rgba(0,0,0,.2); }
 
 /* "this task works better with X" banner */
-.task-switch-hint { flex: none; max-width: 720px; width: calc(100% - 52px);
+.task-switch-hint { flex: none; max-width: var(--col); width: 100%;
        margin: 0 auto 8px; display: flex; align-items: center; gap: 12px;
        padding: 9px 13px; border-radius: 11px;
        border: 1px solid rgba(138,124,255,.28);
@@ -742,15 +810,29 @@ textarea.mem:focus { border-color: rgba(138, 124, 255, 0.4); }
 
 /* ---------------- code workspace (code.ts) ----------------
    Three columns: the files, the file, and the thread. Same surfaces, same
-   accent, same borders as everywhere else — the editor is a panel of the app,
+   accent, same borders as everywhere else. The editor is a panel of the app,
    not an IDE bolted to its side. */
 .threadpane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .codebody { flex: 1; min-height: 0; display: flex; }
-.codeleft { width: 274px; flex: none; min-width: 0; display: flex; flex-direction: column;
-  border-right: 1px solid var(--bd); background: var(--side); }
-.codemid { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--win); }
-.codeside { width: 400px; flex: none; min-width: 0; display: flex; flex-direction: column;
-  border-left: 1px solid var(--bd); }
+/* 228 (nav) + 274 + 400 was 902 px of fixed chrome inside a window whose
+   minimum is 960: the editor, the column the view is named after, used to get
+   less room than the file tree. The two side columns now give way first. */
+.codebody { position: relative; }
+.codeleft { width: clamp(210px, 20vw, 274px); flex: none; min-width: 0; display: flex;
+  flex-direction: column; border-right: 1px solid var(--bd); background: var(--side); }
+.codemid { flex: 1; min-width: 320px; display: flex; flex-direction: column; background: var(--win); }
+.codeside { width: clamp(320px, 30vw, 400px); flex: none; min-width: 0; display: flex;
+  flex-direction: column; border-left: 1px solid var(--bd); }
+.topbar .cagentt { display: none; font-size: 15px; line-height: 1; }
+/* Below this the thread pane becomes an overlay the ☰ button summons, instead
+   of squeezing the editor to nothing. */
+@media (max-width: 1120px) {
+  .topbar .cagentt { display: flex; }
+  .codeside { display: none; }
+  .codebody.showagent .codeside { display: flex; position: absolute; right: 0; top: 0; bottom: 0;
+    width: min(380px, 78vw); background: var(--win); border-left: 1px solid var(--bd2);
+    box-shadow: -18px 0 40px rgba(0, 0, 0, 0.45); z-index: 35; }
+}
 .codeside .composer { padding: 12px 14px 14px; }
 .codeside .comp-box { max-width: none; }
 .codeside .chat-scroll { padding: 18px 14px 8px; }
@@ -778,25 +860,29 @@ textarea.mem:focus { border-color: rgba(138, 124, 255, 0.4); }
 .cpill.off { background: rgba(255, 255, 255, 0.04); border-color: var(--bd2); color: var(--dim); }
 
 /* left column: tabs */
-.ctabs { flex: none; display: flex; gap: 2px; padding: 8px 8px 6px; border-bottom: 1px solid var(--bd); }
-.ctab { flex: 1 1 0; min-width: 0; display: flex; align-items: center; justify-content: center; gap: 4px;
-  border: none; background: transparent; color: var(--dim2); font-size: 11px; font-weight: 500;
-  padding: 5px 3px; border-radius: 7px; cursor: default; transition: all 0.15s;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ctab:hover { background: rgba(255, 255, 255, 0.05); color: var(--tx); }
-.ctab.on { background: rgba(138, 124, 255, 0.13); color: var(--acc-tx2); }
-.ctab .n { font-size: 9.5px; font-weight: 700; color: var(--win); background: var(--acc);
-  border-radius: 5px; padding: 0 4px; }
-.cpanel { flex: 1; min-height: 0; overflow: auto; padding: 6px 0 14px; }
+/* Two strips, because they are two subjects: what the folder holds, and what
+   the repository thinks of it. Six labels never fit one 274 px line in either
+   language, and abbreviating them costs more than a row does. Both are the
+   app's ONE segmented control. */
+.codeleft > .ctabs { flex: none; margin: 8px 8px 0; }
+.codeleft > .ctabs.git { margin: 5px 8px 9px; }
+.cpanel { flex: 1; min-height: 0; overflow: auto; padding: 6px 0 14px;
+  border-top: 1px solid var(--bd); }
 .cempty { font-size: 11.5px; color: var(--dim3); padding: 14px 16px; line-height: 1.55; }
-.cempty.big { flex: 1; display: flex; align-items: center; justify-content: center; font-size: 13px; }
+.cnote { font-size: 10.5px; color: var(--dim3); padding: 8px 12px 6px; line-height: 1.5;
+  border-bottom: 1px solid var(--bd); margin-bottom: 4px; }
+/* The one empty state the middle column shows, in the app's own vocabulary
+   rather than a thin grey sentence floating in the void. */
+.cempty-wrap { flex: 1; display: grid; place-items: center; padding: 24px; }
+.cempty-wrap .empty-block { max-width: 380px; }
+.empty-block.small { border-radius: 10px; padding: 20px 16px; margin: 10px; }
+.empty-block.small .big { font-size: 20px; }
 
 /* pending proposals, always visible whatever the tab shows */
 .cpending { flex: none; border-bottom: 1px solid rgba(138, 124, 255, 0.22);
-  background: rgba(138, 124, 255, 0.06); padding: 7px 0 8px; max-height: 26vh; overflow: auto; }
-.cpending .ph { font-size: 9.5px; font-weight: 700; letter-spacing: 0.9px; color: var(--acc-tx);
-  padding: 2px 12px 6px; }
-.cpending .prow { display: flex; align-items: center; gap: 7px; padding: 5px 10px 5px 12px;
+  background: rgba(138, 124, 255, 0.06); padding: 7px 6px 8px; max-height: 26vh; overflow: auto; }
+.cpending .ph { color: var(--acc-tx); padding: 2px 6px 6px; }
+.cpending .prow { display: flex; align-items: center; gap: 7px; padding: 6px 8px; border-radius: 7px;
   cursor: default; color: var(--tx2); }
 .cpending .prow:hover { background: rgba(138, 124, 255, 0.1); }
 .cpending .prow.on { background: rgba(138, 124, 255, 0.14); }
@@ -804,41 +890,43 @@ textarea.mem:focus { border-color: rgba(138, 124, 255, 0.4); }
 .cpending .prow .nm { flex: 1; min-width: 0; font-size: 11.5px; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; }
 .cpending .prow .x { flex: none; color: transparent; font-size: 14px; line-height: 1; padding: 0 3px; }
-.cpending .prow:hover .x { color: var(--dim3); }
+.cpending .prow:hover .x { color: var(--dim4); }
 .cpending .prow .x:hover { color: var(--bad); }
 
 /* the tree */
-.ctree { padding: 4px 0; }
-.trow { display: flex; align-items: center; gap: 6px; padding: 3px 10px 3px 0; cursor: default;
-  color: var(--dim2); font-size: 12.5px; }
+.ctree { padding: 4px 6px; }
+.trow { display: flex; align-items: center; gap: 6px; padding: 5px 8px 5px 0; border-radius: 7px;
+  cursor: default; color: var(--dim2); font-size: 12.5px; }
 .trow:hover { background: rgba(255, 255, 255, 0.045); color: var(--tx); }
 .trow.on { background: rgba(138, 124, 255, 0.12); color: var(--tx); }
-.trow .tw { flex: none; width: 10px; font-size: 9px; color: var(--dim3); }
+.trow .tw { flex: none; width: 10px; font-size: 9px; color: var(--dim4); }
 .trow .tn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .trow.dir .tn { color: var(--tx2); }
 .trow.pending .tn { color: var(--acc-tx2); }
 .gs { flex: none; font-family: var(--mono); font-size: 10px; font-weight: 500; width: 12px;
   text-align: center; color: var(--dim3); }
-.gs.mod { color: #d9a441; } .gs.add { color: var(--good); }
+.gs.mod { color: var(--warn); } .gs.add { color: var(--good); }
 .gs.del { color: var(--bad); } .gs.unt { color: var(--dim2); }
 .gs.prop { color: var(--acc); }
 
 /* changes panel */
-.cgh { display: flex; align-items: center; gap: 7px; padding: 10px 12px 5px; font-size: 9.5px;
-  font-weight: 700; letter-spacing: 0.9px; color: var(--dim3); }
+.cgh { display: flex; align-items: center; gap: 7px; padding: 10px 12px 5px; color: var(--dim2); }
 .cgh .n { font-weight: 600; letter-spacing: 0; color: var(--dim2); }
 .cgh .all { margin-left: auto; font-size: 10.5px; font-weight: 500; letter-spacing: 0;
-  color: #9a8cff; text-transform: none; }
-.cgh .all:hover { color: #c9bcff; }
-.crow { display: flex; align-items: center; gap: 7px; padding: 4px 10px 4px 12px; cursor: default;
-  color: var(--dim2); }
-.crow:hover { background: rgba(255, 255, 255, 0.045); color: var(--tx); }
-.crow .nm { flex: 1; min-width: 0; font-size: 11.5px; overflow: hidden; text-overflow: ellipsis;
-  white-space: nowrap; direction: rtl; text-align: left; }
-.crow .act { flex: none; width: 18px; text-align: center; border-radius: 5px; color: transparent;
-  font-size: 13px; line-height: 18px; }
-.crow:hover .act { color: var(--dim2); background: rgba(255, 255, 255, 0.07); }
-.crow .act:hover { color: var(--acc-tx); background: rgba(138, 124, 255, 0.18); }
+  color: var(--acc-lo); text-transform: none; }
+.cgh .all:hover { color: var(--acc-tx2); }
+/* Scoped to the panel. The bare `.crow` is the Connectors card, defined 500
+   lines above, and the two used to fight: the card lost its padding, its gap
+   and its text colour to this rule. */
+.cpanel .crow { display: flex; align-items: center; gap: 7px; margin: 0 6px; padding: 5px 8px;
+  border-radius: 7px; cursor: default; color: var(--dim2); }
+.cpanel .crow:hover { background: rgba(255, 255, 255, 0.045); color: var(--tx); }
+.cpanel .crow .nm { flex: 1; min-width: 0; font-size: 11.5px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.cpanel .crow .act { flex: none; width: 18px; text-align: center; border-radius: 5px;
+  color: transparent; font-size: 13px; line-height: 18px; }
+.cpanel .crow:hover .act { color: var(--dim2); background: rgba(255, 255, 255, 0.07); }
+.cpanel .crow .act:hover { color: var(--acc-tx); background: rgba(138, 124, 255, 0.18); }
 .cbox { display: flex; flex-direction: column; gap: 8px; margin: 12px 12px 0; padding-top: 12px;
   border-top: 1px solid var(--bd); }
 .cbox textarea, .cbox input { width: 100%; resize: none; padding: 9px 11px; border-radius: 9px;
@@ -849,15 +937,15 @@ textarea.mem:focus { border-color: rgba(138, 124, 255, 0.4); }
 .cfilter input { vertical-align: -1px; margin-right: 5px; accent-color: var(--acc); }
 
 /* history + branches */
-.hrow { padding: 7px 12px; cursor: default; border-left: 2px solid transparent; }
-.hrow:hover { background: rgba(255, 255, 255, 0.045); border-left-color: var(--acc); }
+.hrow { margin: 0 6px; padding: 7px 10px; border-radius: 8px; cursor: default; }
+.hrow:hover { background: rgba(255, 255, 255, 0.045); }
 .hrow .l1 { display: flex; align-items: baseline; gap: 8px; }
 .hrow .sh { flex: none; font-size: 10.5px; color: var(--acc-tx); }
 .hrow .sj { flex: 1; min-width: 0; font-size: 12px; color: var(--tx2); overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; }
 .hrow .l2 { font-size: 10.5px; color: var(--dim3); padding-top: 2px; }
-.brow { display: flex; align-items: center; gap: 8px; padding: 6px 12px; cursor: default;
-  color: var(--dim2); font-size: 12px; }
+.brow { display: flex; align-items: center; gap: 8px; margin: 0 6px; padding: 6px 10px;
+  border-radius: 7px; cursor: default; color: var(--dim2); font-size: 12px; }
 .brow:hover { background: rgba(255, 255, 255, 0.045); color: var(--tx); }
 .brow .d { width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--bd3); }
 .brow.on { color: var(--tx); } .brow.on .d { background: var(--acc); box-shadow: 0 0 8px var(--acc); }
@@ -872,7 +960,7 @@ textarea.mem:focus { border-color: rgba(138, 124, 255, 0.4); }
 .cfilehead .grow { flex: 1; }
 .cfilehead .fbadge { flex: none; font-size: 10.5px; font-weight: 500; color: var(--acc-tx);
   background: rgba(138, 124, 255, 0.13); border-radius: 6px; padding: 2px 8px; }
-.cfilehead .fbadge.dirty { color: #d9a441; background: rgba(217, 164, 65, 0.13); }
+.cfilehead .fbadge.dirty { color: var(--warn); background: rgba(217, 164, 65, 0.13); }
 .creviewbar { flex: none; padding: 8px 16px; font-size: 11.5px; color: var(--acc-tx2);
   background: linear-gradient(180deg, rgba(138, 124, 255, 0.1), rgba(138, 124, 255, 0.03));
   border-bottom: 1px solid rgba(138, 124, 255, 0.22); }
@@ -884,7 +972,10 @@ textarea.mem:focus { border-color: rgba(138, 124, 255, 0.4); }
 .cerror .mono { font-size: 11.5px; color: #b39c9e; word-break: break-word; }
 .cpatch { flex: 1; min-height: 0; max-height: none; margin: 0; border: none; border-radius: 0;
   overflow: auto; }
-.cpatch .dl.meta { color: var(--dim3); }
+/* A ten-file `git show` used to read as one undifferentiated stream. */
+.cpatch .dl.meta { position: sticky; left: 0; color: var(--tx2); background: var(--card);
+  border-top: 1px solid var(--bd2); padding: 6px 12px; }
+.cpatch .dl.meta + .dl.meta { border-top: none; padding-top: 0; }
 .cpatch .dl.hunk { color: var(--acc-tx); background: rgba(138, 124, 255, 0.07); }
 
 /* commit confirmation */
@@ -908,10 +999,42 @@ textarea.mem:focus { border-color: rgba(138, 124, 255, 0.4); }
 
 /* CodeMirror, dressed in the app's palette. one-dark carries the grammar
    colours; the chrome around it has to be ours. */
-.cmhost .cm-editor { height: 100%; font-family: var(--mono); font-size: 12.5px; }
+.cmhost .cm-editor { height: 100%; font-family: var(--mono); font-size: 12.5px;
+  background: var(--bg); color: var(--tx2); }
 .cmhost .cm-editor.cm-focused { outline: none; }
 .cmhost .cm-scroller { font-family: var(--mono); line-height: 1.62; }
-.cmhost .cm-gutters { background: var(--side); border-right: 1px solid var(--bd); color: var(--dim3); }
+.cmhost .cm-gutters { background: var(--bg); border-right: 1px solid var(--bd); color: var(--dim4); }
+.cmhost .cm-activeLine { background: rgba(138, 124, 255, 0.05); }
+/* @codemirror/search paints cyan, magenta and acid green by default. Not in a
+   violet product. */
+.cmhost .cm-searchMatch { background: rgba(138, 124, 255, 0.26); }
+.cmhost .cm-searchMatch-selected { background: rgba(176, 108, 255, 0.42); }
+.cmhost .cm-selectionMatch { background: rgba(255, 255, 255, 0.07); }
+.cmhost .cm-tooltip { background: var(--card); border: 1px solid var(--bd3); border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5); color: var(--tx2); }
+.cmhost .cm-tooltip-autocomplete > ul { font-family: var(--mono); font-size: 11.5px; max-height: 240px; }
+.cmhost .cm-tooltip-autocomplete > ul > li { padding: 3px 8px; }
+.cmhost .cm-tooltip-autocomplete > ul > li[aria-selected] { background: rgba(138, 124, 255, 0.13);
+  color: var(--tx); }
+.cmhost .cm-completionDetail { color: var(--dim2); font-style: normal; font-size: 10.5px; }
+.cmhost .cm-completionIcon { color: var(--dim3); }
+/* lint gutter and lint panel, new with the editor core */
+.cmhost .cm-gutter-lint { width: 12px; }
+.cmhost .cm-lintPoint::after { border-bottom-color: var(--bad); }
+.cmhost .cm-tooltip.cm-tooltip-lint { background: var(--card); border: 1px solid var(--bd2);
+  color: var(--tx2); }
+.cmhost .cm-diagnostic { padding: 5px 9px; font-size: 11.5px; border-left-width: 3px;
+  font-family: var(--sans); line-height: 1.5; }
+.cmhost .cm-diagnostic-error { border-left-color: var(--bad); }
+.cmhost .cm-diagnostic-warning { border-left-color: var(--warn); }
+.cmhost .cm-diagnosticSource { color: var(--dim3); font-size: 10px; }
+.cmhost .cm-panel.cm-panel-lint ul { max-height: 130px; font-size: 11.5px; }
+.cmhost .cm-panel.cm-search { display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  padding: 7px 10px; font-family: var(--sans); font-size: 11.5px; color: var(--dim2); }
+.cmhost .cm-panel.cm-search label { display: inline-flex; align-items: center; gap: 4px; }
+.cmhost .cm-panel.cm-search input[type="checkbox"] { accent-color: var(--acc); }
+.cmhost .cm-textfield { border-radius: 7px; padding: 4px 8px; font-size: 11.5px; }
+.cmhost .cm-button { font-size: 11.5px; padding: 4px 9px; }
 .cmhost .cm-activeLineGutter { background: rgba(138, 124, 255, 0.08); color: var(--acc-tx); }
 .cmhost .cm-content { caret-color: var(--acc); }
 .cmhost .cm-cursor { border-left-color: var(--acc); }
@@ -921,11 +1044,20 @@ textarea.mem:focus { border-color: rgba(138, 124, 255, 0.4); }
 .cmhost .cm-textfield { background: var(--inset); border: 1px solid var(--bd2); color: var(--tx); }
 .cmhost .cm-button { background: rgba(255, 255, 255, 0.05); border: 1px solid var(--bd3);
   border-radius: 7px; color: var(--tx); background-image: none; }
-/* merge view: the pending diff */
+/* merge view: the pending diff.
+   The two `.cm-changed*` rules below MUST carry the theme class: the library
+   declares `&.cm-merge-b .cm-changedLine` and `&dark.cm-merge-b .cm-changedText`
+   at 0,3,0, so a 0,2,0 override loses whatever the order is, and the accepted
+   side used to render in the vendor's greenish-grey with a mint underline
+   while this stylesheet claimed otherwise. */
 .cmhost .cm-deletedChunk { background: rgba(209, 107, 111, 0.09); }
 .cmhost .cm-deletedChunk .cm-deletedText { background: rgba(209, 107, 111, 0.22); }
-.cmhost .cm-changedLine { background: rgba(95, 191, 138, 0.09); }
-.cmhost .cm-changedText { background: rgba(95, 191, 138, 0.2); }
+.cmhost .cm-editor.cm-merge-b .cm-changedLine,
+.cmhost .cm-editor .cm-inlineChangedLine { background: rgba(95, 191, 138, 0.09); }
+.cmhost .cm-editor.cm-merge-a .cm-changedLine { background: rgba(209, 107, 111, 0.09); }
+.cmhost .cm-editor.cm-merge-b .cm-changedText,
+.cmhost .cm-editor .cm-inlineChangedText { background: rgba(95, 191, 138, 0.22); }
+.cmhost .cm-editor.cm-merge-a .cm-changedText { background: rgba(209, 107, 111, 0.22); }
 .cmhost .cm-changedLineGutter { background: rgba(95, 191, 138, 0.22); }
 .cmhost .cm-deletedLineGutter { background: rgba(209, 107, 111, 0.22); }
 .cmhost .cm-chunkButtons { display: flex; gap: 5px; padding-right: 6px; }
@@ -939,3 +1071,130 @@ textarea.mem:focus { border-color: rgba(138, 124, 255, 0.4); }
   color: var(--bad); }
 .cmhost .cm-collapsedLines { background: rgba(255, 255, 255, 0.03); color: var(--dim3);
   font-size: 11px; }
+/* The base theme injects ⦚, a glyph that appears nowhere else in Galactus. */
+.cmhost .cm-collapsedLines::before, .cmhost .cm-collapsedLines::after { content: "···"; }
+
+/* ================================================================
+   Code view, second wave: editor tabs, the file and symbol palettes,
+   the project search panel, the references list and the tier badge.
+   Everything below reuses the surfaces, the radii and the one accent the
+   rest of the app already uses; nothing here invents a new vocabulary.
+   ================================================================ */
+
+/* ---------------- editor tabs (code/tabs.ts) ---------------- */
+.ctabs2 { display: flex; align-items: stretch; height: 32px; flex: none; background: var(--side);
+  border-bottom: 1px solid var(--bd); overflow-x: auto; overflow-y: hidden; }
+.ctabs2::-webkit-scrollbar { height: 0; }
+.ctab2 { display: flex; align-items: center; gap: 6px; padding: 0 7px 0 11px; flex: none;
+  max-width: 190px; font-size: 11.5px; color: var(--dim2); border-right: 1px solid var(--bd);
+  cursor: default; transition: background 0.13s, color 0.13s; }
+.ctab2:hover { background: rgba(255, 255, 255, 0.045); color: var(--tx2); }
+.ctab2.on { background: var(--win); color: var(--tx); box-shadow: inset 0 -2px 0 var(--acc); }
+.ctab2.prop { color: var(--acc-tx2); }
+.ctab2 .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); }
+.ctab2 .prop { flex: none; font-size: 8px; color: var(--acc); }
+.ctab2 .dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--warn); }
+.ctab2 .x { flex: none; font-size: 13px; line-height: 1; padding: 0 2px; color: transparent; }
+.ctab2:hover .x, .ctab2.on .x { color: var(--dim4); }
+.ctab2 .x:hover { color: var(--bad); }
+
+/* ---------------- the tier badge (code/tiers.ts) ---------------- */
+.cfilehead .fbadge.tier-a { color: var(--acc-tx2); background: rgba(138, 124, 255, 0.13); }
+.cfilehead .fbadge.tier-b { color: var(--dim2); background: rgba(255, 255, 255, 0.05); }
+.cfilehead .fbadge.tier-none { color: var(--dim3); background: rgba(255, 255, 255, 0.03); }
+
+/* ---------------- the palettes (code/palette.ts) ---------------- */
+.modal-bd.pal { align-items: flex-start; padding-top: 12vh; }
+.modal.pal-modal { padding: 12px; display: flex; flex-direction: column; gap: 10px; max-height: 66vh; }
+.pal-input { width: 100%; background: var(--inset); border: 1px solid var(--bd2); border-radius: 10px;
+  padding: 10px 12px; color: var(--tx); font-size: 14px; outline: none; }
+.pal-input:focus { border-color: rgba(138, 124, 255, 0.5); }
+.pal-list { flex: 1; min-height: 0; overflow: auto; margin: 0 -4px; }
+.pal-row { display: flex; align-items: baseline; gap: 8px; padding: 6px 10px; border-radius: 8px;
+  cursor: default; }
+.pal-row.on { background: rgba(138, 124, 255, 0.14); }
+.pal-row .nm { font-size: 12.5px; color: var(--tx); flex: none; max-width: 46%; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.pal-row .sub { font-size: 11px; color: var(--dim2); flex: 1; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.pal-row .kind { font-size: 9.5px; letter-spacing: 0.5px; text-transform: uppercase;
+  color: var(--dim3); flex: none; }
+.pal-row b { color: var(--acc-tx2); font-weight: 600; }
+.pal-empty { padding: 16px 12px; font-size: 12px; color: var(--dim3); }
+.pal-empty.err { color: var(--bad); }
+.pal-foot { font-size: 10.5px; color: var(--dim3); border-top: 1px solid var(--bd); padding-top: 8px; }
+
+/* ---------------- project search (code/searchpanel.ts) ---------------- */
+.srch { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px 0; }
+.srch-top { display: flex; gap: 4px; align-items: center; }
+.srch-q { flex: 1; min-width: 0; background: var(--inset); border: 1px solid var(--bd2);
+  border-radius: 8px; padding: 6px 9px; color: var(--tx); font-size: 12px; outline: none; }
+.srch-q:focus { border-color: rgba(138, 124, 255, 0.5); }
+.stog { flex: none; width: 24px; height: 24px; border-radius: 6px; border: 1px solid transparent;
+  background: transparent; color: var(--dim3); font-size: 10.5px; cursor: default; }
+.stog:hover { background: rgba(255, 255, 255, 0.06); color: var(--tx2); }
+.stog.on { background: rgba(138, 124, 255, 0.16); color: var(--acc-tx2);
+  border-color: rgba(138, 124, 255, 0.3); }
+.srch-globs, .srch-repl { display: flex; gap: 4px; }
+.srch-globs input, .srch-repl input { flex: 1; min-width: 0; background: var(--inset);
+  border: 1px solid var(--bd2); border-radius: 8px; padding: 5px 8px; color: var(--tx2);
+  font-size: 11px; outline: none; }
+.srch-repl .bs { flex: none; }
+.srch-res { margin: 0 -10px; }
+.srch-status { padding: 8px 12px; font-size: 11px; color: var(--dim2); display: flex;
+  align-items: center; gap: 8px; }
+.srch-status.run { color: var(--acc-tx); }
+.slink { margin-left: auto; background: none; border: none; color: var(--dim2); font-size: 11px;
+  text-decoration: underline; cursor: default; }
+.slink:hover { color: var(--tx); }
+.srch-warn { margin: 0 12px 6px; padding: 7px 9px; border-radius: 8px; font-size: 11px;
+  line-height: 1.45; color: #e0c07a; background: rgba(224, 192, 122, 0.08);
+  border: 1px solid rgba(224, 192, 122, 0.25); }
+.srch-warn.err { color: var(--bad); background: rgba(209, 107, 111, 0.08);
+  border-color: rgba(209, 107, 111, 0.25); }
+.sgh { display: flex; align-items: center; gap: 6px; margin: 0 6px; padding: 6px 8px 3px;
+  border-radius: 7px; cursor: default; }
+.sgh:hover { background: rgba(255, 255, 255, 0.035); }
+.sgh .tw { color: var(--dim4); font-size: 9px; }
+.sgh .nm { font-size: 11.5px; color: var(--tx2); flex: none; }
+.sgh .dir { font-size: 10px; color: var(--dim3); flex: 1; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.sgh .n { font-size: 9.5px; font-weight: 700; color: var(--dim2); }
+.srow { display: flex; gap: 8px; margin: 0 6px; padding: 3px 8px 3px 22px; border-radius: 6px;
+  cursor: default; }
+.srow:hover { background: rgba(255, 255, 255, 0.045); }
+.srow .ln { flex: none; min-width: 28px; text-align: right; font-size: 10.5px; color: var(--dim3);
+  font-family: var(--mono); }
+.srow .tx { flex: 1; min-width: 0; font-size: 11px; color: var(--tx2); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.srow .tx b { color: var(--acc-tx2); background: rgba(138, 124, 255, 0.16); border-radius: 3px;
+  font-weight: 600; }
+.srch-more { padding: 8px 12px; font-size: 10.5px; color: var(--dim3); }
+
+/* ---------------- references list (tsintel/bindings.ts) ---------------- */
+.crefs { flex: 1; min-height: 0; overflow: auto; padding: 10px 0 18px; }
+.ts-refs .rh { padding: 4px 18px 10px; font-size: 11.5px; color: var(--dim2); }
+.ts-refs.empty { padding: 18px; font-size: 12px; color: var(--dim3); }
+.ts-refs .rf { margin-bottom: 10px; }
+.ts-refs .fn { padding: 5px 18px; font-size: 11px; color: var(--acc-tx); }
+.ts-refs .rr { display: flex; gap: 10px; margin: 0 12px; padding: 4px 10px; border-radius: 7px;
+  cursor: default; }
+.ts-refs .rr:hover { background: rgba(255, 255, 255, 0.045); }
+.ts-refs .rr.def { box-shadow: inset 2px 0 0 var(--acc); }
+.ts-refs .rr.write .tx { color: var(--tx); }
+.ts-refs .ln { flex: none; min-width: 34px; text-align: right; font-size: 10.5px;
+  color: var(--dim3); font-family: var(--mono); }
+.ts-refs .tx { flex: 1; min-width: 0; font-size: 11.5px; color: var(--tx2); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------------- hover signature (tsintel/bindings.ts) ---------------- */
+.ts-hover { max-width: 520px; padding: 8px 11px; }
+.ts-hover .sig { font-size: 11.5px; color: var(--tx); white-space: pre-wrap; line-height: 1.5; }
+.ts-hover .doc { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--bd);
+  font-size: 11.5px; color: var(--dim2); line-height: 1.5; white-space: pre-wrap; }
+.ts-hover .tags { margin-top: 5px; font-size: 11px; color: var(--dim3); line-height: 1.5; }
+
+/* ---------------- outline rows (code/outline.ts) ---------------- */
+.cpanel .ctree .trow[data-outline] .tw { width: 12px; text-align: center; color: var(--dim3);
+  font-size: 10px; }
+.cpanel .ctree .trow[data-outline].on .tw { color: var(--acc-tx); }

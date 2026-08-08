@@ -731,7 +731,8 @@ function diffRows(d: FsDiff): string {
 
   const CAP = 200;
   const row = (cls: string, sign: string, text: string) =>
-    `<div class="dl ${cls}">${esc(sign + (text.length ? text : " "))}</div>`;
+    `<div class="dl ${cls}"><span class="dsign">${esc(sign.trim())}</span>` +
+    `<span class="dtx">${esc(text.length ? text : " ")}</span></div>`;
   const block = (lines: string[], cls: string, sign: string) => {
     const shown = lines.slice(0, CAP);
     let html = shown.map((l) => row(cls, sign, l)).join("");
@@ -743,20 +744,28 @@ function diffRows(d: FsDiff): string {
   let html = "";
   const ctxA = before.slice(Math.max(0, pre - 3), pre);
   if (pre > 3) html += `<div class="dl skip">${esc(t("diff.omitted").replace("%n", String(pre - 3)))}</div>`;
-  html += block(ctxA, "", "  ");
-  html += block(before.slice(pre, before.length - suf), "rem", "- ");
-  html += block(after.slice(pre, after.length - suf), "add", "+ ");
+  html += block(ctxA, "", " ");
+  html += block(before.slice(pre, before.length - suf), "rem", "-");
+  html += block(after.slice(pre, after.length - suf), "add", "+");
   if (suf > 0) {
     const ctxB = after.slice(after.length - suf, Math.min(after.length, after.length - suf + 3));
-    html += block(ctxB, "", "  ");
+    html += block(ctxB, "", " ");
     if (suf > 3) html += `<div class="dl skip">${esc(t("diff.omitted").replace("%n", String(suf - 3)))}</div>`;
   }
   return html;
 }
 
+/**
+ * Left-to-right mark. The four path pills in the app truncate at the START,
+ * which needs `direction: rtl` on the box; a leading "/" is bidi-neutral and
+ * gets reordered to the visual end there, so "/Volumes/x" rendered as
+ * "Volumes/x/". One strong LTR character in front fixes the run.
+ */
+const LRM = "\u200e";
+
 function diffPanelHtml(path: string, d: FsDiff): string {
   return `<div class="diffhead">
-      <span class="path mono">${esc(path)}</span>
+      <span class="path mono">${LRM}${esc(path)}</span>
       <span class="bdg add">+${d.added}</span><span class="bdg rem">−${d.removed}</span>
       ${!d.existed ? `<span class="bdg new">${esc(t("perm.newFile"))}</span>` : ""}
     </div>
@@ -1978,6 +1987,7 @@ function prettyTool(name: string): string {
     obsidian_update: t("tool.oupdate"),
     spawn_agent: t("tool.spawnAgent"), list_agents: t("tool.listAgents"), ask_agent: t("tool.askAgent"),
     search_conversations: t("tool.convSearch"), read_conversation: t("tool.convRead"),
+    search_workspace: t("tool.searchWorkspace"), find_files: t("tool.findFiles"),
   };
   if (map[name]) return map[name];
   if (name.startsWith("mcp__")) return name.split("__").slice(1).join(" · ");
@@ -2435,6 +2445,7 @@ function memoryView(): HTMLElement {
   const wrap = el(`<div class="main">
     <div class="topbar" data-tauri-drag-region><span class="ttl">${esc(t("nav.memory"))}</span><span class="sub">${esc(t("mem.subtitle"))}</span></div>
     <div class="page"><div class="hold">
+      <div class="sect"><b>${esc(t("sect.memory"))}</b><span>${esc(t("sect.memoryHint"))}</span></div>
       <div class="card">
         <div class="hd"><div class="grow"><b>${esc(t("mem.enable"))}</b><span class="d">${esc(t("mem.enableHint"))}</span></div><div class="tgl" id="memtog"><div class="k"></div></div></div>
         <div id="membody" style="display:none;flex-direction:column;gap:14px">
@@ -2450,6 +2461,7 @@ function memoryView(): HTMLElement {
           </div>
         </div>
       </div>
+      <div class="sect"><b>${esc(t("sect.knowledge"))}</b><span>${esc(t("sect.knowledgeHint"))}</span></div>
       <div class="card">
         <div class="hd"><div class="cico">⌘</div><div class="grow"><b>${esc(t("kb.title"))}</b><span class="d" id="kbstats">${esc(t("kb.hint"))}</span></div>
           <button class="bs" id="kbadd">${esc(t("kb.add"))}</button>
@@ -2457,6 +2469,7 @@ function memoryView(): HTMLElement {
         </div>
         <div id="kbfolders" style="display:flex;flex-direction:column;gap:6px"></div>
       </div>
+      <div class="sect"><b>${esc(t("sect.obsidian"))}</b><span>${esc(t("sect.obsidianHint"))}</span></div>
       <div class="card">
         <div class="hd"><div class="cico">◈</div><div class="grow"><b>Obsidian</b><span class="d" id="vaultline">${esc(t("mem.vaultNone"))}</span></div><button class="bs" id="vcosmos">${esc(t("mem.cosmos"))}</button><button class="bs" id="vnew">${esc(t("mem.newVault"))}</button><button class="bs" id="vpick">${esc(t("mem.chooseVault"))}</button></div>
       </div>
@@ -2518,7 +2531,9 @@ function memoryView(): HTMLElement {
     const paintKb = () => {
       foldersBox.innerHTML = "";
       if (!kbList.length) {
-        foldersBox.appendChild(el(`<span style="font-size:11.5px;color:var(--dim3)">${esc(t("kb.empty"))}</span>`));
+        foldersBox.appendChild(
+          el(`<div class="empty-block small" style="width:100%"><span>${esc(t("kb.empty"))}</span></div>`)
+        );
         return;
       }
       for (const f of kbList) {
@@ -2697,7 +2712,10 @@ function agentView(): HTMLElement {
 
   const skBox = wrap.querySelector<HTMLElement>("#skills")!;
   api.skillsList().then((skills) => {
-    if (!skills.length) { skBox.innerHTML = `<span style="font-size:12px;color:var(--dim);grid-column:1/-1">${esc(t("agent.skillsEmpty"))}</span>`; return; }
+    if (!skills.length) {
+      skBox.innerHTML = `<div class="empty-block small" style="grid-column:1/-1"><span>${esc(t("agent.skillsEmpty"))}</span></div>`;
+      return;
+    }
     for (const k of skills) {
       const on = !skillsOff.has(k.name);
       const c = el(`<div class="skcard"><div class="kico">📖</div><div class="ki"><b>${esc(k.name)}</b><span>${esc(k.description || "—")}</span></div><div class="tgl sm ${on ? "on" : ""}" data-t><div class="k"></div></div></div>`);
@@ -2720,10 +2738,12 @@ function settingsView(): HTMLElement {
   const wrap = el(`<div class="main">
     <div class="topbar" data-tauri-drag-region><span class="ttl">${esc(t("nav.settings"))}</span></div>
     <div class="page"><div class="hold narrow">
+      <div class="sect"><b>${esc(t("sect.appearance"))}</b><span>${esc(t("sect.appearanceHint"))}</span></div>
       <div class="set-row"><div class="grow"><b>${esc(t("settings.language"))}</b><span>${esc(t("settings.languageDesc"))}</span></div>
         <div class="seg" id="lang"><button data-l="fr" class="${getLang() === "fr" ? "on" : ""}">Français</button><button data-l="en" class="${getLang() === "en" ? "on" : ""}">English</button></div>
       </div>
       <div class="set-row"><div class="grow"><b>${esc(t("settings.folder"))}</b><span class="mono" id="rootp">${esc(root ?? "")}</span></div><button class="bs" id="rpick">${esc(t("common.choose"))}</button></div>
+      <div class="sect"><b>${esc(t("sect.engine"))}</b><span>${esc(t("sect.engineHint"))}</span></div>
       <div class="set-row"><div class="grow"><b>${esc(t("settings.cache"))}</b><span>${esc(t("settings.cacheHint"))}</span></div>
         <span class="badge-auto">${esc(t("settings.auto"))}</span>
       </div>
@@ -2749,6 +2769,7 @@ function settingsView(): HTMLElement {
           <button data-am="auto">${esc(t("auto.auto"))}</button>
         </div>
       </div>
+      <div class="sect"><b>${esc(t("sect.access"))}</b><span>${esc(t("sect.accessHint"))}</span></div>
       <div class="set-row"><div class="grow"><b>${esc(t("settings.api"))}</b><span>${esc(t("settings.apiHint"))}</span><span class="mono api-url">${server.running && server.phase === "ready" ? esc(`http://127.0.0.1:${server.port}/v1`) : esc(t("settings.apiOff"))}</span></div>
         ${server.running && server.phase === "ready" ? `<button class="bs" id="apicopy">${esc(t("settings.apiCopy"))}</button>` : ""}
       </div>
@@ -3333,12 +3354,27 @@ async function boot() {
     if (document.visibilityState === "hidden") store.flushAll();
   });
 
-  // Keyboard shortcuts: ⌘N new chat, ⌘1..6 navigation.
+  // Keyboard shortcuts: ⌘N new chat, ⌘1..7 navigation, and inside the Code
+  // view ⌘P (file palette), ⇧⌘O (symbol palette), ⇧⌘F (project search).
   const NAV_ORDER: View[] = ["chat", "code", "models", "connectors", "memory", "agent", "settings"];
   window.addEventListener("keydown", (e) => {
-    if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
-    if (!root || document.querySelector(".modal-bd")) return;
+    if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
+    if (!root) return;
     const k = e.key.toLowerCase();
+    // The Code view claims three combinations, and only while it is on screen.
+    // ⌘P is the webview's print binding, so it has to be taken explicitly.
+    if (view === "code" && (k === "p" || (e.shiftKey && (k === "o" || k === "f")))) {
+      // A palette owns the keyboard while it is up; the shell keeps out except
+      // to close it, which codeShortcut answers for.
+      if (document.querySelector(".modal-bd") && !codeview.paletteIsOpen()) return;
+      if (codeview.codeShortcut(k, e.shiftKey)) {
+        e.preventDefault();
+        return;
+      }
+    }
+    // Everything below is a bare ⌘, never a ⇧⌘: ⇧⌘N is not "new chat".
+    if (e.shiftKey) return;
+    if (document.querySelector(".modal-bd")) return;
     if (k === "n") {
       e.preventDefault();
       newChat();

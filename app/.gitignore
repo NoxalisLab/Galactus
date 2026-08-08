@@ -7,3 +7,8 @@ src-tauri/gen/
 engine/
 packaged/
 python/
+tools/**/out/
+
+# Regenere par npm run prebuild a chaque build : 67 fichiers, 2,4 Mo.
+# Les versionner ferait diverger le depot de la version de TypeScript installee.
+public/tslib/

@@ -114,6 +114,12 @@ export interface GitCommitInfo {
 
 export interface GitInfo {
   repo: boolean;
+  /**
+   * False when this Mac carries no usable git. Distinct from `repo`: the panel
+   * says "not a repository" for one and "git is not installed" for the other,
+   * and never raises Apple's Command Line Tools installer to find out.
+   */
+  available: boolean;
   branch: string;
   upstream: string;
   ahead: number;
@@ -132,6 +138,66 @@ export interface GitChange {
   unstaged: boolean;
   untracked: boolean;
   from: string;
+}
+
+// ---- workspace engine (search.rs, symbols.rs, toolchain.rs) ----
+
+// There is no `Toolchains` binding here on purpose. toolchain.rs probes node,
+// cargo and make for its headless driver, but the app only ever needs to know
+// about git, and it learns that from `GitInfo.available` below. A typed client
+// for a command nobody calls is dead weight that looks live.
+
+/** Wire shape of `SearchOpts` in search.rs: snake_case, not the UI's camel. */
+export interface SearchOptsWire {
+  case_sensitive: boolean;
+  whole_word: boolean;
+  include_globs: string[];
+  exclude_globs: string[];
+}
+
+export interface SearchHitWire {
+  /** Relative to the workspace root, POSIX separators. */
+  path: string;
+  /** 1-based. */
+  line: number;
+  /** 1-based CHARACTER column, ready for a CodeMirror selection. */
+  col: number;
+  /** Byte offset of the match from the start of the file. */
+  offset: number;
+  /** Byte length of the match. */
+  len: number;
+  /** The whole line, no terminator, capped by the backend. */
+  text: string;
+}
+
+/** One streamed batch on `galactus://search`. */
+export interface SearchEvent {
+  gen: number;
+  hits: SearchHitWire[];
+  done: boolean;
+  capped: boolean;
+  timed_out: boolean;
+  cancelled?: boolean;
+  matches?: number;
+  scanned?: number;
+  files?: number;
+  error?: string;
+}
+
+export interface SymbolHitWire {
+  name: string;
+  kind: string;
+  path: string;
+  line: number;
+  container: string;
+  score: number;
+}
+
+/** Bulk workspace read for the in-app TypeScript service (snapshot.rs). */
+export interface SnapshotPayload {
+  files: [string, string][];
+  truncated: boolean;
+  total_bytes: number;
 }
 
 export const api = {
@@ -219,8 +285,12 @@ export const api = {
     invoke<{ files: number; chunks: number; folders: string[]; indexed_at: number }>("kb_reindex"),
   kbStats: () =>
     invoke<{ files: number; chunks: number; folders: string[]; indexed_at: number } | null>("kb_stats"),
-  kbSearch: (query: string, k?: number) =>
-    invoke<{ path: string; snippet: string; score: number; line: number }[]>("kb_search", { query, k }),
+  // budgetTokens is what makes this useful: without it the search returns a
+  // fixed 1490 tokens whatever the window can hold, which measured 0.364 on
+  // the share of questions whose answer actually reached the model, against
+  // 0.813 once the window is filled.
+  kbSearch: (query: string, k?: number, budgetTokens?: number) =>
+    invoke<{ path: string; snippet: string; score: number; line: number }[]>("kb_search", { query, k, budgetTokens }),
 
   // Code workspace. Every path is relative to `root` and confined to it in
   // Rust, not merely here: the model reaches these commands too.
@@ -247,6 +317,26 @@ export const api = {
   gitBranches: (root: string) => invoke<string[]>("git_branches", { root }),
   gitCheckout: (root: string, branch: string, create: boolean) =>
     invoke<string>("git_checkout", { root, branch, create }),
+
+  // Workspace engine. Read-only and confined to `root` in Rust, exactly like
+  // the code_* commands: the model reaches two of these as well.
+  searchStart: (root: string, query: string, opts: SearchOptsWire) =>
+    invoke<number>("search_start", { root, query, opts }),
+  searchCancel: (gen: number) => invoke<void>("search_cancel", { gen }),
+  searchFiles: (root: string, refresh: boolean) =>
+    invoke<string[]>("search_files", { root, refresh }),
+  symbolsIndex: (root: string, refresh: boolean) =>
+    invoke<number>("symbols_index", { root, refresh }),
+  symbolsQuery: (root: string, q: string, limit?: number) =>
+    invoke<SymbolHitWire[]>("symbols_query", { root, q, limit }),
+  /** Bulk read for the language service. Tauri maps capBytes -> cap_bytes. */
+  codeSnapshot: (root: string, exts: string[], capBytes: number, capFiles: number) =>
+    invoke<SnapshotPayload>("code_snapshot", { root, exts, capBytes, capFiles }),
+  // `py_analyze` is deliberately absent. code/pylang.ts owns that call: it
+  // types the payload (this binding returned `unknown`), it debounces it, and
+  // it routes it through an injectable invoker so the tests can drive Python
+  // analysis with no Tauri. A second, untyped entry point beside it was a
+  // caller-less copy that would have bypassed all three.
 };
 
 export function onEvent(

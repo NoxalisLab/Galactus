@@ -6,3 +6,55 @@ This product was designed and developed by Noxalis Lab.
 If you use, redistribute or build upon this software, the Apache License 2.0
 (section 4) requires you to keep this NOTICE file, including the credit above,
 in any derivative work or redistribution.
+
+--------------------------------------------------------------------------
+Third-party components redistributed inside the Galactus application bundle
+--------------------------------------------------------------------------
+
+TypeScript
+Copyright (c) Microsoft Corporation.
+Licensed under the Apache License, Version 2.0.
+https://github.com/microsoft/TypeScript
+
+  The compiler and language service run inside the app, in a worker, so the
+  Code view can offer types, hover, go to definition, references and rename
+  with no network access. The default library declarations (lib.*.d.ts,
+  shipped under app/public/tslib) come from the same distribution and carry
+  the same licence.
+
+CodeMirror 6
+Copyright (C) 2018-2026 by Marijn Haverbeke and others.
+Licensed under the MIT License.
+https://github.com/codemirror
+
+  The editor itself: @codemirror/{state,view,language,commands,search,lint,
+  autocomplete,merge,theme-one-dark} and the lang-* grammars for JavaScript,
+  TypeScript, Python, Rust, JSON, Markdown, HTML and CSS.
+
+Lezer
+Copyright (C) 2018-2026 by Marijn Haverbeke and others.
+Licensed under the MIT License.
+https://github.com/lezer-parser
+
+  The incremental parser behind every grammar above, plus @lezer/highlight,
+  which drives the syntax colours.
+
+Tauri
+Copyright (c) 2017-2026 Tauri Programme within The Commons Conservancy.
+Dual licensed under Apache-2.0 OR MIT; used here under Apache-2.0.
+https://github.com/tauri-apps/tauri
+
+llama.cpp
+Copyright (c) 2023-2026 The ggml authors.
+Licensed under the MIT License.
+https://github.com/ggml-org/llama.cpp
+
+  Shipped as the patched Galactus engine. The patch set lives in patches/.
+
+CPython
+Copyright (c) 2001-2026 Python Software Foundation.
+Licensed under the Python Software Foundation License Version 2.
+https://www.python.org
+
+  A private, isolated Python 3.12 runtime is bundled so the app never touches
+  the system interpreter and never raises Apple's Command Line Tools installer.

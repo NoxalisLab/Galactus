@@ -1,4 +1,4 @@
-// Galactus desktop — code workspace and version control.
+// Galactus desktop, code workspace and version control.
 //
 // Backend for the Code view: a file tree over a folder the user picked, file
 // read and write, and the git operations the view exposes. Everything is
@@ -12,8 +12,10 @@
 // behave differently from the one they make in a terminal.
 
 use serde::Serialize;
+use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 
 /// Entries listed for one directory level. The tree is loaded lazily, one
 /// directory at a time: a repository with a node_modules would otherwise cost
@@ -75,6 +77,10 @@ pub struct GitChange {
 #[derive(Serialize)]
 pub struct GitInfo {
     pub repo: bool,
+    /// False when this Mac has no usable git at all. Distinct from `repo`:
+    /// "the folder is not a repository" and "there is no git here" are two
+    /// different sentences and the UI says whichever is true.
+    pub available: bool,
     pub branch: String,
     pub upstream: String,
     pub ahead: u32,
@@ -116,11 +122,23 @@ fn inside(root: &str, path: &str) -> Result<PathBuf, String> {
     Ok(full)
 }
 
+/// What `git()` says when this Mac has no git. Matched by `git_info` so that a
+/// missing binary reads as "unavailable" instead of "this failed".
+pub(crate) const GIT_MISSING: &str = "git is not installed on this Mac";
+
 fn git(root: &str, args: &[&str]) -> Result<String, String> {
-    let out = Command::new("git")
+    // /usr/bin/git is the Xcode Command Line Tools shim, not git: invoking it
+    // on a Mac without the tools raises Apple's installer dialog instead of
+    // returning. toolchain::git_program() hands back the real binary, absolute,
+    // shim resolved away, or None when this Mac genuinely has no git. A
+    // packaged app also inherits only /usr/bin:/bin:/usr/sbin:/sbin from
+    // Finder, so a bare Command::new("git") would miss a Homebrew install too.
+    let program = crate::toolchain::git_program().ok_or(GIT_MISSING)?;
+    let out = Command::new(program)
         .arg("-C")
         .arg(root)
         .args(args)
+        .stdin(Stdio::null())
         .output()
         .map_err(|e| format!("git: {e}"))?;
     if !out.status.success() {
@@ -134,9 +152,49 @@ fn git(root: &str, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
+/// Cached worktree status, keyed by workspace root.
+///
+/// `reloadTree()` in the Code view refreshes every open directory level in
+/// parallel, and each level used to run a full `git status --porcelain` scan of
+/// the whole repository. On a large repo that is one full scan per open folder,
+/// on every accepted hunk. The scan now happens once and is dropped by anything
+/// that can change it: a write, a stage, a commit, a checkout or a pull.
+type StatusMap = HashMap<String, String>;
+
+fn status_cache() -> &'static Mutex<HashMap<String, StatusMap>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, StatusMap>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Forget the cached status of one workspace. Called by every command that
+/// can move a file between git's three sides.
+fn invalidate_status(root: &str) {
+    if let Ok(mut c) = status_cache().lock() {
+        c.remove(root);
+    }
+}
+
+fn cached_status_map(root: &str) -> StatusMap {
+    if let Ok(c) = status_cache().lock() {
+        if let Some(hit) = c.get(root) {
+            return hit.clone();
+        }
+    }
+    let fresh = status_map(root);
+    if let Ok(mut c) = status_cache().lock() {
+        // Bounded: one workspace is the normal case, a handful across a long
+        // session, and an entry is a few hundred short strings.
+        if c.len() > 8 {
+            c.clear();
+        }
+        c.insert(root.to_string(), fresh.clone());
+    }
+    fresh
+}
+
 /// Worktree status as a map path -> code, for decorating the tree.
-fn status_map(root: &str) -> std::collections::HashMap<String, String> {
-    let mut map = std::collections::HashMap::new();
+fn status_map(root: &str) -> HashMap<String, String> {
+    let mut map = HashMap::new();
     let Ok(out) = git(root, &["status", "--porcelain=v1", "-z", "--untracked-files=normal"]) else {
         return map;
     };
@@ -161,13 +219,41 @@ fn status_map(root: &str) -> std::collections::HashMap<String, String> {
     map
 }
 
+// ---------------------------------------------------------------- dispatch
+//
+// Every command in this module is blocking: it spawns git and waits for it, or
+// it walks and reads the filesystem. A synchronous `#[tauri::command]` runs on
+// the main thread, and an `async` one whose body blocks parks a tokio worker
+// for the whole call. Both are wrong here: `git log` on a large repository, or
+// a tree read on a cold NFS home, would stall the chat stream and the search
+// events that share those workers.
+//
+// So each command is a thin async wrapper that hands its `_blocking` twin to
+// the blocking pool, exactly the pattern pylang.rs and snapshot.rs already
+// use. The real work keeps its plain synchronous signature, which is also what
+// lets the tests call it directly with no runtime.
+
+async fn blocking<T, F>(f: F) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+    T: Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| format!("the workspace thread died: {e}"))?
+}
+
 #[tauri::command]
 pub async fn code_tree(root: String, sub: String) -> Result<Vec<Entry>, String> {
+    blocking(move || code_tree_blocking(root, sub)).await
+}
+
+fn code_tree_blocking(root: String, sub: String) -> Result<Vec<Entry>, String> {
     let dir = inside(&root, if sub.is_empty() { "." } else { &sub })?;
     if !dir.is_dir() {
         return Err(format!("{} is not a directory", dir.display()));
     }
-    let status = status_map(&root);
+    let status = cached_status_map(&root);
     let root_path = std::fs::canonicalize(&root).map_err(|e| e.to_string())?;
     let mut out: Vec<Entry> = Vec::new();
     let mut count = 0usize;
@@ -220,6 +306,10 @@ pub async fn code_tree(root: String, sub: String) -> Result<Vec<Entry>, String> 
 
 #[tauri::command]
 pub async fn code_read(root: String, path: String) -> Result<String, String> {
+    blocking(move || code_read_blocking(root, path)).await
+}
+
+fn code_read_blocking(root: String, path: String) -> Result<String, String> {
     let full = inside(&root, &path)?;
     let meta = std::fs::metadata(&full).map_err(|e| e.to_string())?;
     if meta.len() > MAX_FILE_BYTES {
@@ -240,6 +330,10 @@ pub async fn code_read(root: String, path: String) -> Result<String, String> {
 
 #[tauri::command]
 pub async fn code_write(root: String, path: String, content: String) -> Result<(), String> {
+    blocking(move || code_write_blocking(root, path, content)).await
+}
+
+fn code_write_blocking(root: String, path: String, content: String) -> Result<(), String> {
     let full = inside(&root, &path)?;
     if let Some(parent) = full.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -251,17 +345,26 @@ pub async fn code_write(root: String, path: String, content: String) -> Result<(
         full.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default()
     ));
     std::fs::write(&tmp, content.as_bytes()).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &full).map_err(|e| e.to_string())
+    std::fs::rename(&tmp, &full).map_err(|e| e.to_string())?;
+    invalidate_status(&root);
+    Ok(())
 }
 
 #[tauri::command]
 pub async fn git_info(root: String) -> Result<GitInfo, String> {
-    let repo = git(&root, &["rev-parse", "--is-inside-work-tree"])
-        .map(|s| s.trim() == "true")
-        .unwrap_or(false);
+    blocking(move || git_info_blocking(root)).await
+}
+
+fn git_info_blocking(root: String) -> Result<GitInfo, String> {
+    // Probe once and keep the reason. "not a repository" and "no git on this
+    // Mac" are two different states, and the panel says which one it is.
+    let probe = git(&root, &["rev-parse", "--is-inside-work-tree"]);
+    let available = !matches!(probe.as_ref(), Err(e) if e == GIT_MISSING);
+    let repo = probe.map(|s| s.trim() == "true").unwrap_or(false);
     if !repo {
         return Ok(GitInfo {
             repo: false,
+            available,
             branch: String::new(),
             upstream: String::new(),
             ahead: 0,
@@ -311,6 +414,7 @@ pub async fn git_info(root: String) -> Result<GitInfo, String> {
     }
     Ok(GitInfo {
         repo: true,
+        available: true,
         branch,
         upstream,
         ahead,
@@ -328,6 +432,10 @@ pub async fn git_info(root: String) -> Result<GitInfo, String> {
 /// which the line-based form hides behind a quoted "->" string.
 #[tauri::command]
 pub async fn git_status(root: String) -> Result<Vec<GitChange>, String> {
+    blocking(move || git_status_blocking(root)).await
+}
+
+fn git_status_blocking(root: String) -> Result<Vec<GitChange>, String> {
     let out = git(&root, &["status", "--porcelain=v1", "-z", "--untracked-files=normal"])?;
     let mut chunks = out.split('\0').filter(|c| !c.is_empty());
     let mut rows: Vec<GitChange> = Vec::new();
@@ -368,6 +476,10 @@ pub async fn git_status(root: String) -> Result<Vec<GitChange>, String> {
 /// the other.
 #[tauri::command]
 pub async fn git_file_diff(root: String, path: String, staged: bool) -> Result<String, String> {
+    blocking(move || git_file_diff_blocking(root, path, staged)).await
+}
+
+fn git_file_diff_blocking(root: String, path: String, staged: bool) -> Result<String, String> {
     inside(&root, &path)?;
     let mut args: Vec<&str> = vec!["--no-pager", "diff", "--no-color"];
     if staged {
@@ -380,6 +492,10 @@ pub async fn git_file_diff(root: String, path: String, staged: bool) -> Result<S
 
 #[tauri::command]
 pub async fn git_log(root: String, limit: Option<u32>, path: Option<String>) -> Result<Vec<GitCommit>, String> {
+    blocking(move || git_log_blocking(root, limit, path)).await
+}
+
+fn git_log_blocking(root: String, limit: Option<u32>, path: Option<String>) -> Result<Vec<GitCommit>, String> {
     let n = limit.unwrap_or(60).clamp(1, 500).to_string();
     // Unit separator between fields, record separator between commits: a
     // subject containing any printable character stays parseable.
@@ -420,6 +536,10 @@ pub async fn git_log(root: String, limit: Option<u32>, path: Option<String>) -> 
 /// Diff for the editor. `rev` empty means the worktree against HEAD.
 #[tauri::command]
 pub async fn git_diff(root: String, path: Option<String>, rev: Option<String>) -> Result<String, String> {
+    blocking(move || git_diff_blocking(root, path, rev)).await
+}
+
+fn git_diff_blocking(root: String, path: Option<String>, rev: Option<String>) -> Result<String, String> {
     let mut args: Vec<String> = vec!["--no-pager".into(), "diff".into(), "--no-color".into()];
     match rev.as_deref().filter(|r| !r.is_empty()) {
         Some(r) => {
@@ -446,6 +566,10 @@ pub async fn git_diff(root: String, path: Option<String>, rev: Option<String>) -
 /// Content of a path at a revision, for the side-by-side view.
 #[tauri::command]
 pub async fn git_show_file(root: String, rev: String, path: String) -> Result<String, String> {
+    blocking(move || git_show_file_blocking(root, rev, path)).await
+}
+
+fn git_show_file_blocking(root: String, rev: String, path: String) -> Result<String, String> {
     inside(&root, &path)?;
     let spec = format!("{rev}:{path}");
     git(&root, &["--no-pager", "show", &spec])
@@ -453,6 +577,10 @@ pub async fn git_show_file(root: String, rev: String, path: String) -> Result<St
 
 #[tauri::command]
 pub async fn git_stage(root: String, paths: Vec<String>, unstage: bool) -> Result<(), String> {
+    blocking(move || git_stage_blocking(root, paths, unstage)).await
+}
+
+fn git_stage_blocking(root: String, paths: Vec<String>, unstage: bool) -> Result<(), String> {
     if paths.is_empty() {
         return Err("nothing to stage".into());
     }
@@ -466,11 +594,17 @@ pub async fn git_stage(root: String, paths: Vec<String>, unstage: bool) -> Resul
     };
     args.extend(paths.iter().cloned());
     let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    git(&root, &refs).map(|_| ())
+    git(&root, &refs)?;
+    invalidate_status(&root);
+    Ok(())
 }
 
 #[tauri::command]
 pub async fn git_commit(root: String, message: String, all: bool) -> Result<String, String> {
+    blocking(move || git_commit_blocking(root, message, all)).await
+}
+
+fn git_commit_blocking(root: String, message: String, all: bool) -> Result<String, String> {
     if message.trim().is_empty() {
         return Err("a commit needs a message".into());
     }
@@ -479,6 +613,7 @@ pub async fn git_commit(root: String, message: String, all: bool) -> Result<Stri
         args.insert(1, "-a");
     }
     git(&root, &args)?;
+    invalidate_status(&root);
     git(&root, &["--no-pager", "log", "-1", "--pretty=format:%h %s"])
 }
 
@@ -487,24 +622,42 @@ pub async fn git_commit(root: String, message: String, all: bool) -> Result<Stri
 /// into a generic "sync".
 #[tauri::command]
 pub async fn git_push(root: String) -> Result<String, String> {
+    blocking(move || git_push_blocking(root)).await
+}
+
+fn git_push_blocking(root: String) -> Result<String, String> {
     git(&root, &["push"])
         .map(|s| if s.trim().is_empty() { "pushed".to_string() } else { s })
 }
 
 #[tauri::command]
 pub async fn git_pull(root: String, rebase: bool) -> Result<String, String> {
+    blocking(move || git_pull_blocking(root, rebase)).await
+}
+
+fn git_pull_blocking(root: String, rebase: bool) -> Result<String, String> {
     let args: Vec<&str> = if rebase { vec!["pull", "--rebase"] } else { vec!["pull", "--ff-only"] };
-    git(&root, &args)
+    let out = git(&root, &args);
+    invalidate_status(&root);
+    out
 }
 
 #[tauri::command]
 pub async fn git_branches(root: String) -> Result<Vec<String>, String> {
+    blocking(move || git_branches_blocking(root)).await
+}
+
+fn git_branches_blocking(root: String) -> Result<Vec<String>, String> {
     let out = git(&root, &["branch", "--format=%(refname:short)"])?;
     Ok(out.lines().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
 }
 
 #[tauri::command]
 pub async fn git_checkout(root: String, branch: String, create: bool) -> Result<String, String> {
+    blocking(move || git_checkout_blocking(root, branch, create)).await
+}
+
+fn git_checkout_blocking(root: String, branch: String, create: bool) -> Result<String, String> {
     if branch.trim().is_empty() {
         return Err("branch name is empty".into());
     }
@@ -513,5 +666,7 @@ pub async fn git_checkout(root: String, branch: String, create: bool) -> Result<
     } else {
         vec!["checkout", branch.as_str()]
     };
-    git(&root, &args).map(|s| if s.trim().is_empty() { format!("on {branch}") } else { s })
+    let out = git(&root, &args).map(|s| if s.trim().is_empty() { format!("on {branch}") } else { s });
+    invalidate_status(&root);
+    out
 }

@@ -1,0 +1,31 @@
+{
+  "//": "Editor core proof build. Compiles app/src/code/*.ts plus the tests to out/, so the module can be exercised with node --test, with no browser and no Tauri window. The app's own build (tsc --noEmit && vite build) is untouched.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "declaration": false,
+    "sourceMap": false,
+    "noEmit": false,
+    "rootDir": "../..",
+    "outDir": "out",
+    "types": []
+  },
+  "//include": "Explicit file list, not a glob: other modules are adding their own files to src/code right now and this proof must not compile, or be broken by, code it does not own.",
+  "include": [
+    "./docs.test.ts",
+    "./tabs.test.ts",
+    "./extensions.test.ts",
+    "./phrases.test.ts",
+    "./dump.ts",
+    "../../src/code/extensions.ts",
+    "../../src/code/docs.ts",
+    "../../src/code/tabs.ts",
+    "../../src/code/phrases.ts",
+    "../../src/code/diagnostics.ts"
+  ]
+}

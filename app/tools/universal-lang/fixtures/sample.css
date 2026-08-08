@@ -1,0 +1,18 @@
+:root {
+  --bg: #101014;
+}
+
+.trow {
+  display: flex;
+}
+
+.trow:hover,
+.ctree .tn {
+  color: red;
+}
+
+@media (max-width: 600px) {
+  .codeside {
+    display: none;
+  }
+}
