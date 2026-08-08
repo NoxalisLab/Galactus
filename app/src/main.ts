@@ -212,7 +212,13 @@ function fmtGb(b?: number): string { return b ? (b / 1e9).toFixed(0) + " GB" : "
 
 function expectedTps(m: ModelEntry): number | null {
   if (!hw || !m.measured || !m.measured.length) return null;
-  const overhead = ((m.non_expert_bytes ?? 5e9) + 4.5e9) / 1e9;
+  // Same ceiling as plan_cache: weights, then the measured runtime overhead
+  // (KV cache, compute buffers, graph, which tracks the non-expert weights),
+  // then a reserve so the machine can still run macOS. A flat constant used to
+  // stand for the middle term and understated it, so the shown estimate
+  // assumed a cache the engine would never get.
+  const nonExpert = (m.non_expert_bytes ?? 5e9) / 1e9;
+  const overhead = nonExpert + (2.5 + nonExpert * 0.45) + 2;
   const maxCache = Math.min(hw.ram_gb - overhead, hw.ram_gb * 0.7, (m.expert_bytes_total ?? Infinity) / 1e9);
   const pts = [...m.measured].sort((a, b) => a.cache_gb - b.cache_gb);
   // Mirror the backend's memory-footprint policy so the shown estimate

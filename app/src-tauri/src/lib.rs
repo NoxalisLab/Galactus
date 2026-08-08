@@ -840,8 +840,26 @@ fn plan_cache(entry: &Value, ram_gb: u64, override_gb: Option<u64>, ram_mode: &s
 
     let ram = ram_gb * 1_000_000_000;
     // Ceiling: what the machine can afford at most.
+    //
+    // The engine's resident memory is the arena plus the non-expert weights
+    // plus a third term nothing accounted for: KV cache, compute buffers and
+    // the graph. A flat 4.5 GB used to stand for it and was wrong in the one
+    // direction that hurts, too small. Measured resident footprint minus arena
+    // minus weights, at ctx 8192: 3.2 GB for Qwen3-Next-80B, 3.4 for
+    // Qwen3-30B, 3.7 for gpt-oss-120b, 4.0 for GLM-4.5-Air, 4.5 for Llama-4
+    // Scout, 7.6 for GLM-5.2 744B. It tracks the non-expert weights, which is
+    // expected since both grow with layer count and hidden size. The affine
+    // fit below rounds UP on every measured point except the two extremes it
+    // interpolates exactly, so the ceiling errs toward leaving memory free.
+    //
+    // On top of that, the machine still has to run macOS and whatever the user
+    // is doing. Without that reserve the planner filled the machine to the
+    // brim: GLM-4.5-Air on a 24 GB Mac reached 23.5 GB resident and generated
+    // at 1.5 tok/s, Llama-4 Scout on the same Mac exceeded it outright.
+    const SYSTEM_RESERVE: u64 = 2_000_000_000;
+    let runtime_overhead = 2_500_000_000 + non_expert * 45 / 100;
     let max_cache = ram
-        .saturating_sub(non_expert + 4_500_000_000)
+        .saturating_sub(non_expert + runtime_overhead + SYSTEM_RESERVE)
         .min(ram * 7 / 10)
         .min(expert_total);
 

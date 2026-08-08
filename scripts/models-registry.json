@@ -130,7 +130,7 @@
         "max"
       ],
       "metal_experts": true,
-      "min_ram_gb": 96,
+      "min_ram_gb": 64,
       "record_bytes": 13172736,
       "non_expert_bytes": 12000000000,
       "min_cache_bytes": 92000000000
@@ -257,7 +257,7 @@
         }
       ],
       "measured_note": "M5 Max reference, ubatch 1; top-1, 76 MB records: SSD-bound until high residency; Mac 16 GB refused (quota<2)",
-      "min_ram_gb": 20,
+      "min_ram_gb": 24,
       "download": {
         "base": "https://huggingface.co/unsloth/Llama-4-Scout-17B-16E-Instruct-GGUF/resolve/main/Q4_K_M",
         "files": [
@@ -366,7 +366,7 @@
       "certified_date": "2026-08-06",
       "certified_ppl": 3.6481,
       "native_fit_ram_gb": 96,
-      "min_ram_gb": 24,
+      "min_ram_gb": 32,
       "measured": [
         {
           "cache_gb": 14,
