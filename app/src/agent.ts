@@ -22,7 +22,11 @@ export type PermissionKind =
   | "obsidian"
   | "memory"
   | "web"
-  | "mcp";
+  | "mcp"
+  /** Hand work to another conversation's agent (ask_agent). */
+  | "agent"
+  /** Read the stored conversation history (search_conversations, read_conversation). */
+  | "conversations";
 
 export interface PermissionRequest {
   kind: PermissionKind;
@@ -189,40 +193,20 @@ function isStanding(kind: PermissionKind, detail: string): boolean {
     // An empty prefix would match EVERYTHING for this kind — never honour one
     // (legacy rules stored by older builds become inert).
     if (r.prefix === "") return false;
-    // Shell, vault, memory and file-write rules are exact: a prefix match
-    // would let "ls" grant "lsof", or "Always" on one file grant the folder.
-    if (kind === "shell" || kind === "obsidian" || kind === "memory" || kind === "fs_write")
+    // Shell, vault, memory, file-write and history-read rules are exact: a
+    // prefix match would let "ls" grant "lsof", "Always" on one file grant
+    // the folder, or one search grant every other query.
+    if (
+      kind === "shell" ||
+      kind === "obsidian" ||
+      kind === "memory" ||
+      kind === "fs_write" ||
+      kind === "conversations"
+    )
       return detail === r.prefix;
     return detail.startsWith(r.prefix);
   });
 }
-
-const WORKFLOW_TOOL: ToolDef = {
-  type: "function",
-  function: {
-    name: "run_workflow",
-    description:
-      "Split a broad subject into 2-6 focused sub-tasks and run a dedicated sub-agent on each one, in sequence. Every sub-agent starts with a CLEAN context (none of this conversation's accumulated output), works with the same tools, and returns a compact factual report with its sources. Use this for multi-source research, comparisons, or any task where raw intermediate output would pollute your context. You receive the reports and must synthesize them.",
-    parameters: {
-      type: "object",
-      properties: {
-        tasks: {
-          type: "array",
-          description: "The sub-tasks, each handled by one sub-agent",
-          items: {
-            type: "object",
-            properties: {
-              title: { type: "string", description: "Short label shown to the user" },
-              goal: { type: "string", description: "Precise, self-contained instruction for the sub-agent (it knows NOTHING of this conversation)" },
-            },
-            required: ["title", "goal"],
-          },
-        },
-      },
-      required: ["tasks"],
-    },
-  },
-};
 
 const KNOWLEDGE_TOOL: ToolDef = {
   type: "function",
@@ -241,7 +225,155 @@ const KNOWLEDGE_TOOL: ToolDef = {
   },
 };
 
-function builtinTools(hasVault: boolean, role: AgentRole = "main", hasKb = false): ToolDef[] {
+// ---------------- the team ----------------
+//
+// A conversation owns a small team of named sub-agents. Each one is a full
+// Agent with its OWN persistent thread (store.SubAgent), not a throwaway
+// context: it keeps its history across turns, it is addressable by name, and
+// everything it says and does is stored and readable by the user.
+//
+// The Agent knows nothing about sessions, threads or the DOM. main.ts installs
+// a directory here, the same module-level shape the standing permissions
+// already use, and the Agent talks to its teammates through it.
+
+export interface TeamMember {
+  id: string;
+  /** Handle the model addresses it by. */
+  name: string;
+  role: string;
+  /** True while that teammate is working on a turn. */
+  busy: boolean;
+  /** Entries already in its thread, so the model knows if it is warm. */
+  messages: number;
+}
+
+/**
+ * Every call names the conversation the calling agent belongs to: one
+ * directory serves every live agent, and a teammate must only ever see the
+ * team of its own conversation.
+ */
+export interface AgentDirectory {
+  team(convId: string): TeamMember[];
+  /** Recruit a teammate. Resolves to the member, or to an error string. */
+  spawn(convId: string, name: string, role: string, brief: string): Promise<TeamMember | string>;
+  /**
+   * Deliver `message` to a teammate and resolve with its answer. BLOCKING and
+   * bounded by the implementation; `chain` carries every thread already
+   * involved so a cycle is refused rather than run.
+   */
+  ask(
+    convId: string,
+    targetId: string,
+    message: string,
+    from: { id: string; name: string },
+    chain: string[]
+  ): Promise<string>;
+}
+
+let directory: AgentDirectory | null = null;
+
+export function setAgentDirectory(d: AgentDirectory | null): void {
+  directory = d;
+}
+
+/**
+ * How many delegation hops are allowed inside a team. The parent can ask the
+ * architect, the architect can ask the reviewer, the reviewer asks nobody.
+ * Combined with the cycle check on the chain, architect -> reviewer ->
+ * architect is refused at the first hop back, so a team always terminates.
+ */
+export const MAX_DELEGATION_DEPTH = 2;
+
+const SPAWN_TOOL: ToolDef = {
+  type: "function",
+  function: {
+    name: "spawn_agent",
+    description:
+      "Recruit a named sub-agent for this conversation and keep it for the rest of the work. Each sub-agent has its own persistent thread, its own context and the same tools as you, and the user can open and read that thread in full. Use one per distinct responsibility (for example architect, backend, reviewer) when a job is worth splitting, then drive them with ask_agent. Do NOT spawn one for something you can answer yourself in a sentence.",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Short handle, lowercase, no spaces (architect, backend, reviewer)" },
+        role: { type: "string", description: "One line: what this teammate is responsible for" },
+        brief: {
+          type: "string",
+          description:
+            "Standing instructions for it. It knows NOTHING of this conversation, so state the goal, the constraints and what a good answer looks like.",
+        },
+      },
+      required: ["name", "role", "brief"],
+    },
+  },
+};
+
+const LIST_AGENTS_TOOL: ToolDef = {
+  type: "function",
+  function: {
+    name: "list_agents",
+    description:
+      "List this conversation's team: each sub-agent's name, role, whether it is busy, and how much is already in its thread. Call it before ask_agent, and to find out which teammate to consult.",
+    parameters: { type: "object", properties: {} },
+  },
+};
+
+const ASK_AGENT_TOOL: ToolDef = {
+  type: "function",
+  function: {
+    name: "ask_agent",
+    description:
+      "Send a task or a question to a teammate by name and wait for its answer. The call BLOCKS until it replies (bounded wait) and returns its answer. Your message is shown in that teammate's thread, attributed to you, and its answer comes back here. It keeps its own context and does NOT see this thread, so make the message self-contained; it does remember your earlier exchanges with it. Refused if the teammate is busy, unknown, or already waiting on the current delegation chain.",
+    parameters: {
+      type: "object",
+      properties: {
+        agent: { type: "string", description: "Teammate name, from list_agents" },
+        message: { type: "string", description: "Self-contained instruction or question" },
+      },
+      required: ["agent", "message"],
+    },
+  },
+};
+
+const CONV_SEARCH_TOOL: ToolDef = {
+  type: "function",
+  function: {
+    name: "search_conversations",
+    description:
+      "Full-text search across the user's STORED conversations, including the ones that are not open. Returns ranked excerpts, each attributed to its conversation title, its id and its date. These are PAST threads, not the current one: never present what you find as something said here, and prefer the current conversation when the two disagree. Read a whole thread with read_conversation.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Search terms" },
+        k: { type: "number", description: "Number of excerpts (default 6, max 20)" },
+      },
+      required: ["query"],
+    },
+  },
+};
+
+const CONV_READ_TOOL: ToolDef = {
+  type: "function",
+  function: {
+    name: "read_conversation",
+    description:
+      "Read a stored conversation as a dated transcript, given its id (from search_conversations). The output starts with the thread's title and dates; treat everything in it as what was said THEN, not now.",
+    parameters: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "Conversation id" },
+        max_chars: { type: "number", description: "Truncation cap (default 24000)" },
+      },
+      required: ["id"],
+    },
+  },
+};
+
+function builtinTools(
+  hasVault: boolean,
+  role: AgentRole = "main",
+  hasKb = false,
+  canDelegate = false,
+  hasTeam = false
+): ToolDef[] {
   const tools: ToolDef[] = [
     {
       type: "function",
@@ -444,8 +576,17 @@ function builtinTools(hasVault: boolean, role: AgentRole = "main", hasKb = false
       }
     );
   }
-  // Sub-agents never delegate further: one level of fan-out, no recursion.
-  if (role === "main") tools.push(WORKFLOW_TOOL);
+  tools.push(CONV_SEARCH_TOOL, CONV_READ_TOOL);
+  // Only the conversation's own agent recruits: the team belongs to the
+  // conversation, and letting teammates recruit teammates is how a bounded
+  // team becomes an unbounded crowd.
+  if (role === "main" && hasTeam) tools.push(SPAWN_TOOL);
+  // Teammates DO get list_agents and ask_agent: an engineer consulting the
+  // reviewer without going back through the parent is what makes this a team
+  // rather than a fan-out. Past the depth cap the tools are not merely
+  // refused, they are not offered, so the model cannot spend a turn
+  // discovering it may not delegate.
+  if (canDelegate) tools.push(LIST_AGENTS_TOOL, ASK_AGENT_TOOL);
   if (hasKb) tools.push(KNOWLEDGE_TOOL);
   return tools;
 }
@@ -458,17 +599,20 @@ function prettyToolLabel(name: string): string {
 
 function activityModeFor(tool: string): import("./pixel").PixelMode {
   if (tool.startsWith("mcp__")) return "connector";
-  if (tool === "run_workflow") return "fleet";
+  // Handing work to another conversation is fan-out too, same scene.
+  if (tool === "ask_agent" || tool === "list_agents" || tool === "spawn_agent") return "fleet";
   switch (tool) {
     // Exploration : il saute de planete en planete.
     case "list_directory":
     case "obsidian_search":
     case "search_knowledge":
+    case "search_conversations":
       return "reading";
     // Lecture posee : page en main.
     case "read_document":
     case "read_file":
     case "obsidian_read":
+    case "read_conversation":
     case "use_skill":
       return "doc";
     case "fetch_url":
@@ -534,6 +678,21 @@ export class Agent {
   private abort: AbortController | null = null;
   private taskSystem: string | null = null;
   private taskTemp: number | null = null;
+  /** The conversation this agent belongs to (its own, or its parent's). */
+  private convId = "";
+  /**
+   * This agent's own thread: the conversation id for a conversation's agent,
+   * the sub-agent id for a teammate. It is what the delegation chain records.
+   */
+  private threadId = "";
+  /** Name shown to the other side of a delegation. */
+  private selfName = "";
+  /**
+   * Conversations that delegated down to this one, caller first. Empty for a
+   * turn the user started. Its length is the delegation depth, and its
+   * contents are what makes A → B → A refusable.
+   */
+  private chain: string[] = [];
 
   constructor(
     private hooks: AgentHooks,
@@ -563,6 +722,33 @@ export class Agent {
 
   setAutoApprove(on: boolean) {
     this.autoApprove = on;
+  }
+
+  /**
+   * Who this agent is, for the team: the conversation it belongs to, the
+   * thread it owns, and the name its teammates address it by.
+   */
+  setIdentity(convId: string, threadId: string, name: string) {
+    this.convId = convId;
+    this.threadId = threadId;
+    this.selfName = name;
+  }
+
+  /**
+   * Delegation chain for the turn about to run: the threads that asked, caller
+   * first. Reset to [] for a turn the user starts himself.
+   */
+  setChain(chain: string[]) {
+    this.chain = chain.slice(0, MAX_DELEGATION_DEPTH + 1);
+    // The prompt tells the model whether it is answering a user or another
+    // agent, and whether it may delegate: rebuild it or the turn runs with the
+    // previous turn's framing.
+    if (this.messages[0]?.role === "system") this.messages[0].content = this.systemPrompt();
+  }
+
+  /** True while this agent may still hand work to a teammate. */
+  canDelegate(): boolean {
+    return directory !== null && this.chain.length < MAX_DELEGATION_DEPTH;
   }
 
   /** Whether the user has configured local knowledge folders. */
@@ -616,6 +802,26 @@ export class Agent {
       p +=
         " The user has indexed local knowledge folders: search them FIRST with search_knowledge whenever the question may touch their own documents, notes or code.";
     }
+    p +=
+      " Earlier conversations with this user are searchable (search_conversations) and readable (read_conversation): " +
+      "use them when the user refers to something discussed before, and always say which thread and which date a fact comes from. " +
+      "They are PAST threads: what the user says here wins over what an old one says.";
+    if (this.canDelegate()) {
+      p +=
+        this.role === "main"
+          ? " This conversation can own a TEAM of named sub-agents, each with its own thread and its own context. " +
+            "Create one per distinct responsibility with spawn_agent, see who is there with list_agents, and send work with ask_agent, " +
+            "which blocks until that teammate answers. Their threads are visible to the user, so a teammate's work is inspectable, " +
+            "not hidden. Make every message self-contained: a teammate cannot see this thread."
+          : " You are part of a TEAM working on this job. list_agents shows your teammates and ask_agent consults one of them directly, " +
+            "without going back through the agent that briefed you. Use it when a question genuinely belongs to someone else's " +
+            "responsibility, and make it self-contained.";
+    }
+    if (this.chain.length > 0) {
+      p +=
+        "\n\nThis turn was started by another agent of the team, which is BLOCKED waiting for your answer. " +
+        "Answer it directly and completely, in one self-contained reply, and do not ask it questions back.";
+    }
     if (this.mode === "agent") {
       p +=
         "\n\nYou are in AGENT MODE. Work autonomously toward the user's goal without stopping to ask for " +
@@ -623,10 +829,11 @@ export class Agent {
         "Then carry them out one by one with your tools, calling update_plan again to mark each step 'doing' then 'done'. " +
         "Do the work yourself instead of telling the user how to do it. When everything is complete, give a short final summary. " +
         "Only stop early if you are truly blocked or a step would be destructive and needs a human decision.";
-      if (this.role === "main") {
+      if (this.role === "main" && directory !== null) {
         p +=
-          " For broad or multi-source subjects (research across several sites, comparisons, large analyses), " +
-          "call run_workflow to fan the work out to focused sub-agents with clean contexts, then synthesize their reports yourself.";
+          " For a job with several distinct responsibilities (research across several sources, design then implementation then review, " +
+          "comparisons), build a small team: spawn_agent once per responsibility, then drive them with ask_agent and synthesize what " +
+          "they send back. Each teammate works on a clean context and its whole thread is visible to the user, so keep their briefs precise.";
       }
     }
     if (this.skills.length > 0) {
@@ -648,15 +855,25 @@ export class Agent {
 
   stop() {
     this.abort?.abort();
-    this.activeSub?.stop();
   }
 
   history(): ChatMessage[] {
     return this.messages;
   }
 
-  /** Restore a saved thread: system prompt is rebuilt, the rest replayed. */
-  loadHistory(messages: ChatMessage[]): void {
+  /** What earlier turns condensed, so the caller can store it with the thread. */
+  summary(): string {
+    return this.contextSummary;
+  }
+
+  /**
+   * Restore a saved thread: system prompt is rebuilt, the rest replayed. The
+   * digest summary has to come back BEFORE the system prompt is built, since
+   * that prompt embeds it; without it a digested thread reopens knowing only
+   * its last few messages.
+   */
+  loadHistory(messages: ChatMessage[], contextSummary = ""): void {
+    if (contextSummary) this.contextSummary = contextSummary;
     const body = messages.filter((m) => m.role !== "system");
     this.messages = [{ role: "system", content: this.systemPrompt() }, ...body];
   }
@@ -832,7 +1049,10 @@ export class Agent {
       },
     };
 
-    const tools = [...builtinTools(this.hasVault, this.role, this.hasKb), ...mcpToolDefs(this.mcp)];
+    const tools = [
+      ...builtinTools(this.hasVault, this.role, this.hasKb, this.canDelegate(), directory !== null),
+      ...mcpToolDefs(this.mcp),
+    ];
     const ok = await streamChat(
       this.port,
       this.messages,
@@ -901,9 +1121,10 @@ export class Agent {
       // gets rejected. Oversized outputs spill WHOLE to a scratch file and
       // the history keeps the head plus the path: the model re-reads precise
       // sections with read_file(offset) instead of working from a blind cut.
-      // Workflow reports are ALREADY distilled: give them more room before
-      // spilling, or the whole point of the fan-out is lost.
-      const HIST_TOOL_MAX = call.function.name === "run_workflow" ? 40_000 : 20_000;
+      // A teammate's answer is ALREADY distilled and its full thread is one
+      // click away for the user: give it more room before spilling, or the
+      // whole point of delegating is lost.
+      const HIST_TOOL_MAX = call.function.name === "ask_agent" ? 40_000 : 20_000;
       let hist = result && result.length > 0 ? result : "(no output)";
       if (hist.length > HIST_TOOL_MAX) {
         let note: string;
@@ -950,94 +1171,78 @@ export class Agent {
     this.hooks.onAssistantDone();
   }
 
-  // ---------------- multi-agent workflow ----------------
-
-  private autoApproveValue(): boolean {
-    return this.autoApprove;
-  }
-
-  private activeSub: Agent | null = null;
+  // ---------------- the team ----------------
 
   /**
-   * Run each sub-task on a dedicated sub-agent with a CLEAN context. They run
-   * in sequence (the local server serves one slot), each spills its full
-   * transcript to a scratch file, and the main context only receives the
-   * compact sourced reports.
+   * Recruit a teammate. Only the conversation's own agent may: the team is
+   * the conversation's, and teammates recruiting teammates is how a bounded
+   * team turns into an unbounded crowd.
    */
-  private async runWorkflow(tasksArg: unknown): Promise<string> {
-    const tasks: { title: string; goal: string }[] = Array.isArray(tasksArg)
-      ? tasksArg
-          .map((tk: any) => ({
-            title: String(tk?.title ?? "").slice(0, 80) || "task",
-            goal: String(tk?.goal ?? ""),
-          }))
-          .filter((tk) => tk.goal.trim().length > 0)
-          .slice(0, 6)
-      : [];
-    if (tasks.length === 0) return "error: run_workflow needs tasks: [{title, goal}, …]";
-
-    const reports: string[] = [];
-    for (let i = 0; i < tasks.length; i++) {
-      const task = tasks[i];
-      if (this.abort?.signal.aborted) {
-        reports.push(`### ${i + 1}. ${task.title}\n(aborted by user)`);
-        continue;
-      }
-      this.hooks.onNotice?.(
-        t("wf.run").replace("%i", String(i + 1)).replace("%n", String(tasks.length)).replace("%t", task.title)
-      );
-      this.hooks.onActivity?.("fleet", `${i + 1}/${tasks.length} · ${task.title}`);
-
-      const transcript: string[] = [];
-      const parent = this;
-      const report = await new Promise<string>((resolve) => {
-        let text = "";
-        const sub = new Agent(
-          {
-            onAssistantDelta: (tx) => { text += tx; },
-            onAssistantDone: () => resolve(text),
-            onToolStart: (name, detail) => {
-              transcript.push(`→ ${name} ${detail}`);
-              parent.hooks.onActivity?.(activityModeFor(name), `${i + 1}/${tasks.length} · ${prettyToolLabel(name)}`);
-            },
-            onToolResult: (_n, r) => { transcript.push(r.slice(0, 2000)); },
-            onPlan: () => {},
-            onError: (err) => resolve(text ? text + `\n[stopped: ${err}]` : `error: ${err}`),
-            askPermission: (req) => parent.hooks.askPermission(req),
-          },
-          this.port,
-          "sub"
-        );
-        this.activeSub = sub;
-        sub.setAutoApprove(this.autoApproveValue());
-        sub.setMcpTools(this.mcp);
-        sub.setMode("agent");
-        sub.setTaskSystem(
-          "You are a focused Galactus sub-agent handling exactly ONE task. Work factually with your tools. " +
-            "Cite a source (URL, file path or command) for every claim that comes from a tool. " +
-            "Finish with a compact report: findings first, then a 'Sources:' list. " +
-            "If something could not be verified, say so explicitly instead of guessing.",
-          0.4
-        );
-        sub.send(task.goal).catch((e: any) => resolve(`error: ${String(e?.message ?? e)}`));
-      });
-      this.activeSub = null;
-
-      // Full transcript spills to scratch; the main context stays clean.
-      let pathNote = "";
-      try {
-        const p = await api.scratchWrite(
-          `subagent-${Date.now().toString(36)}-${i + 1}.txt`,
-          `# ${task.title}\n\n## Goal\n${task.goal}\n\n## Tool trace\n${transcript.join("\n")}\n\n## Report\n${report}`
-        );
-        pathNote = `\n(full transcript: ${p})`;
-      } catch {}
-      reports.push(`### ${i + 1}. ${task.title}\n${report.slice(0, 6000)}${pathNote}`);
-      this.hooks.onNotice?.(
-        t("wf.done").replace("%i", String(i + 1)).replace("%n", String(tasks.length)).replace("%t", task.title)
-      );
+  private async spawnAgent(name: string, role: string, brief: string): Promise<string> {
+    if (!directory) return "error: no team available in this conversation";
+    if (this.role !== "main") {
+      return "error: only the conversation's own agent recruits teammates; ask it if you need one";
     }
-    return reports.join("\n\n");
+    if (!name.trim()) return "error: spawn_agent needs a name";
+    if (!brief.trim()) return "error: spawn_agent needs a brief; the teammate knows nothing of this conversation";
+    const ok = await this.gate({
+      kind: "agent",
+      detail: `${name.trim()} · ${role.trim() || "(no role)"}`,
+      elevated: false,
+    });
+    if (!ok) return "denied by user";
+    const member = await directory.spawn(this.convId, name.trim(), role.trim(), brief.trim());
+    if (typeof member === "string") return `error: ${member}`;
+    return (
+      `teammate "${member.name}" is ready (role: ${member.role || "unspecified"}).\n` +
+      `Send it work with ask_agent(agent: "${member.name}", message: …). Its thread is visible to the user.`
+    );
+  }
+
+  // ---------------- talking to a teammate ----------------
+
+  /**
+   * Send a message to a teammate and wait for its answer. BLOCKING on
+   * purpose: the model asked a question and the answer belongs in this turn,
+   * as this tool's result the user can read. The wait is bounded by the
+   * directory implementation, a busy teammate is refused rather than queued,
+   * and every hop is recorded in the chain so a cycle can never run.
+   */
+  private async askAgent(target: string, message: string): Promise<string> {
+    if (!directory) return "error: no team available in this conversation";
+    if (!target.trim()) return "error: ask_agent needs an agent name (call list_agents first)";
+    if (!message.trim()) return "error: ask_agent needs a message";
+    if (this.chain.length >= MAX_DELEGATION_DEPTH) {
+      return `error: delegation depth limit reached (${MAX_DELEGATION_DEPTH}); answer with what you have instead of asking another teammate`;
+    }
+    const wanted = target.trim().toLowerCase();
+    const known = directory.team(this.convId).find((m) => m.name.toLowerCase() === wanted || m.id === target.trim());
+    if (!known) {
+      const roster = directory.team(this.convId).map((m) => m.name).join(", ");
+      return `error: no teammate named "${target}"${roster ? ` (team: ${roster})` : " (the team is empty; spawn_agent first)"}`;
+    }
+    if (known.id === this.threadId) {
+      return "error: that is you; answer it yourself instead of delegating";
+    }
+    if (this.chain.includes(known.id)) {
+      return `error: "${known.name}" is already waiting on this delegation chain; answering it back would loop`;
+    }
+    if (known.busy) {
+      return `error: "${known.name}" is busy right now; try again later or do it yourself`;
+    }
+    const ok = await this.gate({
+      kind: "agent",
+      // The teammate comes first so an "Always" rule grants that teammate,
+      // not one exact wording of one message (see gate()).
+      detail: `${known.name} · ${message.slice(0, 200)}`,
+      elevated: false,
+    });
+    if (!ok) return "denied by user";
+    this.hooks.onActivity?.("fleet", known.name);
+    return directory.ask(this.convId, known.id, message, { id: this.threadId, name: this.selfName }, [
+      ...this.chain,
+      this.threadId,
+    ]);
   }
 
   private async gate(req: PermissionRequest): Promise<boolean> {
@@ -1050,7 +1255,10 @@ export class Agent {
     // The user may have hit Stop while the dialog was open: an approval that
     // lands after the abort must NOT execute the pending tool.
     if (this.abort?.signal.aborted) return false;
-    if (decision === "deny") return false;
+    // Fail CLOSED: only an explicit approval proceeds. Testing for "deny"
+    // alone made anything unexpected (a hook resolving undefined, a dialog
+    // dismissed by something other than its buttons) read as consent.
+    if (decision !== "once" && decision !== "always") return false;
     if (decision === "always" && !req.elevated) {
       let prefix = req.detail;
       if (req.kind === "fs_read" || req.kind === "fs_list") {
@@ -1068,6 +1276,11 @@ export class Agent {
       } else if (req.kind === "mcp") {
         // Keep the trailing slash: "github" must not also grant "githubfoo".
         prefix = (req.detail.split("/")[0] ?? req.detail) + "/";
+      } else if (req.kind === "agent") {
+        // "Always" on a delegation grants THAT conversation, not that exact
+        // message. The separator is kept so one target id can never prefix
+        // another one.
+        prefix = (req.detail.split(" · ")[0] ?? req.detail) + " · ";
       }
       // shell / obsidian / memory / fs_write: the FULL detail is stored and
       // matched exactly — a broader rule (first token, whole folder) is an
@@ -1169,8 +1382,12 @@ export class Agent {
         const p = String(args.path ?? "");
         const ok = await this.gate({ kind: "fs_read", detail: p, elevated: false });
         result = ok ? await api.docRead(p, args.mode ? String(args.mode) : undefined) : "denied by user";
-      } else if (name === "run_workflow" && this.role === "main") {
-        result = await this.runWorkflow(args.tasks);
+      } else if (name === "spawn_agent") {
+        result = await this.spawnAgent(
+          String(args.name ?? ""),
+          String(args.role ?? ""),
+          String(args.brief ?? "")
+        );
       } else if (name === "search_knowledge") {
         // The user opted in by configuring the folders: no dialog, but the
         // call stays visible as a tool card.
@@ -1180,6 +1397,42 @@ export class Agent {
               .map((h) => `${h.path}:${h.line} (score ${h.score.toFixed(2)})\n${h.snippet}`)
               .join("\n\n---\n\n")
           : "(no match in the knowledge folders)";
+      } else if (name === "list_agents") {
+        // Reading the roster is not an action on the user's behalf: no gate,
+        // but the call stays visible as a tool card like every other one.
+        const rows = directory?.team(this.convId) ?? [];
+        result = rows.length
+          ? rows
+              .map(
+                (m) =>
+                  `${m.name}\t${m.role || "(no role)"}\t${m.busy ? "busy" : "idle"}\t${m.messages} entries${m.id === this.threadId ? "\t(you)" : ""}`
+              )
+              .join("\n")
+          : "(no teammate yet; the conversation's agent can create one with spawn_agent)";
+      } else if (name === "ask_agent") {
+        result = await this.askAgent(String(args.agent ?? ""), String(args.message ?? ""));
+      } else if (name === "search_conversations") {
+        const q = String(args.query ?? "");
+        const ok = await this.gate({ kind: "conversations", detail: `search: ${q}`, elevated: false });
+        if (!ok) {
+          result = "denied by user";
+        } else {
+          const k = Number(args.k) > 0 ? Math.min(Math.floor(Number(args.k)), 20) : undefined;
+          const hits = await api.convSearch(q, k);
+          result = hits.length
+            ? hits
+                .map(
+                  (h) =>
+                    `[${h.title || "(untitled)"} · id ${h.id} · ${new Date(h.updated).toISOString().slice(0, 10)}${h.id === this.convId ? " · THIS conversation" : ""}] (score ${h.score.toFixed(2)})\n${h.snippet}`
+                )
+                .join("\n\n---\n\n")
+            : "(no match in the stored conversations)";
+        }
+      } else if (name === "read_conversation") {
+        const id = String(args.id ?? "");
+        const ok = await this.gate({ kind: "conversations", detail: `read: ${id}`, elevated: false });
+        const cap = Math.min(Math.max(Math.floor(Number(args.max_chars)) || 24_000, 1_000), 200_000);
+        result = ok ? await api.convRead(id, cap) : "denied by user";
       } else if (name === "use_skill") {
         result = await api.skillRead(String(args.name ?? ""));
       } else if (name === "obsidian_search") {

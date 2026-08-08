@@ -718,6 +718,8 @@ struct ServerState {
     port: u16,
     /// Engine regime: resident-metal | streamed-metal | cpu-bit-exact.
     mode: String,
+    /// Decode slots the running server was started with (--parallel).
+    slots: u32,
 }
 
 static SERVER: OnceLock<Mutex<ServerState>> = OnceLock::new();
@@ -732,8 +734,42 @@ fn server_state() -> &'static Mutex<ServerState> {
             generation: 0,
             port: 0,
             mode: String::new(),
+            slots: 1,
         })
     })
+}
+
+// ---------------------------------------------------------------- decode slots
+//
+// llama-server splits --ctx-size across --parallel slots, so N slots at the
+// same per-conversation window cost N times the KV cache and nothing else:
+// measured on Qwen3-30B-A3B Q8_0 (resident-bit-exact, M5 Max 128 GB), the
+// resident footprint goes 29.6 GB at 1 slot / 8192, 30.4 GB at 2 slots /
+// 16384, 32.0 GB at 4 slots / 32768: about 0.8 GB per extra slot, with
+// single-stream generation unchanged. That is what makes several
+// conversations able to generate at once, and it is why the window per slot
+// is held at CTX_PER_SLOT instead of being divided.
+//
+// The app never runs more concurrent turns than there are slots (see the slot
+// pool in main.ts): the bound is this number, not a UI convention.
+
+/// Context window every slot must keep, whatever the slot count.
+const CTX_PER_SLOT: u32 = 8192;
+/// Hard ceiling on slots: past this the KV cache stops being free and a Mac
+/// with a big model would pay it in evictions.
+const MAX_SLOTS: u32 = 4;
+
+/// Decode slots to start the engine with (setting "engine_slots", default 2).
+///
+/// Two is the honest default: it makes a second conversation possible for
+/// 0.8 GB, while four costs 2.4 GB for a fan-out the aggregate throughput
+/// does not reward on this engine.
+fn engine_slots() -> u32 {
+    settings_load()
+        .get("engine_slots")
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        .unwrap_or(2)
+        .clamp(1, MAX_SLOTS)
 }
 
 #[derive(Serialize, Clone)]
@@ -743,6 +779,8 @@ struct ServerStatus {
     port: u16,
     phase: String,
     mode: String,
+    /// Concurrent decode streams the running engine can serve.
+    slots: u32,
 }
 
 #[tauri::command]
@@ -754,6 +792,9 @@ fn server_status() -> ServerStatus {
         port: if s.port == 0 { SERVER_PORT_BASE } else { s.port },
         phase: s.phase.clone(),
         mode: s.mode.clone(),
+        // Stopped: report what the NEXT start would give, so the UI never
+        // promises a concurrency the engine will not have.
+        slots: if s.child.is_some() { s.slots } else { engine_slots() },
     }
 }
 
@@ -1211,6 +1252,12 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
         // numerics AND GPU speed, no trade-off.
         cmd.env("GALACTUS_METAL_BITEXACT", "1");
     }
+    // Slots and window: --ctx-size is the TOTAL KV budget and llama-server
+    // divides it by --parallel, so it is scaled with the slot count. Splitting
+    // a fixed 8192 instead would silently give a two-conversation user a
+    // 4096-token window per thread.
+    let slots = engine_slots();
+    let ctx_total = CTX_PER_SLOT * slots;
     cmd.arg("--model")
         .arg(&gguf)
         .arg("--host")
@@ -1218,7 +1265,7 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
         .arg("--port")
         .arg(port.to_string())
         .arg("--ctx-size")
-        .arg("8192")
+        .arg(ctx_total.to_string())
         .arg("--n-gpu-layers")
         .arg("99")
         .arg("--no-repack")
@@ -1235,9 +1282,9 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
         .arg("512")
         .arg("--ubatch-size")
         .arg(eff_ubatch.to_string())
-        // One slot: the arena serves a single decode stream.
+        // One slot per conversation the app is allowed to run at once.
         .arg("--parallel")
-        .arg("1")
+        .arg(slots.to_string())
         .arg("--jinja")
         .stdout(Stdio::from(log_out))
         .stderr(Stdio::from(log_err));
@@ -1283,6 +1330,7 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
         s.phase = "starting".into();
         s.generation = generation;
         s.port = port;
+        s.slots = slots;
     }
     let _ = app.emit("galactus://server", json!({"phase": "starting"}));
 
@@ -3042,12 +3090,26 @@ fn conv_load(id: String) -> Result<Value, String> {
     serde_json::from_str(&txt).map_err(|e| e.to_string())
 }
 
+/// Atomic per-thread write: temp file in the same directory, then rename.
+///
+/// Several conversations now stream at the same time, each saving on its own
+/// debounce. They target distinct files, so they cannot overwrite each other,
+/// but a plain write that is interrupted mid-way (quit, crash, full disk)
+/// leaves a truncated JSON that reopens as a lost thread. The rename is
+/// atomic on APFS, so a reader sees either the old file or the new one.
 #[tauri::command]
 fn conv_save(id: String, data: String) -> Result<(), String> {
     let dir = conv_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let p = dir.join(format!("{}.json", sanitize_id(&id)));
-    std::fs::write(&p, data.as_bytes()).map_err(|e| e.to_string())
+    let safe = sanitize_id(&id);
+    let p = dir.join(format!("{safe}.json"));
+    let tmp = dir.join(format!(".{safe}.{}.tmp", std::process::id()));
+    std::fs::write(&tmp, data.as_bytes()).map_err(|e| e.to_string())?;
+    if let Err(e) = std::fs::rename(&tmp, &p) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.to_string());
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -3064,6 +3126,191 @@ fn sanitize_id(id: &str) -> String {
         .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
         .take(64)
         .collect()
+}
+
+// ------------------------------------------------- conversation history search
+//
+// The model can reach the threads it is NOT in (search_conversations,
+// read_conversation). Both go through the permission gate on the TypeScript
+// side; here we only render and rank.
+//
+// No persisted index: the whole corpus is a handful of small JSON files that
+// change on every streamed token, so it is read and ranked in milliseconds and
+// is always fresh. Ranking itself is the knowledge module's BM25, chunker and
+// snippet centring: the same relevance behaviour the user already gets on
+// their folders, reused rather than reinvented (knowledge::rank_documents).
+
+/// UTC "YYYY-MM-DD HH:MM" from epoch milliseconds; "?" when there is no date.
+///
+/// Every excerpt and every transcript carries one: the whole point of reaching
+/// old threads is that the model must not mistake them for the current one.
+fn stamp(ms: u64) -> String {
+    if ms == 0 {
+        return "?".into();
+    }
+    let secs = (ms / 1000) as i64;
+    let days = secs.div_euclid(86_400);
+    let tod = secs.rem_euclid(86_400);
+    // Howard Hinnant's civil_from_days.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!(
+        "{y:04}-{m:02}-{d:02} {:02}:{:02}",
+        tod / 3600,
+        (tod % 3600) / 60
+    )
+}
+
+fn clip(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let cut: String = s.chars().take(max).collect();
+    format!("{cut}…")
+}
+
+/// Plain-text rendering of a stored thread: one line per item, roles named.
+/// Tool cards keep their name, argument and a clipped result, enough to be
+/// searchable without dragging whole 200 KB dumps into the ranking.
+fn conv_transcript(v: &Value) -> String {
+    let mut out = String::new();
+    for it in v["items"].as_array().cloned().unwrap_or_default() {
+        let kind = it["kind"].as_str().unwrap_or("");
+        let line = match kind {
+            "user" => match it["from"].as_str() {
+                Some(from) if !from.is_empty() => format!(
+                    "[user · relayed by the agent of \"{from}\"] {}",
+                    clip(it["text"].as_str().unwrap_or(""), 4000)
+                ),
+                _ => format!("[user] {}", clip(it["text"].as_str().unwrap_or(""), 4000)),
+            },
+            "assistant" => format!("[assistant] {}", clip(it["text"].as_str().unwrap_or(""), 8000)),
+            "tool" => format!(
+                "[tool {} {}] {}",
+                it["name"].as_str().unwrap_or("?"),
+                clip(it["arg"].as_str().unwrap_or(""), 200),
+                clip(it["result"].as_str().unwrap_or(""), 800)
+            ),
+            "notice" => format!("[note] {}", clip(it["text"].as_str().unwrap_or(""), 500)),
+            "error" => format!("[error] {}", clip(it["text"].as_str().unwrap_or(""), 500)),
+            _ => continue,
+        };
+        out.push_str(&line);
+        out.push('\n');
+    }
+    out
+}
+
+/// Every stored thread as (id, title, created, updated, transcript).
+/// Oversized files are skipped rather than read: a runaway thread must not
+/// stall a search.
+fn conv_corpus() -> Vec<(String, String, u64, u64, String)> {
+    const MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
+    let mut out = Vec::new();
+    let Ok(rd) = std::fs::read_dir(conv_dir()) else {
+        return out;
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.extension().map(|x| x != "json").unwrap_or(true) {
+            continue;
+        }
+        if e.metadata().map(|m| m.len() > MAX_FILE_BYTES).unwrap_or(false) {
+            continue;
+        }
+        let Ok(txt) = std::fs::read_to_string(&p) else { continue };
+        let Ok(v) = serde_json::from_str::<Value>(&txt) else { continue };
+        let id = v["id"].as_str().unwrap_or_default().to_string();
+        if id.is_empty() {
+            continue;
+        }
+        out.push((
+            id,
+            v["title"].as_str().unwrap_or_default().to_string(),
+            v["created"].as_u64().unwrap_or(0),
+            v["updated"].as_u64().unwrap_or(0),
+            conv_transcript(&v),
+        ));
+    }
+    out
+}
+
+#[derive(Serialize)]
+struct ConvHit {
+    id: String,
+    title: String,
+    created: u64,
+    updated: u64,
+    /// First line of the matching excerpt inside the rendered transcript.
+    line: usize,
+    snippet: String,
+    score: f64,
+}
+
+#[tauri::command]
+fn conv_search(query: String, k: Option<usize>) -> Vec<ConvHit> {
+    let k = k.unwrap_or(6).clamp(1, 20);
+    let corpus = conv_corpus();
+    let docs: Vec<(String, String)> = corpus
+        .iter()
+        .map(|(id, _, _, _, text)| (id.clone(), text.clone()))
+        .collect();
+    knowledge::rank_documents(&docs, &query, k)
+        .into_iter()
+        .filter_map(|h| {
+            let (id, title, created, updated, _) = corpus.iter().find(|c| c.0 == h.path)?;
+            Some(ConvHit {
+                id: id.clone(),
+                title: title.clone(),
+                created: *created,
+                updated: *updated,
+                line: h.line,
+                snippet: h.snippet,
+                score: h.score,
+            })
+        })
+        .collect()
+}
+
+/// One stored thread as a dated transcript, header first.
+#[tauri::command]
+fn conv_read(id: String, max_chars: Option<usize>) -> Result<String, String> {
+    let cap = max_chars.unwrap_or(24_000).clamp(1_000, 200_000);
+    let p = conv_dir().join(format!("{}.json", sanitize_id(&id)));
+    let txt = std::fs::read_to_string(&p).map_err(|_| format!("no stored conversation with id {id}"))?;
+    let v: Value = serde_json::from_str(&txt).map_err(|e| e.to_string())?;
+    let title = v["title"].as_str().unwrap_or("");
+    let created = v["created"].as_u64().unwrap_or(0);
+    let updated = v["updated"].as_u64().unwrap_or(0);
+    let count = v["items"].as_array().map(|a| a.len()).unwrap_or(0);
+    let body = conv_transcript(&v);
+    let mut head = format!(
+        "[stored conversation \"{}\" · id {} · started {} UTC · last updated {} UTC · {} entries]\n\
+         [This is a PAST thread, not the conversation you are in. Attribute anything you reuse from it to this title and date.]\n\n",
+        if title.is_empty() { "(untitled)" } else { title },
+        id,
+        stamp(created),
+        stamp(updated),
+        count
+    );
+    if body.chars().count() > cap {
+        let cut: String = body.chars().take(cap).collect();
+        head.push_str(&cut);
+        head.push_str(&format!(
+            "\n…(transcript truncated at {cap} chars; raise max_chars to read further)"
+        ));
+    } else {
+        head.push_str(&body);
+    }
+    Ok(head)
 }
 
 // ---------------------------------------------------------------- documents
@@ -3636,6 +3883,8 @@ pub fn run() {
             conv_load,
             conv_save,
             conv_delete,
+            conv_search,
+            conv_read,
             doc_read,
             doc_capabilities,
             voice_start,

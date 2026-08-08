@@ -78,11 +78,23 @@ fn serve(root: &Path, model_id: &str, args: &[String]) -> Result<(), String> {
     // cablage avant de lancer quoi que ce soit.
     engine_is_wired(&bin)?;
 
+    // Memes creneaux que l'app : --parallel N avec une fenetre CTX_PER_SLOT
+    // par creneau, pilote par le reglage partage "engine_slots". Un `serve` en
+    // ligne de commande qui offrirait une concurrence differente de celle de
+    // l'app mesurerait autre chose que ce que l'utilisateur execute.
+    let slots = args
+        .windows(2)
+        .find(|w| w[0] == "--slots")
+        .and_then(|w| w[1].parse::<u32>().ok())
+        .map(|n| n.clamp(1, MAX_SLOTS))
+        .unwrap_or_else(engine_slots);
+    let ctx_total = CTX_PER_SLOT * slots;
     let expert_total = entry["expert_bytes_total"].as_u64().unwrap_or(u64::MAX);
     let regime = if cpu_moe { "cpu-bit-exact" } else if cache_bytes >= expert_total { "resident-bit-exact" } else { "streamed-bit-exact" };
     let dual = pack_internal != pack_external;
     println!("galactus serve {model_id}");
     println!("  regime  : {regime} (empreinte {ram_mode}, cache {:.1} Go, ubatch {ubatch})", cache_bytes as f64 / 1e9);
+    println!("  creneaux: {slots} (fenetre {CTX_PER_SLOT} par creneau, contexte total {ctx_total})");
     println!("  packs   : {}", if dual { "double (deux SSD en parallele)" } else { "mono-volume" });
     println!("    interne : {}", pack_internal.display());
     println!("    externe : {}", pack_external.display());
@@ -116,12 +128,12 @@ fn serve(root: &Path, model_id: &str, args: &[String]) -> Result<(), String> {
         .arg("--model").arg(&gguf)
         .arg("--host").arg("127.0.0.1")
         .arg("--port").arg(port.to_string())
-        .arg("--ctx-size").arg("8192")
+        .arg("--ctx-size").arg(ctx_total.to_string())
         .arg("--n-gpu-layers").arg("99")
         .arg("--no-repack").arg("--fit").arg("off").arg("--no-mmap")
         .arg("--batch-size").arg("512")
         .arg("--ubatch-size").arg(ubatch.to_string())
-        .arg("--parallel").arg("1")
+        .arg("--parallel").arg(slots.to_string())
         .arg("--jinja")
         .status()
         .map_err(|e| e.to_string())?;
@@ -129,6 +141,45 @@ fn serve(root: &Path, model_id: &str, args: &[String]) -> Result<(), String> {
         return Err(format!("llama-server a quitte ({})", status.code().unwrap_or(-1)));
     }
     Ok(())
+}
+
+/// Miroir CLI de la recherche d'historique que le modele utilise
+/// (search_conversations / read_conversation). Meme code exactement : ce que
+/// la commande imprime est ce que l'agent recoit.
+fn history(args: &[String]) -> Result<(), String> {
+    match args.first().map(|s| s.as_str()) {
+        Some("read") => {
+            let id = args.get(1).ok_or("usage : galactus history read <id> [--max N]")?;
+            let cap = args
+                .windows(2)
+                .find(|w| w[0] == "--max")
+                .and_then(|w| w[1].parse::<usize>().ok());
+            println!("{}", conv_read(id.clone(), cap)?);
+            Ok(())
+        }
+        Some("search") | None => {
+            let terms: Vec<String> = args
+                .iter()
+                .skip(if args.first().map(|s| s == "search").unwrap_or(false) { 1 } else { 0 })
+                .filter(|a| !a.starts_with("--"))
+                .cloned()
+                .collect();
+            if terms.is_empty() {
+                return Err("usage : galactus history search <termes> [-k N]".into());
+            }
+            let k = args
+                .windows(2)
+                .find(|w| w[0] == "-k")
+                .and_then(|w| w[1].parse::<usize>().ok());
+            let hits = conv_search(terms.join(" "), k);
+            if hits.is_empty() {
+                println!("aucune correspondance dans les discussions enregistrees");
+            }
+            println!("{}", serde_json::to_string_pretty(&hits).unwrap_or_default());
+            Ok(())
+        }
+        Some(other) => Err(format!("sous-commande inconnue : history {other}")),
+    }
 }
 
 fn bench(args: &[String]) -> Result<(), String> {
@@ -187,7 +238,7 @@ pub fn cli_main() {
                 install_cli(&root, id)
             }
             "serve" | "run" => {
-                let id = rest.first().ok_or("usage : galactus serve <modele> [--ram eco|balanced|perf] [--cpu-moe] [--port N]")?;
+                let id = rest.first().ok_or("usage : galactus serve <modele> [--ram eco|balanced|perf] [--cpu-moe] [--slots N] [--port N]")?;
                 serve(&galactus_root()?, id, rest)
             }
             "remove" | "rm" => {
@@ -201,6 +252,7 @@ pub fn cli_main() {
                 Ok(())
             }
             "bench" => bench(rest),
+            "history" => history(rest),
             "status" => {
                 status(&galactus_root()?);
                 Ok(())
@@ -212,9 +264,12 @@ pub fn cli_main() {
                 println!("  galactus serve <modele> [options]     sert le modele (API OpenAI locale)");
                 println!("      --ram eco|balanced|perf           empreinte memoire (defaut : reglage app)");
                 println!("      --cpu-moe                         experts CPU bit-exacts (contre-verification)");
+                println!("      --slots N                         creneaux de decodage 1..{MAX_SLOTS} (defaut : reglage app)");
                 println!("      --port N                          port (defaut {SERVER_PORT_BASE})");
                 println!("  galactus bench [--port N]             mesure la vitesse du serveur actif");
                 println!("  galactus remove <modele>              supprime le modele (confirmation par le nom)");
+                println!("  galactus history search <termes>      cherche dans les discussions enregistrees");
+                println!("  galactus history read <id>            lit une discussion enregistree");
                 println!("  galactus status                       serveur actif ?");
                 println!("  galactus stop                         arrete les serveurs galactus");
                 Ok(())

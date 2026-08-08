@@ -630,6 +630,30 @@ fn bm25_search(index: &Index, query: &str, k: usize) -> Vec<KbHit> {
         .collect()
 }
 
+/// Rank an ad-hoc corpus with the SAME chunking, tokenizer, BM25 and snippet
+/// centring the knowledge folders use, without touching the persisted index.
+///
+/// The conversation history is the caller: a few small JSON files that change
+/// on every token streamed. Indexing them on disk would buy nothing (the whole
+/// corpus is read in milliseconds) and would cost the one thing that matters
+/// there, freshness: a thread saved two seconds ago must be searchable now.
+/// Each input is (key, text); the key comes back in KbHit.path and the chunk's
+/// first line in KbHit.line.
+pub fn rank_documents(docs: &[(String, String)], query: &str, k: usize) -> Vec<KbHit> {
+    let mut chunks: Vec<StoredChunk> = Vec::new();
+    for (key, text) in docs {
+        for (line, body) in chunk_text(text) {
+            chunks.push(StoredChunk { path: key.clone(), line, text: body });
+        }
+    }
+    if chunks.is_empty() {
+        return Vec::new();
+    }
+    let files = docs.len();
+    let index = index_from_chunks(Vec::new(), files, now_unix(), chunks);
+    bm25_search(&index, query, k)
+}
+
 // ---------------------------------------------------------------- commands
 
 /// Configured knowledge folders (empty when nothing is set).

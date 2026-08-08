@@ -2,10 +2,13 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, benchOnce, HwInfo, InstallVolumes, ModelEntry, onEvent, ServerStatus, SkillInfo, VolumeInfo } from "./api";
 import {
   Agent,
+  AgentDirectory,
   clearStandingPermissions,
   loadStandingPermissions,
   PermissionDecision,
   PermissionRequest,
+  setAgentDirectory,
+  TeamMember,
 } from "./agent";
 import { CATALOG, ConnectorPreset, EnabledConnector, loadEnabled, saveEnabled } from "./connectors";
 import { getLang, Lang, setLang, t } from "./i18n";
@@ -17,7 +20,7 @@ import { currentTask, loadTasks, pickModelFor, setCurrentTask, TaskDef, TaskId }
 import { detectTask, getAutoMode, mayAutoSwap, planSwap, setAutoMode, type AutoMode } from "./autotask";
 import { exportConversationMarkdown, formatStats, searchConversations, wireDropZone } from "./chatx";
 import * as store from "./store";
-import type { ChatItem, Conversation, ConvMeta } from "./store";
+import type { ChatItem, Conversation, ConvMeta, SubAgent, ThreadData } from "./store";
 
 const app = document.getElementById("app")!;
 const LOGO = "/galactus-mark.svg";
@@ -30,10 +33,6 @@ let root: string | null = null;
 let hw: HwInfo | null = null;
 let registry: ModelEntry[] = [];
 let server: ServerStatus = { running: false, port: 8737, phase: "stopped" };
-let agent: Agent | null = null;
-let generating = false;
-/** Messages typed while the model is writing: shown at once, sent next turn. */
-let queuedMsgs: string[] = [];
 let enabled: EnabledConnector[] = [];
 let mcpCount = 0;
 let autonomy: Autonomy = "assisted";
@@ -60,13 +59,186 @@ let dictating = false;
 let dictBase = "";
 /** Read-aloud state, global on purpose: the DOM is rebuilt on every repaint. */
 let ttsPlaying = false;
-/** Honest generation stats: streamed chars / elapsed time (~4 chars per token). */
-let genStats: { convId: string; chars: number; startMs: number; endMs: number | null } | null = null;
 /** Live header metrics: engine RSS + generation speed. */
 let liveRss = 0;
 let liveTps: number | null = null;
 /** When the current model load started (null when not loading). */
 let loadStartMs: number | null = null;
+
+// ---------- live threads (a conversation and its team) ----------
+//
+// A conversation is a small tree: the user's thread, plus the persistent
+// thread of every sub-agent it owns. Each one runs on its own Agent, with its
+// own history, plan, queue and activity scene. Everything that used to be a
+// module-level singleton (`agent`, `generating`, `queuedMsgs`, `genStats`,
+// the activity scene) lives in a Thread record, so a teammate working in the
+// background never touches the state of the thread on screen.
+//
+// Two bounds, both real, never a UI convention:
+//  - concurrent TURNS are capped by the engine's decode slots (llama-server
+//    --parallel, reported in server.slots). A turn beyond that waits for a
+//    slot instead of piling requests the server would serialize anyway.
+//  - the TEAM is capped by store.teamLimit(), and idle conversations are
+//    released from memory past MAX_LIVE_CONVS.
+
+interface Thread {
+  /** conv.id for a conversation's own thread, "convId#subId" for a teammate. */
+  key: string;
+  conv: Conversation;
+  /** The thread's own data: the conversation itself, or the sub-agent. */
+  data: ThreadData;
+  /** null for the conversation's own thread. */
+  sub: SubAgent | null;
+  agent: Agent | null;
+  generating: boolean;
+  /** Messages typed while the model is writing: shown at once, sent next turn. */
+  queued: string[];
+  /** Streamed chars / elapsed time for the running turn (~4 chars per token). */
+  genStats: { chars: number; startMs: number; endMs: number | null } | null;
+  /** Last non-done activity, so a repaint can restore the scene. */
+  activity: { mode: PixelMode; label?: string } | null;
+  /** Agents blocked on this thread's current turn (ask_agent). */
+  waiters: ((answer: string) => void)[];
+  /** True while this thread holds one of the engine's decode slots. */
+  holdsSlot: boolean;
+  touched: number;
+}
+
+const threads = new Map<string, Thread>();
+const MAX_LIVE_CONVS = 8;
+
+function threadKey(convId: string, subId?: string | null): string {
+  return subId ? `${convId}#${subId}` : convId;
+}
+
+function threadOf(conv: Conversation, sub: SubAgent | null = null): Thread {
+  const key = threadKey(conv.id, sub?.id);
+  let th = threads.get(key);
+  if (!th) {
+    th = {
+      key,
+      conv,
+      data: sub ?? conv,
+      sub,
+      agent: null,
+      generating: false,
+      queued: [],
+      genStats: null,
+      activity: null,
+      waiters: [],
+      holdsSlot: false,
+      touched: Date.now(),
+    };
+    threads.set(key, th);
+  } else {
+    // store.open() hands back the same object for a live conversation, but a
+    // reopened one is a fresh object: keep the thread pointing at the truth.
+    th.conv = conv;
+    if (sub) {
+      th.sub = sub;
+      th.data = sub;
+    } else {
+      th.data = conv;
+    }
+  }
+  th.touched = Date.now();
+  return th;
+}
+
+/** The sub-agent thread the chat view is focused on, if any. */
+let focusAgent: string | null = null;
+
+function focusedSub(): SubAgent | null {
+  if (!focusAgent) return null;
+  return store.findSubAgent(store.current(), focusAgent) ?? null;
+}
+
+/** The thread the chat view is showing: the conversation, or a teammate of it. */
+function active(): Thread {
+  const conv = store.current();
+  const sub = focusedSub();
+  if (focusAgent && !sub) focusAgent = null; // the teammate is gone
+  return threadOf(conv, sub);
+}
+
+/** Every live thread of one conversation: its own, then its team. */
+function convThreads(conv: Conversation): Thread[] {
+  const out: Thread[] = [];
+  const own = threads.get(threadKey(conv.id));
+  if (own) out.push(own);
+  for (const sub of conv.team) {
+    const th = threads.get(threadKey(conv.id, sub.id));
+    if (th) out.push(th);
+  }
+  return out;
+}
+
+/** Teammates of a conversation, materialized so their state is addressable. */
+function teamThreads(conv: Conversation): Thread[] {
+  return conv.team.map((sub) => threadOf(conv, sub));
+}
+
+function busyIn(conv: Conversation): number {
+  return convThreads(conv).filter((th) => th.generating).length;
+}
+
+/**
+ * Drop the least recently touched IDLE conversation past the cap, with its
+ * whole team. The file on disk stays, so opening it again reloads everything.
+ */
+function pruneConversations(): void {
+  const activeId = store.current().id;
+  const ids = new Set([...threads.values()].map((th) => th.conv.id));
+  while (ids.size > MAX_LIVE_CONVS) {
+    let victimId: string | null = null;
+    let oldest = Infinity;
+    for (const id of ids) {
+      if (id === activeId) continue;
+      const group = convThreads(store.get(id) ?? ({ id, team: [] } as unknown as Conversation));
+      if (group.some((th) => th.generating || th.waiters.length > 0)) continue;
+      const t = Math.max(...group.map((th) => th.touched), 0);
+      if (t < oldest) { oldest = t; victimId = id; }
+    }
+    if (!victimId) return; // everything is busy: the cap yields, memory is bounded by the slots
+    for (const th of [...threads.values()]) {
+      if (th.conv.id !== victimId) continue;
+      th.agent?.stop();
+      threads.delete(th.key);
+    }
+    store.release(victimId);
+    ids.delete(victimId);
+  }
+}
+
+// ---------- engine decode slots ----------
+
+/** Slots the running engine serves; 1 until the backend says otherwise. */
+function engineSlots(): number {
+  const n = Number(server.slots);
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 1;
+}
+
+let slotsInUse = 0;
+const slotWaiters: (() => void)[] = [];
+
+function acquireSlot(): Promise<void> {
+  if (slotsInUse < engineSlots()) {
+    slotsInUse++;
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    slotWaiters.push(() => {
+      slotsInUse++;
+      resolve();
+    });
+  });
+}
+
+function releaseSlot(): void {
+  slotsInUse = Math.max(0, slotsInUse - 1);
+  const next = slotWaiters.shift();
+  if (next) next();
+}
 
 function loadElapsedText(): string {
   if (!loadStartMs) return "";
@@ -96,43 +268,59 @@ function paintLive(): void {
       `<span class="lv" title="${esc(t("live.ram"))}"><span class="k">RAM</span><b>${(liveRss / 1e9).toFixed(1)} Go</b></span>`
     );
   }
+  const sess = active();
+  const gs = sess.genStats;
   const tps =
-    generating && genStats && genStats.chars > 40
-      ? genStats.chars / 4 / Math.max((Date.now() - genStats.startMs) / 1000, 0.25)
+    sess.generating && gs && gs.chars > 40
+      ? gs.chars / 4 / Math.max((Date.now() - gs.startMs) / 1000, 0.25)
       : liveTps;
   if (tps && Number.isFinite(tps) && tps > 0) {
     parts.push(
-      `<span class="lv ${generating ? "hot" : ""}" title="${esc(t("live.tps"))}"><span class="k">tok/s</span><b>${tps.toFixed(1)}</b></span>`
+      `<span class="lv ${sess.generating ? "hot" : ""}" title="${esc(t("live.tps"))}"><span class="k">tok/s</span><b>${tps.toFixed(1)}</b></span>`
+    );
+  }
+  // How many threads have a turn in flight. NOT shown as "n / slots": a
+  // teammate blocked inside ask_agent is in flight without decoding, so the
+  // count legitimately exceeds the slot count and "3/2" would read as a bug.
+  const busy = [...threads.values()].filter((th) => th.generating).length;
+  if (busy > 1) {
+    parts.push(
+      `<span class="lv hot" title="${esc(t("live.threadsHint").replace("%n", String(engineSlots())))}"><span class="k">${esc(t("live.threads"))}</span><b>${busy}</b></span>`
     );
   }
   box.innerHTML = parts.join("");
 }
 
 // ---------- agent activity bar (PixelViz) ----------
+//
+// The scene itself is per-thread (Thread.activity): a teammate working in the
+// background keeps its own state and gets its scene back untouched when the
+// user opens it. Only ONE canvas exists, the one of the thread on screen; the
+// others advertise themselves through their block and the sidebar dot.
 let pixel: PixelViz | null = null;
 let pixelHost: HTMLElement | null = null;
-/**
- * Last non-done activity: render() rebuilds the whole DOM (server events,
- * install progress, view switches) and destroys the canvas; without this the
- * bar stayed hidden for the rest of a tool-less turn.
- */
-let lastActivity: { mode: PixelMode; label?: string } | null = null;
 /** Pending "done" confetti hide; a queued turn reuses the same PixelViz. */
 let doneHideTimer: number | null = null;
 
 function hideActivity() {
-  lastActivity = null;
   const bar = document.getElementById("actbar");
   if (bar) bar.style.display = "none";
   pixel?.destroy();
   pixel = null;
   pixelHost = null;
 }
-function onAgentActivity(mode: PixelMode, label?: string) {
+
+/**
+ * Record an activity for one session, and paint it when that session is the
+ * one on screen. A background thread never steals the visible scene.
+ */
+function onThreadActivity(sess: Thread, mode: PixelMode, label?: string) {
+  const visible = sess.key === active().key;
   if (mode === "done") {
     // Laisser les confettis jouer avant de ranger la scene; une nouvelle
     // activite (message en file) recree simplement un PixelViz.
-    lastActivity = null;
+    sess.activity = null;
+    if (!visible) return;
     if (pixel) {
       pixel.setMode("done");
       const px = pixel;
@@ -146,12 +334,17 @@ function onAgentActivity(mode: PixelMode, label?: string) {
     }
     return;
   }
+  if (mode === "thinking" && !label) label = t("px.thinking");
+  if (!sess.generating) {
+    sess.activity = null;
+    if (visible) hideActivity();
+    return;
+  }
+  sess.activity = { mode, label };
+  if (!visible) return;
   // A "done" hide armed by the previous turn must not fire during the NEXT
   // queued turn and blank the bar mid-activity.
   if (doneHideTimer !== null) { clearTimeout(doneHideTimer); doneHideTimer = null; }
-  if (!generating) { hideActivity(); return; }
-  if (mode === "thinking" && !label) label = t("px.thinking");
-  lastActivity = { mode, label };
   const bar = document.getElementById("actbar");
   const host = document.getElementById("pixelhost");
   if (!bar || !host) return;
@@ -159,6 +352,13 @@ function onAgentActivity(mode: PixelMode, label?: string) {
   if (!pixel) { pixel = new PixelViz(host); pixelHost = host; }
   bar.style.display = "block";
   pixel.setMode(mode, label ? prettyTool(label) : undefined);
+}
+
+/** Repaint the visible thread's scene after a DOM rebuild or a thread switch. */
+function restoreActivity(): void {
+  const sess = active();
+  if (sess.generating && sess.activity) onThreadActivity(sess, sess.activity.mode, sess.activity.label);
+  else hideActivity();
 }
 
 // ---------- svg icons ----------
@@ -262,10 +462,15 @@ function engineModeLabel(mode?: string): string {
   return "";
 }
 
+/** Autonomy is a global preference: every live agent follows it. */
 function applyAutonomy() {
-  if (!agent) return;
-  agent.setMode(autonomy === "manual" ? "chat" : "agent");
-  agent.setAutoApprove(autonomy === "autonomous");
+  for (const th of threads.values()) {
+    // A teammate always works in agent mode: it was recruited to carry a task
+    // to the end, not to chat. Only the conversation's own agent follows the
+    // Manual / Assisted / Autonomous switch.
+    th.agent?.setMode(autonomy === "manual" && !th.sub ? "chat" : "agent");
+    th.agent?.setAutoApprove(autonomy === "autonomous");
+  }
 }
 
 const AUTONOMY_ORDER: Autonomy[] = ["manual", "assisted", "autonomous"];
@@ -295,59 +500,90 @@ function cycleAutonomy(): void {
  * Matched from the tail because streaming can interleave assistant items
  * after a queued bubble.
  */
-function dropQueuedBubbles(): void {
-  if (!queuedMsgs.length) return;
-  const items = store.current().items;
-  for (let q = queuedMsgs.length - 1; q >= 0; q--) {
+function dropQueuedBubbles(sess: Thread): void {
+  if (!sess.queued.length) return;
+  const items = sess.data.items;
+  for (let q = sess.queued.length - 1; q >= 0; q--) {
     for (let i = items.length - 1; i >= 0; i--) {
       const it = items[i];
-      if (it.kind === "user" && it.text === queuedMsgs[q]) {
+      if (it.kind === "user" && it.text === sess.queued[q]) {
         items.splice(i, 1);
         break;
       }
     }
   }
-  queuedMsgs = [];
+  sess.queued = [];
 }
 
 /**
- * Leaving a thread mid-generation: persist what the model context really
- * holds, or reopening the thread would replay a history missing the last
- * exchange (the transcript and the context would diverge permanently).
+ * Checkpoint one thread: persist what the model context really holds, or
+ * reopening it would replay a history missing the last exchange (the
+ * transcript and the context would diverge permanently).
  */
-function syncBeforeLeaving(): void {
-  if (generating && agent) {
-    store.syncHistory(agent.history());
-    store.trimEmptyTail();
+function checkpoint(sess: Thread): void {
+  if (sess.generating && sess.agent) {
+    store.syncHistory(sess, sess.agent.history(), sess.agent.summary());
+    store.trimEmptyTail(sess);
   }
-  dropQueuedBubbles();
-  store.save(true);
+  store.save(sess.conv, true);
+}
+
+/** Checkpoint a conversation and every teammate thread it owns. */
+function checkpointConv(conv: Conversation): void {
+  for (const th of convThreads(conv)) checkpoint(th);
+}
+
+/**
+ * Stop EVERY live agent and reset every thread. Only for events that take the
+ * engine away (model stop, model swap): a thread switch must never do this.
+ */
+function stopAllThreads(): void {
+  for (const th of threads.values()) {
+    checkpoint(th);
+    th.agent?.stop();
+    th.agent = null;
+    th.generating = false;
+    dropQueuedBubbles(th);
+    th.genStats = null;
+    th.activity = null;
+    for (const w of th.waiters.splice(0)) w(`error: ${t("agent.engineStopped")}`);
+    if (th.holdsSlot) { th.holdsSlot = false; releaseSlot(); }
+  }
+  hideActivity();
+}
+
+/**
+ * Switch the view to another conversation. The one being left keeps working:
+ * its agent, its team, their queues and their scenes are untouched, only the
+ * painting moves.
+ */
+function switchTo(conv: Conversation, agentId: string | null = null): void {
+  focusAgent = agentId;
+  threadOf(conv);
+  teamThreads(conv); // materialize the team so its state is addressable
+  pruneConversations();
+  view = "chat";
+  render();
+}
+
+/** Open a teammate's own thread inside the conversation on screen. */
+function openTeamThread(agentId: string | null): void {
+  checkpoint(active());
+  focusAgent = agentId;
+  view = "chat";
+  render();
 }
 
 function newChat() {
-  syncBeforeLeaving();
-  agent?.stop();
-  agent = null;              // a fresh thread gets a fresh context
-  store.startNew();
-  generating = false;
-  queuedMsgs = [];
-  genStats = null;
-  hideActivity();
-  view = "chat";
-  render();
+  checkpointConv(store.current());
+  switchTo(store.startNew());
 }
 
 async function openConversation(id: string) {
-  syncBeforeLeaving();
-  agent?.stop();
-  agent = null;
-  await store.open(id);
-  generating = false;
-  queuedMsgs = [];
-  genStats = null;
-  hideActivity();
-  view = "chat";
-  render();
+  checkpointConv(store.current());
+  const conv = await store.open(id);
+  if (!conv) return;
+  switchTo(conv);
 }
 
 // ---------- tasks (persona + preferred-model routing) ----------
@@ -367,7 +603,8 @@ async function loadTaskDefs(): Promise<void> {
 
 function applyTaskPersona(): void {
   const td = tasks.find((x) => x.id === taskId);
-  if (td) agent?.setTaskSystem(td.system, td.temp);
+  // The persona belongs to the user's own thread; a teammate has its brief.
+  if (td) for (const th of threads.values()) if (!th.sub) th.agent?.setTaskSystem(td.system, td.temp);
 }
 
 function taskDot(td: TaskDef): string {
@@ -399,13 +636,8 @@ async function acceptTaskSwitch(): Promise<void> {
   const offer = taskOffer;
   taskOffer = null;
   if (!offer) return;
-  syncBeforeLeaving();
-  agent?.stop();
-  agent = null;
-  generating = false;
-  queuedMsgs = [];
-  genStats = null;
-  hideActivity();
+  // The engine is about to be replaced: every live thread loses its server.
+  stopAllThreads();
   try {
     serverFail = null;
     if (server.running) await api.serverStop();
@@ -534,7 +766,12 @@ function installLabel(l: string): string {
 }
 
 // ---------- permission modal ----------
-function askPermission(req: PermissionRequest): Promise<PermissionDecision> {
+/**
+ * `origin` names the conversation the request comes from. It is filled only
+ * when that thread is NOT the one on screen: with several conversations live,
+ * a dialog appearing over an unrelated thread must say who is asking.
+ */
+function askPermission(req: PermissionRequest, origin?: string): Promise<PermissionDecision> {
   return new Promise((resolve) => {
     const kind =
       req.kind === "fs_read" ? t("perm.readFile")
@@ -544,10 +781,13 @@ function askPermission(req: PermissionRequest): Promise<PermissionDecision> {
       : req.kind === "obsidian" ? t("perm.obsidian")
       : req.kind === "memory" ? t("perm.memory")
       : req.kind === "web" ? t("perm.web")
+      : req.kind === "agent" ? t("perm.agent")
+      : req.kind === "conversations" ? t("perm.conversations")
       : t("perm.mcpTool");
     const m = el(`<div class="modal-bd"><div class="modal ${req.elevated ? "elev" : ""} ${req.diff ? "wide" : ""}">
       <h3>${esc(t("perm.title"))}</h3>
       <div class="ps">${esc(t("perm.sub"))} <b>${esc(kind)}</b></div>
+      ${origin ? `<div class="porigin">${esc(t("perm.origin").replace("%s", origin))}</div>` : ""}
       ${req.elevated ? `<div class="warn">⚠ ${esc(t("perm.elevated"))}</div>` : ""}
       ${req.diff ? diffPanelHtml(req.detail, req.diff) : `<div class="pd">${esc(req.detail)}</div>`}
       ${req.elevated ? `<input class="confirm" id="pc" placeholder="${esc(t("perm.elevatedPlaceholder"))}" autocomplete="off"/>` : ""}
@@ -585,29 +825,65 @@ function taskBarHtml(): string {
     .join("")}</div>`;
 }
 
+/**
+ * The team, above the conversation: one chip per teammate, live state on it,
+ * and a click straight into its thread.
+ */
+function teamStripHtml(conv: Conversation): string {
+  const chips = conv.team
+    .map((sub) => {
+      const th = threads.get(threadKey(conv.id, sub.id));
+      const busy = !!th?.generating;
+      const label = busy && th?.activity?.label ? prettyTool(th.activity.label) : sub.role || t("team.noRole");
+      return `<button class="tchip ${busy ? "busy" : ""}" data-agent="${esc(sub.id)}" title="${esc(sub.role)}">
+        ${busy ? `<span class="runpip"></span>` : `<span class="subdot"></span>`}
+        <b>${esc(sub.name)}</b><span class="rl">${esc(label)}</span><span class="n">${sub.items.length}</span>
+      </button>`;
+    })
+    .join("");
+  return `<div class="teamstrip" id="teamstrip"><span class="lbl">${esc(t("team.label"))}</span>${chips}</div>`;
+}
+
 function chatView(): HTMLElement {
   const running = registry.find((m) => m.id === server.model_id);
   const tps = running ? expectedTps(running) : null;
   const ready = server.running && server.phase === "ready";
+  const sess = active();
+  const sub = sess.sub;
+  const generating = sess.generating;
+  const conv = sess.conv;
+  // Inside a teammate's thread the top bar becomes its identity card, with the
+  // way back to the conversation: two clicks from anywhere to "what did the
+  // reviewer actually say", and one to come back.
+  const crumb = sub
+    ? `<span class="ttl"><span class="crumb" id="backconv">${esc(convLabel(conv))}</span><span class="sep">›</span>${esc(sub.name)}</span>`
+    : `<span class="ttl">${esc(t("nav.chat"))}</span>`;
   const wrap = el(`<div class="main">
     <div class="topbar" data-tauri-drag-region>
-      <span class="ttl">${esc(t("nav.chat"))}</span>
+      ${crumb}
       <div class="right">
         <div class="livebar" id="livebar"></div>
-        ${taskBarHtml()}
+        ${sub ? "" : taskBarHtml()}
         ${running ? `<div class="mpill" title="${esc(engineModeLabel(server.mode))}"><span class="d"></span><span class="n">${esc(running.name.split(" ")[0])}</span>${server.mode === "resident-bit-exact" ? `<span class="s">${esc(t("engine.residentShort"))}</span>` : ""}${tps ? `<span class="s">~${tps.toFixed(0)} tok/s</span>` : ""}</div>` : ""}
         <div class="iconbtn" id="newchat" title="${esc(t("nav.newchat"))}">${I.plus}</div>
       </div>
     </div>
+    ${sub ? `<div class="subhead">
+      <span class="back" id="backbtn">‹ ${esc(t("team.back"))}</span>
+      <span class="who"><b>${esc(sub.name)}</b><span class="rl">${esc(sub.role || t("team.noRole"))}</span></span>
+      <span class="grow"></span>
+      <span class="brieftgl" id="brieftgl">${esc(t("team.brief"))}</span>
+    </div><div class="briefbox" id="briefbox" style="display:none">${esc(sub.brief)}</div>` : ""}
+    ${!sub && conv.team.length ? teamStripHtml(conv) : ""}
     <div class="chat-scroll" id="scroller"><div class="thread"><div id="plan"></div><div id="log"></div></div></div>
     <div class="actbar" id="actbar" style="display:none"><div class="pxhost" id="pixelhost"></div></div>
     ${taskOffer ? `<div class="task-switch-hint" id="taskhint"><span class="tx">${esc(t("task.better").replace("%m", taskOffer.modelName))}</span><button class="bs" id="taskswap">${esc(t("task.switch"))}</button><span class="x" id="taskdismiss">×</span></div>` : ""}
     <div class="composer"><div class="comp-box">
-      <textarea id="ci" rows="2" placeholder="${esc(t("chat.placeholder"))}"></textarea>
+      <textarea id="ci" rows="2" placeholder="${esc(sub ? t("team.placeholder").replace("%s", sub.name) : t("chat.placeholder"))}"></textarea>
       <div class="comp-bar">
         <div class="tool-btn" id="gotoconn">${I.conn}<span>${mcpCount}</span></div>
         ${slashSkills.some((s) => s.name === "recherche-sourcee") ? `<div class="tool-btn deep ${deepResearch ? "on" : ""}" id="deepbtn" title="${esc(t("chat.deepHint"))}">${I.scope}<span>${esc(t("chat.deep"))}</span></div>` : ""}
-        <div class="seg-mode" id="modeseg">
+        <div class="seg-mode ${sub ? "off" : ""}" id="modeseg">
           <button data-a="manual" class="${autonomy === "manual" ? "on" : ""}">${esc(t("mode.manual"))}</button>
           <button data-a="assisted" class="${autonomy === "assisted" ? "on" : ""}">${esc(t("mode.assisted"))}</button>
           <button data-a="autonomous" class="${autonomy === "autonomous" ? "on" : ""}">${esc(t("mode.autonomous"))}</button>
@@ -622,6 +898,16 @@ function chatView(): HTMLElement {
 
   const input = wrap.querySelector<HTMLTextAreaElement>("#ci")!;
   wrap.querySelector("#newchat")!.addEventListener("click", newChat);
+  wrap.querySelector("#backbtn")?.addEventListener("click", () => openTeamThread(null));
+  wrap.querySelector("#backconv")?.addEventListener("click", () => openTeamThread(null));
+  wrap.querySelector("#brieftgl")?.addEventListener("click", () => {
+    const box = document.getElementById("briefbox");
+    if (box) box.style.display = box.style.display === "none" ? "block" : "none";
+  });
+  wrap.querySelector("#teamstrip")?.addEventListener("click", (e) => {
+    const chip = (e.target as HTMLElement).closest("[data-agent]") as HTMLElement | null;
+    if (chip) openTeamThread(chip.dataset.agent!);
+  });
   wrap.querySelector("#gotoconn")!.addEventListener("click", () => { view = "connectors"; render(); });
   wrap.querySelector("#deepbtn")?.addEventListener("click", (e) => {
     deepResearch = !deepResearch;
@@ -729,9 +1015,9 @@ function chatView(): HTMLElement {
     // the next turn (an empty Enter stays inert, never an accidental stop).
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      if (!generating || input.value.trim()) void submitChat();
+      if (!active().generating || input.value.trim()) void submitChat();
     }
-    if (e.key === "Escape" && generating) { agent?.stop(); }
+    if (e.key === "Escape" && active().generating) { active().agent?.stop(); }
   });
   input.addEventListener("input", () => {
     input.style.height = "auto";
@@ -740,7 +1026,7 @@ function chatView(): HTMLElement {
     paintSlash();
     // During generation the button follows the composer: text = send (queued
     // for the next turn), empty = stop.
-    if (generating) {
+    if (active().generating) {
       const b = document.getElementById("send");
       if (b) {
         const hasText = input.value.trim().length > 0;
@@ -764,7 +1050,18 @@ function scrollChatDown() {
   if (s) s.scrollTop = s.scrollHeight;
 }
 
-function userRowEl(text: string): HTMLElement {
+/**
+ * `from` is set when another conversation's agent sent this message: it is
+ * labelled and styled apart, so nothing ever arrives in a thread without the
+ * user seeing who put it there.
+ */
+function userRowEl(text: string, from?: string): HTMLElement {
+  if (from) {
+    return el(`<div class="row-u from-agent">
+      <div class="bub-u"><span class="fromtag">${esc(t("chat.fromAgent").replace("%s", from))}</span>${esc(text)}</div>
+      <div class="av u agent" title="${esc(t("chat.fromAgent").replace("%s", from))}">⇄</div>
+    </div>`);
+  }
   return el(`<div class="row-u"><div class="bub-u">${esc(text)}</div><div class="av u">${esc(t("chat.you")[0] || "V")}</div></div>`);
 }
 
@@ -801,6 +1098,49 @@ function toolCardEl(it: Extract<ChatItem, { kind: "tool" }>): HTMLElement {
   return card;
 }
 
+/**
+ * A teammate's work, seen from the thread that asked for it. It is live while
+ * the teammate runs (its current tool shows here), it carries the question and
+ * the answer, and it opens the teammate's own thread in one click, which is
+ * the whole point: the work is inspectable, not summarised away.
+ */
+function agentBlockEl(it: Extract<ChatItem, { kind: "agent" }>, conv: Conversation): HTMLElement {
+  const sub = store.findSubAgent(conv, it.agentId);
+  const th = sub ? threads.get(threadKey(conv.id, sub.id)) : undefined;
+  const live = !!th?.generating;
+  const status = live
+    ? th?.activity?.label
+      ? prettyTool(th.activity.label)
+      : t("chat.running")
+    : it.failed
+      ? t("team.failed")
+      : it.done
+        ? t("chat.done")
+        : t("chat.running");
+  const entries = sub ? sub.items.length : 0;
+  const card = el(`<div class="agentblk ${live ? "live" : ""} ${it.failed ? "bad" : ""}">
+    <div class="ab-h">
+      <span class="ab-av">${live ? `<span class="runpip"></span>` : "⌁"}</span>
+      <span class="nm">${esc(it.name)}</span>
+      <span class="rl">${esc(it.role || "")}</span>
+      <span class="st">${esc(status)}</span>
+      ${sub ? `<span class="open" data-open="${esc(it.agentId)}">${esc(t("team.openThread").replace("%n", String(entries)))}</span>` : ""}
+    </div>
+    <div class="ab-q">${esc(it.ask)}</div>
+    ${it.done || it.answer ? `<div class="ab-a md"></div>` : ""}
+  </div>`);
+  const ansBox = card.querySelector<HTMLElement>(".ab-a");
+  if (ansBox) {
+    ansBox.innerHTML = renderMarkdown(it.answer, { streaming: false });
+    wireCodeCopy(ansBox, t("chat.copied"));
+  }
+  card.querySelector("[data-open]")?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    openTeamThread(it.agentId);
+  });
+  return card;
+}
+
 /** Full repaint of the thread from the store. */
 function paintChat(): void {
   const log = chatLog();
@@ -811,21 +1151,26 @@ function paintChat(): void {
   const loading = server.running && server.phase === "starting";
   if (loading) log.appendChild(loadingCard());
 
-  const conv = store.current();
-  if (conv.items.length === 0) {
+  const sess = active();
+  const generating = sess.generating;
+  if (sess.data.items.length === 0) {
     const ready = server.running && server.phase === "ready";
     if (!loading) {
-      log.appendChild(el(`<div class="empty"><img class="big-mark" src="${LOGO}" alt=""/>${esc(ready ? t("chat.empty") : t("chat.noserver"))}</div>`));
+      log.appendChild(
+        el(`<div class="empty"><img class="big-mark" src="${LOGO}" alt=""/>${esc(
+          sess.sub ? t("team.emptyThread") : ready ? t("chat.empty") : t("chat.noserver")
+        )}</div>`)
+      );
     }
     paintPlan();
     return;
   }
 
   let body: HTMLElement | null = null; // current assistant group
-  for (const it of conv.items) {
+  for (const it of sess.data.items) {
     if (it.kind === "user") {
       body = null;
-      log.appendChild(userRowEl(it.text));
+      log.appendChild(userRowEl(it.text, it.from));
     } else if (it.kind === "assistant") {
       if (!body) { const r = assistantBodyEl(); log.appendChild(r.row); body = r.body; }
       const md = el(`<div class="msg-a md"></div>`);
@@ -836,6 +1181,9 @@ function paintChat(): void {
     } else if (it.kind === "tool") {
       if (!body) { const r = assistantBodyEl(); log.appendChild(r.row); body = r.body; }
       body.appendChild(toolCardEl(it));
+    } else if (it.kind === "agent") {
+      if (!body) { const r = assistantBodyEl(); log.appendChild(r.row); body = r.body; }
+      body.appendChild(agentBlockEl(it, sess.conv));
     } else if (it.kind === "notice") {
       body = null;
       log.appendChild(el(`<div class="notice">${esc(it.text)}</div>`));
@@ -870,10 +1218,11 @@ function paintChat(): void {
 
   // Live generation stats under the last answer: streamed chars / elapsed
   // time. An ESTIMATE (≈4 chars per token), and labelled as such.
-  const last = conv.items[conv.items.length - 1];
-  if (genStats && genStats.convId === conv.id && body && last && last.kind === "assistant") {
-    const tokens = Math.round(genStats.chars / 4);
-    const ms = (genStats.endMs ?? Date.now()) - genStats.startMs;
+  const last = sess.data.items[sess.data.items.length - 1];
+  const gs = sess.genStats;
+  if (gs && body && last && last.kind === "assistant") {
+    const tokens = Math.round(gs.chars / 4);
+    const ms = (gs.endMs ?? Date.now()) - gs.startMs;
     if (tokens > 0) {
       body.appendChild(
         el(`<div class="genstats" title="${esc(t("chatx.estimated"))}">≈ ${esc(formatStats({ tokens, ms }))}</div>`)
@@ -923,7 +1272,7 @@ function openPreview(code: string, kind: PreviewKind, title: string): void {
 function paintPlan(): void {
   const box = document.getElementById("plan");
   if (!box) return;
-  const plan = store.current().plan;
+  const plan = active().data.plan;
   if (!plan.length) { box.innerHTML = ""; return; }
   const done = plan.filter((s) => s.status === "done").length;
   box.innerHTML = `<div class="plan"><div class="ph">◆ ${esc(t("chat.plan"))}<span class="c">${done}/${plan.length}</span></div>${plan
@@ -935,7 +1284,7 @@ let paintPending = false;
 function schedulePaint(): void {
   if (paintPending) return;
   paintPending = true;
-  requestAnimationFrame(() => { paintPending = false; paintChat(); scrollChatDown(); paintLive(); });
+  requestAnimationFrame(() => { paintPending = false; paintChat(); scrollChatDown(); paintLive(); paintTeamStrip(); });
 }
 
 function setSendState(busy: boolean): void {
@@ -946,105 +1295,148 @@ function setSendState(busy: boolean): void {
 }
 
 /**
- * Create the agent for the current thread. Every hook is guarded against the
- * instance being replaced (new chat, conversation switch, model change): a
- * callback landing after `agent` moved on must never touch the store — it
- * would mutate the NEW conversation and clobber its generating state.
+ * Create the agent of one thread: a conversation's own, or a teammate's.
+ * Every hook is bound to that thread and guarded against the instance being
+ * replaced (model change, engine stop): a callback landing after the thread
+ * moved on must never touch the store, it would mutate a thread that is no
+ * longer the one it belongs to.
+ *
+ * Painting is conditional on the thread being the one on screen. A teammate
+ * working in the background mutates its own thread and saves it inside the
+ * parent conversation; the only thing it repaints is what says it is alive:
+ * its block in the parent thread and its sidebar row.
  */
-async function ensureAgent(): Promise<void> {
-  if (agent) return;
+async function ensureAgent(sess: Thread): Promise<void> {
+  if (sess.agent) return;
+  const mine = () => sess.agent === inst;
+  const visible = () => sess.key === active().key;
+  /** The parent thread is on screen and shows this teammate's live block. */
+  const blockVisible = () => !!sess.sub && active().key === threadKey(sess.conv.id);
+  const repaint = () => {
+    if (visible() || blockVisible()) schedulePaint();
+  };
   const inst: Agent = new Agent(
     {
       onAssistantDelta: (text) => {
-        if (agent !== inst) return;
-        if (genStats) {
+        if (!mine()) return;
+        if (sess.genStats) {
           // Clock from the first token, so tok/s reflects generation, not setup.
-          if (genStats.chars === 0) genStats.startMs = Date.now();
-          genStats.chars += text.length;
+          if (sess.genStats.chars === 0) sess.genStats.startMs = Date.now();
+          sess.genStats.chars += text.length;
         }
         // The pixel types along while the answer streams (setMode dedupes;
         // a fresh action scene finishes its hold before this applies).
-        onAgentActivity("responding", t("px.responding"));
-        store.appendAssistant(text);
-        schedulePaint();
+        onThreadActivity(sess, "responding", t("px.responding"));
+        store.appendAssistant(sess, text);
+        repaint();
       },
       onAssistantDone: () => {
-        if (agent !== inst) return;
-        store.trimEmptyTail();
-        generating = false;
-        if (genStats) {
-          genStats.endMs = Date.now();
+        if (!mine()) return;
+        store.trimEmptyTail(sess);
+        sess.generating = false;
+        if (sess.genStats) {
+          sess.genStats.endMs = Date.now();
           // Keep the last real speed visible in the header between turns.
-          if (genStats.chars > 40) {
-            liveTps = genStats.chars / 4 / Math.max((genStats.endMs - genStats.startMs) / 1000, 0.25);
+          if (sess.genStats.chars > 40 && visible()) {
+            liveTps = sess.genStats.chars / 4 / Math.max((sess.genStats.endMs - sess.genStats.startMs) / 1000, 0.25);
           }
         }
-        onAgentActivity("done");
-        setSendState(false);
-        store.syncHistory(inst.history());
-        store.save(true);
+        onThreadActivity(sess, "done");
+        if (visible()) setSendState(false);
+        store.syncHistory(sess, inst.history(), inst.summary());
+        store.save(sess.conv, true);
+        // Hand the answer to whoever delegated this turn (ask_agent).
+        const answer = store.lastAssistantText(sess.data);
+        for (const w of sess.waiters.splice(0)) w(answer);
         store.refreshList().then(() => { if (view === "chat") renderSidebarOnly(); });
-        paintChat();
-        scrollChatDown();
-        dispatchQueued();
+        if (visible() || blockVisible()) { paintChat(); scrollChatDown(); }
+        renderSidebarOnly();
+        dispatchQueued(sess);
       },
       onToolStart: (name, detail) => {
-        if (agent !== inst) return;
+        if (!mine()) return;
+        // ask_agent is represented by the live teammate block the directory
+        // opens, which carries the same question and far more: a tool card
+        // beside it would show the exchange twice.
+        if (name === "ask_agent") return;
         let path: string | undefined;
         try { path = JSON.parse(detail).path; } catch { /* not a path tool */ }
-        store.pushTool(name, detail, path);
-        schedulePaint();
+        store.pushTool(sess, name, detail, path);
+        repaint();
       },
-      onToolResult: (_n, result) => {
-        if (agent !== inst) return;
-        store.completeTool(result);
-        schedulePaint();
+      onToolResult: (name, result) => {
+        if (!mine()) return;
+        if (name === "ask_agent") return;
+        store.completeTool(sess, result);
+        repaint();
       },
-      onPlan: (steps) => { if (agent === inst) { store.setPlan(steps); paintPlan(); } },
-      onActivity: (mode, label) => { if (agent === inst) onAgentActivity(mode, label); },
+      onPlan: (steps) => {
+        if (!mine()) return;
+        store.setPlan(sess, steps);
+        if (visible()) paintPlan();
+      },
+      onActivity: (mode, label) => { if (mine()) onThreadActivity(sess, mode, label); },
       onNotice: (text) => {
-        if (agent !== inst) return;
-        store.pushNotice(text);
-        schedulePaint();
+        if (!mine()) return;
+        store.pushNotice(sess, text);
+        repaint();
       },
       onError: (err) => {
-        if (agent !== inst) return;
-        store.pushError(err);
+        if (!mine()) return;
+        store.pushError(sess, err);
         // Persist what the model context really holds, or reopening the
         // thread would replay a history missing the last exchange.
-        store.syncHistory(inst.history());
-        store.save(true);
-        generating = false;
-        if (genStats) genStats.endMs = Date.now();
-        hideActivity();
-        setSendState(false);
-        paintChat();
-        scrollChatDown();
+        store.syncHistory(sess, inst.history(), inst.summary());
+        store.save(sess.conv, true);
+        sess.generating = false;
+        if (sess.genStats) sess.genStats.endMs = Date.now();
+        sess.activity = null;
+        for (const w of sess.waiters.splice(0)) w(`error: ${err}`);
+        if (visible()) {
+          hideActivity();
+          setSendState(false);
+        }
+        if (visible() || blockVisible()) { paintChat(); scrollChatDown(); }
+        renderSidebarOnly();
         // Queued messages still run, one per turn: each gets its answer or
         // its own error, and the queue always drains.
-        dispatchQueued();
+        dispatchQueued(sess);
       },
       askPermission: (req) => {
         // A stale agent must not pop dialogs over the new thread.
-        if (agent !== inst) return Promise.resolve("deny" as PermissionDecision);
-        return askPermission(req);
+        if (!mine()) return Promise.resolve("deny" as PermissionDecision);
+        return askPermission(req, visible() ? undefined : threadLabel(sess));
       },
     },
-    server.port
+    server.port,
+    sess.sub ? "sub" : "main"
   );
-  agent = inst;
+  sess.agent = inst;
+  // The conversation's own agent has a short stable name for the team: a
+  // teammate's thread showing "from « Monte une equipe de trois sous-agents
+  // pour concevoir un peti »" says nothing useful.
+  inst.setIdentity(
+    sess.conv.id,
+    sess.sub ? sess.sub.id : sess.conv.id,
+    sess.sub ? sess.sub.name : t("team.parentName")
+  );
   applyAutonomy();
-  applyTaskPersona();
+  if (sess.sub) {
+    // A teammate's persona IS its brief: it never inherits the conversation's
+    // task persona, or every member of the team would answer the same way.
+    inst.setTaskSystem(teammateSystem(sess.sub), 0.4);
+  } else {
+    applyTaskPersona();
+  }
   // Restore this thread's context, then load memory/skills/connectors BEFORE
   // the first turn — otherwise the first message runs without any of them.
-  const conv = store.current();
-  if (conv.history.length) inst.loadHistory(conv.history);
+  if (sess.data.history.length) inst.loadHistory(sess.data.history, sess.data.contextSummary);
   try {
     const [mem, s, tools, skills, kbFolders] = await Promise.all([
       api.memoryRead(), api.settingsGet(), api.mcpTools(), api.skillsList(),
       api.kbFolders().catch(() => [] as string[]),
     ]);
-    if (agent !== inst) return;
+    if (!mine()) return;
     const memOn = s["memory_on"] !== "0";
     inst.setMemory(memOn ? mem : "", !!(s["obsidian_vault"] && s["obsidian_vault"].length));
     inst.setMcpTools(tools);
@@ -1053,6 +1445,29 @@ async function ensureAgent(): Promise<void> {
   } catch {
     /* the agent still works without memory/MCP/skills */
   }
+}
+
+/** Standing persona of a teammate: who it is, and how it must report. */
+function teammateSystem(sub: SubAgent): string {
+  return (
+    `You are "${sub.name}", a member of a Galactus team working for the user on one job. ` +
+    `Your responsibility: ${sub.role || "as briefed below"}.\n\n` +
+    `Your brief:\n${sub.brief}\n\n` +
+    "Stay inside your responsibility. Work with your tools and cite a source (URL, file path or command) for anything " +
+    "a tool told you. Answer whoever asks you with a compact, self-contained result, and say explicitly what you could " +
+    "not verify instead of guessing. Match the effort to the question: when it can be answered directly, answer it " +
+    "directly, without publishing a plan and without running tools you do not need. Somebody is blocked waiting for you."
+  );
+}
+
+/** Human name of a conversation. */
+function convLabel(conv: Conversation): string {
+  return conv.title.trim() || t("conv.untitled");
+}
+
+/** Human name of a thread: the conversation's title, or the teammate's name. */
+function threadLabel(th: Thread): string {
+  return th.sub ? th.sub.name : convLabel(th.conv);
 }
 
 /**
@@ -1076,7 +1491,7 @@ async function autoRouteTask(text: string): Promise<void> {
     setCurrentTask(taskId);
     applyTaskPersona();
     const td = tasks.find((x) => x.id === taskId);
-    store.pushNotice(t("auto.switched").replace("%s", td?.label ?? taskId));
+    store.pushNotice(store.mainThread(store.current()), t("auto.switched").replace("%s", td?.label ?? taskId));
   }
 
   if (!plan.modelId) return;
@@ -1085,18 +1500,17 @@ async function autoRouteTask(text: string): Promise<void> {
 
   if (mode === "auto" && mayAutoSwap(plan)) {
     // Costly but warranted: tell the user what is happening, then reload.
-    store.pushNotice(t("auto.swapping").replace("%s", name));
+    // The engine goes away, so EVERY live thread stops, not just this one.
+    store.pushNotice(store.mainThread(store.current()), t("auto.swapping").replace("%s", name));
     paintChat();
-    agent?.stop();
-    agent = null;
-    hideActivity();
+    stopAllThreads();
     try {
       serverFail = null;
       if (server.running) await api.serverStop();
       await api.serverStart(plan.modelId, null);
       await waitServerReady(180);
     } catch (e: any) {
-      store.pushError(String(e?.message ?? e));
+      store.pushError(store.mainThread(store.current()), String(e?.message ?? e));
     }
     await refreshServer();
     render();
@@ -1122,21 +1536,22 @@ let submitting = false;
 
 async function submitChat(): Promise<void> {
   const input = document.getElementById("ci") as HTMLTextAreaElement | null;
-  if (generating) {
+  const sess = active();
+  if (sess.generating) {
     // While the model writes, a typed message queues for the next turn and
     // shows in the log right away; with an empty composer the button stays
-    // the stop control.
+    // the stop control. The queue is this conversation's, not the app's.
     const queued = input?.value.trim() ?? "";
     if (queued && input) {
       input.value = "";
       input.style.height = "";
       input.dispatchEvent(new Event("input"));
-      queuedMsgs.push(queued);
-      store.pushUser(queued);
+      sess.queued.push(queued);
+      store.pushUser(sess, queued);
       paintChat();
       scrollChatDown();
     } else {
-      agent?.stop();
+      sess.agent?.stop();
     }
     return;
   }
@@ -1160,50 +1575,205 @@ async function submitChat(): Promise<void> {
     if (fresh) { fresh.value = text; fresh.dispatchEvent(new Event("input")); }
     return;
   }
-  await dispatchTurn(text, true);
+  // The thread may have changed while the swap was awaited.
+  await dispatchTurn(active(), text, { show: true });
+}
+
+interface TurnOptions {
+  /** Push the user bubble; a queued message was already shown. */
+  show?: boolean;
+  /** Set when a teammate or the parent agent sent this message. */
+  from?: string;
+  /** Delegation chain of this turn, caller first. */
+  chain?: string[];
+  /**
+   * The caller already holds a decode slot and is blocked waiting for us, so
+   * this turn runs under it instead of taking a second one. Without this a
+   * one-slot engine would deadlock on the very first delegation.
+   */
+  borrowSlot?: boolean;
 }
 
 /**
- * Run one user turn. `show` pushes the user bubble; queued messages were
- * already shown when they entered the queue.
+ * Run one turn of one thread. Concurrency is bounded here and only here: a
+ * turn waits for a free engine decode slot before it starts, so the app never
+ * asks the server for more streams than it was started with.
  */
-async function dispatchTurn(text: string, show: boolean): Promise<void> {
-  generating = true;
-  setSendState(true);
-  if (show) store.pushUser(text);
-  genStats = { convId: store.current().id, chars: 0, startMs: Date.now(), endMs: null };
-  paintChat();
-  scrollChatDown();
+async function dispatchTurn(sess: Thread, text: string, opts: TurnOptions = {}): Promise<void> {
+  const visible = () => sess.key === active().key;
+  const shown = () => visible() || (!!sess.sub && active().key === threadKey(sess.conv.id));
+  sess.generating = true;
+  sess.touched = Date.now();
+  if (visible()) setSendState(true);
+  if (opts.show) store.pushUser(sess, text, opts.from);
+  sess.genStats = { chars: 0, startMs: Date.now(), endMs: null };
+  if (shown()) { paintChat(); scrollChatDown(); }
+  renderSidebarOnly();
   // Immediate feedback: the scene shows BEFORE agent setup (memory, skills,
   // connectors on the first turn) and before the server's first token.
-  onAgentActivity("thinking");
-  await ensureAgent();
-  const inst = agent;
-  if (!inst) return;
-  // One-shot: whatever branch wins, the deep-research arm is consumed.
-  const wantDeep = deepResearch;
-  deepResearch = false;
-  document.getElementById("deepbtn")?.classList.remove("on");
-  // "/skill rest…" routes through the named skill's instructions.
-  const slash = text.match(/^\/([\w-]+)\s*([\s\S]*)$/);
-  if (slash && slashSkills.some((s) => s.name === slash[1])) {
-    await inst.sendSkill(slash[1], slash[2]);
-  } else if (wantDeep && slashSkills.some((s) => s.name === "recherche-sourcee")) {
-    await inst.sendSkill("recherche-sourcee", text);
-  } else {
-    await inst.send(text);
+  onThreadActivity(sess, "thinking");
+
+  if (!opts.borrowSlot) {
+    if (slotsInUse >= engineSlots()) onThreadActivity(sess, "thinking", t("px.queued"));
+    await acquireSlot();
+    sess.holdsSlot = true;
+    onThreadActivity(sess, "thinking");
+  }
+  try {
+    // A model swap or an engine stop can land while a slot was awaited.
+    if (!(server.running && server.phase === "ready")) {
+      store.pushError(sess, t("chat.noserver"));
+      sess.generating = false;
+      sess.activity = null;
+      if (visible()) { hideActivity(); setSendState(false); }
+      if (shown()) paintChat();
+      for (const w of sess.waiters.splice(0)) w(`error: ${t("chat.noserver")}`);
+      return;
+    }
+    await ensureAgent(sess);
+    const inst = sess.agent;
+    if (!inst) return;
+    inst.setChain(opts.chain ?? []);
+    // One-shot: whatever branch wins, the deep-research arm is consumed. It
+    // only ever belongs to a turn the user typed, never to a delegated one.
+    const wantDeep = deepResearch && !opts.from;
+    if (!opts.from) {
+      deepResearch = false;
+      document.getElementById("deepbtn")?.classList.remove("on");
+    }
+    // "/skill rest…" routes through the named skill's instructions.
+    const slash = text.match(/^\/([\w-]+)\s*([\s\S]*)$/);
+    if (slash && slashSkills.some((sk) => sk.name === slash[1])) {
+      await inst.sendSkill(slash[1], slash[2]);
+    } else if (wantDeep && slashSkills.some((sk) => sk.name === "recherche-sourcee")) {
+      await inst.sendSkill("recherche-sourcee", text);
+    } else {
+      await inst.send(text);
+    }
+  } finally {
+    if (sess.holdsSlot) { sess.holdsSlot = false; releaseSlot(); }
   }
 }
 
 /** After a turn ends (done or error), a queued message starts the next one. */
-function dispatchQueued(): void {
-  const next = queuedMsgs.shift();
-  if (next) void dispatchTurn(next, false);
+function dispatchQueued(sess: Thread): void {
+  const next = sess.queued.shift();
+  if (next) void dispatchTurn(sess, next, {});
+  else renderSidebarOnly();
 }
 
+// ---------- the team (spawn_agent / list_agents / ask_agent) ----------
+//
+// ask_agent is BLOCKING by design: an agent asked a teammate a question and
+// the answer belongs in the same turn, as the tool result the user can read.
+// The wait is bounded (DELEGATION_TIMEOUT_MS); on expiry the caller is told so
+// and the teammate keeps working rather than being killed mid-thought.
+//
+// The exchange is visible on both sides: the message lands in the teammate's
+// own thread as a bubble tagged with the sender's name, and a live block
+// opens in the sender's thread, filled in place when the answer returns and
+// clickable straight through to the teammate's thread.
+
+/**
+ * How long a caller blocks on a teammate. Generous on purpose: a teammate is
+ * a full agent running on a local model at a few tens of tokens per second,
+ * and a real task takes minutes. The user is never blind while it runs (the
+ * block shows the teammate's live state and opens its thread), so the bound
+ * exists to guarantee the caller's turn ends, not to keep it short. Measured
+ * at 300 s first: an ordinary "propose a schema" ask blew through it while
+ * the teammate was still working normally.
+ */
+const DELEGATION_TIMEOUT_MS = 900_000;
+
+function memberOf(th: Thread): TeamMember {
+  return {
+    id: th.sub ? th.sub.id : th.conv.id,
+    name: th.sub ? th.sub.name : t("team.parentName"),
+    role: th.sub ? th.sub.role : t("team.parentRole"),
+    busy: th.generating,
+    messages: th.data.items.length,
+  };
+}
+
+const teamDirectory: AgentDirectory = {
+  team(convId): TeamMember[] {
+    const conv = store.get(convId);
+    if (!conv) return [];
+    // The conversation's own agent is listed too: a teammate must be able to
+    // see who briefed it, even though it cannot delegate back up the chain.
+    return [threadOf(conv), ...teamThreads(conv)].map(memberOf);
+  },
+
+  async spawn(convId, name, role, brief): Promise<TeamMember | string> {
+    const conv = store.get(convId);
+    if (!conv) return "this conversation is no longer live";
+    const sub = store.addSubAgent(conv, name, role, brief);
+    if (!sub) return `the team is full (${store.teamLimit()} members); reuse one with ask_agent`;
+    const th = threadOf(conv, sub);
+    store.pushNotice(threadOf(conv), t("team.created").replace("%n", sub.name).replace("%r", sub.role || "-"));
+    if (conv.id === store.current().id) { paintChat(); scrollChatDown(); }
+    render();
+    return memberOf(th);
+  },
+
+  async ask(convId, targetId, message, from, chain): Promise<string> {
+    const conv = store.get(convId);
+    if (!conv) return "error: this conversation is no longer live";
+    if (targetId === conv.id) {
+      return "error: that is the conversation's own agent, which answers the user; do your part and report back to whoever asked you";
+    }
+    const sub = store.findSubAgent(conv, targetId);
+    if (!sub) return `error: teammate ${targetId} is gone`;
+    const sess = threadOf(conv, sub);
+    if (sess.generating) return `error: "${sub.name}" started working in the meantime`;
+    const senderName = from.name || t("team.parentName");
+    const caller = threads.get(threadKey(conv.id, from.id === conv.id ? null : from.id));
+    sess.touched = Date.now();
+    // The live block goes in the thread that ASKED, so the user watches the
+    // teammate work from where the request came from and opens its thread
+    // from there.
+    if (caller) store.pushAgentBlock(caller, sub, message);
+    if (conv.id === store.current().id) { paintChat(); scrollChatDown(); }
+    renderSidebarOnly();
+
+    const answer = await new Promise<string>((resolve) => {
+      let settled = false;
+      const once = (v: string) => { if (!settled) { settled = true; resolve(v); } };
+      const timer = window.setTimeout(() => {
+        once(
+          `timed out after ${Math.round(DELEGATION_TIMEOUT_MS / 1000)} s: "${sub.name}" is still working. ` +
+            "Its answer will appear in its own thread; carry on without it or ask again later."
+        );
+      }, DELEGATION_TIMEOUT_MS);
+      sess.waiters.push((v) => { clearTimeout(timer); once(v); });
+      // The caller is blocked inside a tool call and is not decoding, so this
+      // turn runs under the slot it already holds.
+      dispatchTurn(sess, message, { show: true, from: senderName, chain, borrowSlot: true })
+        .then(() => {
+          // Safety net: a turn that ended without going through
+          // onAssistantDone (aborted, no agent) must never leave the caller
+          // hanging until the timeout.
+          clearTimeout(timer);
+          once(store.lastAssistantText(sess.data) || "(this teammate produced no answer)");
+        })
+        .catch((e: any) => { clearTimeout(timer); once(`error: ${String(e?.message ?? e)}`); });
+    });
+    if (caller) store.completeAgentBlock(caller, sub.id, answer, answer.startsWith("error:"));
+    store.save(conv, true);
+    if (conv.id === store.current().id) { paintChat(); scrollChatDown(); }
+    renderSidebarOnly();
+    return answer;
+  },
+};
+
 function argPreview(detail: string): string {
-  try { const o = JSON.parse(detail); return o.path || o.command || o.query || o.note || o.name || detail; }
-  catch { return detail; }
+  try {
+    const o = JSON.parse(detail);
+    // A team card must show WHO and WHAT, not a raw payload.
+    if (o.agent) return o.message ? `${String(o.agent)} · ${String(o.message)}` : String(o.agent);
+    if (o.role && o.name) return `${String(o.name)} · ${String(o.role)}`;
+    return o.path || o.command || o.query || o.note || o.name || o.id || detail;
+  } catch { return detail; }
 }
 function prettyTool(name: string): string {
   const map: Record<string, string> = {
@@ -1213,6 +1783,8 @@ function prettyTool(name: string): string {
     search_knowledge: t("tool.kb"),
     obsidian_search: t("tool.osearch"), obsidian_read: t("tool.oread"), obsidian_append: t("tool.owrite"),
     obsidian_update: t("tool.oupdate"),
+    spawn_agent: t("tool.spawnAgent"), list_agents: t("tool.listAgents"), ask_agent: t("tool.askAgent"),
+    search_conversations: t("tool.convSearch"), read_conversation: t("tool.convRead"),
   };
   if (map[name]) return map[name];
   if (name.startsWith("mcp__")) return name.split("__").slice(1).join(" · ");
@@ -1518,13 +2090,8 @@ function modelsView(): HTMLElement {
       b.addEventListener("click", async () => {
         // A turn may be streaming: nulling the agent without resetting the
         // generating state would leave the chat locked on a dead stop control.
-        syncBeforeLeaving();
-        agent?.stop();
-        agent = null;
-        generating = false;
-        queuedMsgs = [];
-        genStats = null;
-        hideActivity();
+        // The engine is going away: no live thread can keep generating.
+        stopAllThreads();
         await api.serverStop();
         await refreshServer();
         render();
@@ -1562,13 +2129,7 @@ function modelsView(): HTMLElement {
       b.addEventListener("click", async () => {
         // Same reset as Stop: starting another model while a turn streams
         // must not strand `generating` on a dead agent.
-        syncBeforeLeaving();
-        agent?.stop();
-        agent = null;
-        generating = false;
-        queuedMsgs = [];
-        genStats = null;
-        hideActivity();
+        stopAllThreads();
         try {
           serverFail = null;
           await api.serverStart(m.id, null);
@@ -1772,7 +2333,7 @@ function memoryView(): HTMLElement {
         row.querySelector("[data-del]")!.addEventListener("click", async () => {
           kbList = kbList.filter((x) => x !== f);
           await api.kbSetFolders(kbList);
-          agent?.setKnowledge(kbList.length > 0);
+          for (const th of threads.values()) th.agent?.setKnowledge(kbList.length > 0);
           paintKb();
         });
         foldersBox.appendChild(row);
@@ -1787,7 +2348,7 @@ function memoryView(): HTMLElement {
       if (!p || kbList.includes(p)) return;
       kbList.push(p);
       await api.kbSetFolders(kbList);
-      agent?.setKnowledge(true);
+      for (const th of threads.values()) th.agent?.setKnowledge(true);
       paintKb();
     });
     const reBtn = wrap.querySelector<HTMLButtonElement>("#kbreindex")!;
@@ -1951,7 +2512,7 @@ function agentView(): HTMLElement {
         if (skillsOff.has(k.name)) skillsOff.delete(k.name); else skillsOff.add(k.name);
         await api.settingsSet("skills_off", JSON.stringify([...skillsOff]));
         const fresh = (await api.skillsList()).filter((s) => !skillsOff.has(s.name));
-        agent?.setSkills(fresh);
+        for (const th of threads.values()) th.agent?.setSkills(fresh);
         slashSkills = fresh;
         render();
       });
@@ -1978,6 +2539,14 @@ function settingsView(): HTMLElement {
           <button data-rm="eco">${esc(t("settings.ramEco"))}</button>
           <button data-rm="balanced">${esc(t("settings.ramBalanced"))}</button>
           <button data-rm="perf">${esc(t("settings.ramPerf"))}</button>
+        </div>
+      </div>
+      <div class="set-row"><div class="grow"><b>${esc(t("settings.slots"))}</b><span>${esc(t("settings.slotsHint"))}</span></div>
+        <div class="seg" id="slotseg">
+          <button data-sl="1">1</button>
+          <button data-sl="2">2</button>
+          <button data-sl="3">3</button>
+          <button data-sl="4">4</button>
         </div>
       </div>
       <div class="set-row"><div class="grow"><b>${esc(t("auto.title"))}</b><span>${esc(t("auto.hint"))}</span></div>
@@ -2010,6 +2579,24 @@ function settingsView(): HTMLElement {
         paint(m);
       });
     }
+  }
+  {
+    // Decode slots: the real bound on how many conversations may generate at
+    // once. Applied on the next model start, like the memory footprint.
+    const seg = wrap.querySelector<HTMLElement>("#slotseg")!;
+    const paint = (n: string) =>
+      seg.querySelectorAll("button").forEach((b) => b.classList.toggle("on", (b as HTMLElement).dataset.sl === n));
+    paint(String(engineSlots()));
+    api.settingsGet().then((st) => paint(String(Math.min(Math.max(Number(st["engine_slots"]) || 2, 1), 4))));
+    seg.addEventListener("click", async (e) => {
+      const b = (e.target as HTMLElement).closest("[data-sl]") as HTMLElement | null;
+      if (!b) return;
+      paint(b.dataset.sl!);
+      await api.settingsSet("engine_slots", b.dataset.sl!);
+      if (server.running) toast(t("settings.slotsRestart"), "ok");
+      await refreshServer();
+      paintLive();
+    });
   }
   {
     const seg = wrap.querySelector<HTMLElement>("#ramseg")!;
@@ -2176,21 +2763,58 @@ function render() {
     paintChat();
     scrollChatDown();
     // The rebuild destroyed the activity canvas: restore the current scene.
-    if (generating && lastActivity) onAgentActivity(lastActivity.mode, lastActivity.label);
+    restoreActivity();
   }
+}
+
+/**
+ * Repaint the team strip in place. A teammate's chip carries live state (busy,
+ * current tool, entry count) and must follow it without rebuilding the view,
+ * which would cost the composer its draft on every token.
+ */
+function paintTeamStrip(): void {
+  const strip = document.getElementById("teamstrip");
+  const sess = active();
+  if (!strip) return;
+  if (sess.sub || !sess.conv.team.length) { strip.remove(); return; }
+  strip.innerHTML = el(teamStripHtml(sess.conv)).innerHTML;
 }
 
 /** Repaint only the sidebar (conversation list) without touching the thread. */
 function renderSidebarOnly() {
+  paintTeamStrip();
   const side = document.querySelector(".side");
   if (!side) return;
   const list = side.querySelector("#convlist");
   if (list) list.replaceWith(convListEl());
 }
 
+/**
+ * Stored conversations plus the live ones that have no file yet. A thread that
+ * is generating must be listed even before its first debounced save, or its
+ * running indicator would have nowhere to appear.
+ */
+function metasWithLive(): ConvMeta[] {
+  const out = [...store.metas()];
+  for (const th of threads.values()) {
+    if (th.sub) continue;
+    if (out.some((m) => m.id === th.conv.id)) continue;
+    if (th.conv.items.length === 0) continue;
+    out.push({
+      id: th.conv.id,
+      title: th.conv.title,
+      created: th.conv.created,
+      updated: th.conv.updated,
+      count: th.conv.items.length,
+    });
+  }
+  out.sort((a, b) => b.updated - a.updated);
+  return out;
+}
+
 function convListEl(): HTMLElement {
   const box = el(`<div class="convlist" id="convlist"></div>`);
-  const metas = store.metas();
+  const metas = metasWithLive();
   if (!metas.length) return box;
   box.appendChild(el(`<div class="conv-h">${esc(t("conv.recent"))}</div>`));
 
@@ -2200,9 +2824,15 @@ function convListEl(): HTMLElement {
   const rows = el(`<div class="conv-rows"></div>`);
   const paintRows = () => {
     rows.innerHTML = "";
-    const filtered = searchConversations(store.metas(), convQuery);
+    const filtered = searchConversations(metasWithLive(), convQuery);
     const activeId = store.current().id;
-    for (const m of filtered.slice(0, convQuery.trim() ? 50 : 12)) rows.appendChild(convRowEl(m, activeId));
+    for (const m of filtered.slice(0, convQuery.trim() ? 50 : 12)) {
+      rows.appendChild(convRowEl(m, activeId));
+      // The tree: a conversation that has a team shows it, indented under it.
+      const conv = store.get(m.id);
+      if (!conv || !conv.team.length) continue;
+      for (const sub of conv.team) rows.appendChild(teamRowEl(conv, sub, m.id === activeId));
+    }
     if (!filtered.length) rows.appendChild(el(`<div class="conv-none">${esc(t("conv.noMatch"))}</div>`));
   };
   qInput.addEventListener("input", () => { convQuery = qInput.value; paintRows(); });
@@ -2211,9 +2841,38 @@ function convListEl(): HTMLElement {
   return box;
 }
 
+/** One teammate under its conversation: name, role, and whether it is working. */
+function teamRowEl(conv: Conversation, sub: SubAgent, convActive: boolean): HTMLElement {
+  const th = threads.get(threadKey(conv.id, sub.id));
+  const busy = !!th?.generating;
+  const on = convActive && focusAgent === sub.id;
+  const row = el(`<div class="conv sub ${on ? "on" : ""} ${busy ? "busy" : ""}" title="${esc(sub.role || sub.name)}">
+    <span class="tw"></span>
+    ${busy ? `<span class="runpip" title="${esc(t("conv.running"))}"></span>` : `<span class="subdot"></span>`}
+    <span class="ct">${esc(sub.name)}</span>
+    <span class="cn">${sub.items.length}</span>
+  </div>`);
+  row.addEventListener("click", async () => {
+    if (conv.id !== store.current().id) await openConversation(conv.id);
+    openTeamThread(sub.id);
+  });
+  return row;
+}
+
 function convRowEl(m: ConvMeta, activeId: string): HTMLElement {
-  const row = el(`<div class="conv ${m.id === activeId ? "on" : ""}" data-c="${esc(m.id)}">
+  // Running indicator: a thread that is generating says so wherever the user
+  // is. With a team, the count is what tells the user how much of the
+  // conversation is alive right now.
+  const conv = store.get(m.id);
+  const own = threads.get(threadKey(m.id));
+  const busy = conv ? busyIn(conv) : own?.generating ? 1 : 0;
+  const queued = own ? own.queued.length : 0;
+  const teamSize = conv?.team.length ?? 0;
+  const row = el(`<div class="conv ${m.id === activeId ? "on" : ""} ${busy ? "busy" : ""}" data-c="${esc(m.id)}">
+    ${busy ? `<span class="runpip" title="${esc(t("conv.running"))}"></span>` : ""}
     <span class="ct">${esc(m.title || t("conv.untitled"))}</span>
+    ${teamSize ? `<span class="cteam" title="${esc(t("team.size").replace("%n", String(teamSize)))}">${teamSize}</span>` : ""}
+    ${queued > 0 ? `<span class="cq" title="${esc(t("conv.queued"))}">+${queued}</span>` : ""}
     <span class="cx exp" data-exp="${esc(m.id)}" title="${esc(t("conv.export"))}">↓</span>
     <span class="cx" data-del="${esc(m.id)}">×</span>
   </div>`);
@@ -2228,23 +2887,26 @@ function convRowEl(m: ConvMeta, activeId: string): HTMLElement {
     if (del) {
       e.stopPropagation();
       const delId = del.dataset.del!;
-      // Decide BEFORE remove(): the store replaces the active conversation
-      // with a blank one, so comparing afterwards is always false and the
-      // agent would keep the deleted thread's context.
+      // The whole tree goes with the file: leaving an agent alive would keep
+      // streaming into a thread that no longer exists, and the debounced save
+      // would recreate the conversation on disk.
+      for (const th of [...threads.values()]) {
+        if (th.conv.id !== delId) continue;
+        th.agent?.stop();
+        th.agent = null;
+        th.generating = false;
+        for (const w of th.waiters.splice(0)) w("error: that conversation was deleted");
+        if (th.holdsSlot) { th.holdsSlot = false; releaseSlot(); }
+        threads.delete(th.key);
+      }
       const wasActive = store.current().id === delId;
       await store.remove(delId);
-      if (wasActive) {
-        agent?.stop();
-        agent = null;
-        generating = false;
-        queuedMsgs = [];
-        genStats = null;
-        hideActivity();
-      }
+      if (wasActive) { focusAgent = null; hideActivity(); }
       render();
       return;
     }
     if (m.id !== store.current().id) await openConversation(m.id);
+    else if (focusAgent) openTeamThread(null);
   });
   return row;
 }
@@ -2262,12 +2924,15 @@ async function exportConversation(id: string, trigger: HTMLElement): Promise<voi
         updated: Number(v.updated ?? Date.now()),
         items: Array.isArray(v.items) ? v.items : [],
         history: Array.isArray(v.history) ? v.history : [],
+        contextSummary: typeof v.contextSummary === "string" ? v.contextSummary : "",
         plan: Array.isArray(v.plan) ? v.plan : [],
+        team: Array.isArray(v.team) ? v.team : [],
       };
     } catch {
       return;
     }
   }
+  if (!conv) return;
   const md = exportConversationMarkdown(conv);
   const dir = await api.pickFolder();
   if (!dir) return;
@@ -2283,6 +2948,9 @@ async function exportConversation(id: string, trigger: HTMLElement): Promise<voi
 }
 
 async function boot() {
+  // The Agent can now hand work to other conversations: give it the directory
+  // before anything can create one.
+  setAgentDirectory(teamDirectory);
   await loadStandingPermissions().catch(() => {});
   const s = await api.settingsGet().catch(() => ({} as Record<string, string>));
   if (s["root"]) { root = s["root"]; try { registry = await api.registry(); if (!registry.length) root = null; } catch { root = null; } }
@@ -2300,6 +2968,18 @@ async function boot() {
   enabled = await loadEnabled().catch(() => []);
   await loadTaskDefs();
   await store.refreshList().catch(() => {});
+  // Reopen the most recent thread instead of landing on a blank one. Quitting
+  // the app used to lose the conversation entirely: the store starts with no
+  // active thread, current() hands out a blank, and a user typing "carry on"
+  // was talking to an empty context.
+  {
+    const recent = store.metas()[0];
+    if (recent) await store.open(recent.id).catch(() => null);
+    // The visible thread always has a record, and so does every teammate it
+    // owns: their rows and blocks read live state from it.
+    threadOf(store.current());
+    teamThreads(store.current());
+  }
   try { slashSkills = (await api.skillsList()).filter((k) => !skillsOff.has(k.name)); } catch {}
   try { mcpCount = (await api.mcpTools()).length; } catch {}
   await refreshServer();
@@ -2393,6 +3073,14 @@ async function boot() {
     }
     paintLive();
   }, 2000);
+
+  // Quitting or hiding the window: flush EVERY thread's pending debounced
+  // save. With one timer per conversation, a single global flush on the active
+  // one would have dropped whatever the background threads just wrote.
+  window.addEventListener("beforeunload", () => store.flushAll());
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") store.flushAll();
+  });
 
   // Keyboard shortcuts: ⌘N new chat, ⌘1..6 navigation.
   const NAV_ORDER: View[] = ["chat", "models", "connectors", "memory", "agent", "settings"];

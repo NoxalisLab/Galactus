@@ -33,6 +33,7 @@ const dict: Record<string, { en: string; fr: string }> = {
   "chat.revert": { en: "Undo this change", fr: "Annuler cette modification" },
   "chat.reverted": { en: "reverted", fr: "annulé" },
   "chat.revertFail": { en: "no backup", fr: "pas de sauvegarde" },
+  "chat.fromAgent": { en: "from « %s »", fr: "de « %s »" },
   "conv.recent": { en: "CONVERSATIONS", fr: "CONVERSATIONS" },
   "conv.untitled": { en: "New conversation", fr: "Nouvelle discussion" },
 
@@ -47,15 +48,21 @@ const dict: Record<string, { en: string; fr: string }> = {
   "tool.remember": { en: "Remember", fr: "Mémoriser" },
   "tool.skill": { en: "Load skill", fr: "Charger le skill" },
   "tool.doc": { en: "Read document", fr: "Lire le document" },
+  // run_workflow was replaced by the team; the label stays so conversations
+  // stored by an earlier build still render their tool cards.
   "tool.workflow": { en: "Sub-agent workflow", fr: "Workflow de sous-agents" },
-  "wf.run": { en: "Sub-agent %i/%n started: %t", fr: "Sous-agent %i/%n lancé : %t" },
-  "wf.done": { en: "Sub-agent %i/%n finished: %t", fr: "Sous-agent %i/%n terminé : %t" },
   "px.thinking": { en: "thinking", fr: "réfléchit" },
+  "px.queued": { en: "waiting for a free slot", fr: "attend un créneau libre" },
   "px.responding": { en: "writing the reply", fr: "rédige la réponse" },
   "tool.osearch": { en: "Search vault", fr: "Chercher dans le coffre" },
   "tool.oread": { en: "Read note", fr: "Lire la note" },
   "tool.owrite": { en: "Write note", fr: "Écrire la note" },
   "tool.oupdate": { en: "Rewrite note", fr: "Réécrire la note" },
+  "tool.spawnAgent": { en: "Recruit a sub-agent", fr: "Recruter un sous-agent" },
+  "tool.listAgents": { en: "List the team", fr: "Lister l'équipe" },
+  "tool.askAgent": { en: "Ask a teammate", fr: "Demander à un coéquipier" },
+  "tool.convSearch": { en: "Search the conversations", fr: "Chercher dans les discussions" },
+  "tool.convRead": { en: "Read a conversation", fr: "Lire une discussion" },
 
   "models.subtitle": { en: "Certified on the Galactus engine", fr: "Certifiés sur le moteur Galactus" },
   "models.certified": { en: "certified", fr: "certifié" },
@@ -90,6 +97,11 @@ const dict: Record<string, { en: string; fr: string }> = {
   "load.elapsed": { en: "%s elapsed", fr: "%s écoulées" },
   "live.ram": { en: "Engine resident memory, live", fr: "Mémoire résidente du moteur, en direct" },
   "live.tps": { en: "Generation speed, live (chars / 4 per second)", fr: "Vitesse de génération en direct (caractères / 4 par seconde)" },
+  "live.threads": { en: "threads", fr: "fils" },
+  "live.threadsHint": {
+    en: "Threads with a turn in flight. The engine decodes %n at a time; a teammate waiting on another one is in flight without decoding.",
+    fr: "Fils dont un tour est en cours. Le moteur décode %n à la fois ; un coéquipier qui en attend un autre est en cours sans décoder.",
+  },
   "models.hwNote": {
     en: "Speeds are estimated for this Mac from measured benchmarks.",
     fr: "Vitesses estimées pour ce Mac à partir de mesures réelles.",
@@ -161,6 +173,11 @@ const dict: Record<string, { en: string; fr: string }> = {
     fr: "Instructions packagées chargées à la demande. Choisis lesquelles sont disponibles.",
   },
   "agent.doneNotify": { en: "Task finished", fr: "Tâche terminée" },
+
+  "agent.engineStopped": {
+    en: "the engine was stopped",
+    fr: "le moteur a été arrêté",
+  },
   "agent.skillsEmpty": {
     en: "No skills yet. Add a folder with a SKILL.md in the working folder's .galactus/skills.",
     fr: "Aucun skill. Ajoute un dossier avec un SKILL.md dans .galactus/skills du dossier de travail.",
@@ -176,6 +193,9 @@ const dict: Record<string, { en: string; fr: string }> = {
   "perm.mcpTool": { en: "Use a connector", fr: "Utiliser un connecteur" },
   "perm.memory": { en: "Save to persistent memory", fr: "Écrire dans la mémoire persistante" },
   "perm.web": { en: "Fetch a web page", fr: "Consulter une page web" },
+  "perm.agent": { en: "Work with a sub-agent", fr: "Travailler avec un sous-agent" },
+  "perm.conversations": { en: "Read your stored conversations", fr: "Lire tes discussions enregistrées" },
+  "perm.origin": { en: "Asked by « %s »", fr: "Demandé par « %s »" },
   "tool.web": { en: "Fetch URL", fr: "Consulter l'URL" },
   "tool.kb": { en: "Search knowledge", fr: "Chercher dans les connaissances" },
 
@@ -207,6 +227,15 @@ const dict: Record<string, { en: string; fr: string }> = {
   "settings.ramHint": {
     en: "How much RAM the expert cache takes. Eco streams more from SSD and frees the machine; Performance caches the most.",
     fr: "Combien de RAM prend le cache d'experts. Éco streame plus depuis le SSD et libère la machine ; Performance met le maximum en cache.",
+  },
+  "settings.slots": { en: "Simultaneous conversations", fr: "Discussions simultanées" },
+  "settings.slotsHint": {
+    en: "How many conversations may generate at the same time. Each slot keeps a full 8192-token window and costs about 0.8 GB of memory; beyond that, turns wait their turn.",
+    fr: "Combien de discussions peuvent générer en même temps. Chaque créneau garde une fenêtre complète de 8192 jetons et coûte environ 0,8 Go de mémoire ; au-delà, les tours attendent leur place.",
+  },
+  "settings.slotsRestart": {
+    en: "Applied the next time a model starts.",
+    fr: "Pris en compte au prochain démarrage d'un modèle.",
   },
   "settings.ramEco": { en: "Eco", fr: "Éco" },
   "settings.ramBalanced": { en: "Balanced", fr: "Équilibré" },
@@ -376,11 +405,35 @@ const dict: Record<string, { en: string; fr: string }> = {
   "conv.search": { en: "Search…", fr: "Rechercher…" },
   "conv.export": { en: "Export as Markdown", fr: "Exporter en Markdown" },
   "conv.noMatch": { en: "No conversation found", fr: "Aucune discussion trouvée" },
+  "conv.running": { en: "This conversation is generating", fr: "Cette discussion est en cours de génération" },
+  "conv.queued": { en: "Messages waiting for the next turn", fr: "Messages en attente du prochain tour" },
+
+  // ---- team of sub-agents ----
+  "team.label": { en: "TEAM", fr: "ÉQUIPE" },
+  "team.size": { en: "%n sub-agents in this conversation", fr: "%n sous-agents dans cette discussion" },
+  "team.noRole": { en: "no role given", fr: "rôle non précisé" },
+  "team.parentName": { en: "the conversation", fr: "la discussion" },
+  "team.parentRole": { en: "the conversation's own agent", fr: "l'agent de la discussion" },
+  "team.back": { en: "Back to the conversation", fr: "Retour à la discussion" },
+  "team.brief": { en: "Brief", fr: "Consigne" },
+  "team.openThread": { en: "Open its thread (%n)", fr: "Ouvrir son fil (%n)" },
+  "team.failed": { en: "failed", fr: "échec" },
+  "team.emptyThread": {
+    en: "This sub-agent has not been asked anything yet.",
+    fr: "Ce sous-agent n'a encore rien reçu.",
+  },
+  "team.placeholder": { en: "Write to %s directly…", fr: "Écrire directement à %s…" },
+  "team.created": {
+    en: "Sub-agent « %n » joined the team · %r",
+    fr: "Le sous-agent « %n » rejoint l'équipe · %r",
+  },
 
   // chat extras (export + live stats)
   "chatx.exportAssistant": { en: "Galactus", fr: "Galactus" },
   "chatx.exportTool": { en: "Tool", fr: "Outil" },
   "chatx.exportError": { en: "Error", fr: "Erreur" },
+  "chatx.exportAgent": { en: "Sub-agent", fr: "Sous-agent" },
+  "chatx.exportEmptyAgent": { en: "(nothing was asked of this sub-agent)", fr: "(rien n'a été demandé à ce sous-agent)" },
   "chatx.tokens": { en: "tokens", fr: "tokens" },
   "chatx.tokPerSec": { en: "tok/s", fr: "tok/s" },
   "chatx.context": { en: "context", fr: "contexte" },

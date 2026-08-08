@@ -76,6 +76,14 @@ function renderItem(it: ChatItem): string {
       return `> **${t("chatx.exportError")}** — ${it.text.trim()}`;
     case "notice":
       return `*${it.text.trim()}*`;
+    case "agent": {
+      // A teammate's block: who, what it was asked, what it answered. The
+      // teammate's own thread is exported in full further down the file.
+      const head = `> **${t("chatx.exportAgent")} · ${it.name}**` + (it.role ? ` (${it.role})` : "");
+      const ask = quoted(it.ask, 400);
+      const ans = it.answer ? quoted(it.answer, 2000) : "> " + t("chat.running");
+      return [head, ask, ans].filter((x) => x !== "").join("\n>\n");
+    }
   }
 }
 
@@ -102,6 +110,15 @@ export function exportConversationMarkdown(conv: Conversation): string {
 
   parts.push("---");
   for (const it of conv.items) parts.push(renderItem(it));
+
+  // The team's threads, in full. Exporting only the parent would drop exactly
+  // the part the sub-agents did, which is what the user recruited them for.
+  for (const sub of conv.team) {
+    parts.push("---", `## ${t("chatx.exportAgent")} · ${sub.name}${sub.role ? ` (${sub.role})` : ""}`);
+    if (sub.brief.trim() !== "") parts.push(`> ${sub.brief.trim().split("\n").join("\n> ")}`);
+    if (sub.items.length === 0) parts.push(`*${t("chatx.exportEmptyAgent")}*`);
+    for (const it of sub.items) parts.push(renderItem(it));
+  }
 
   return parts.join("\n\n") + "\n";
 }

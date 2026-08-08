@@ -59,6 +59,22 @@ export interface ServerStatus {
   port: number;
   phase: string; // stopped | starting | ready
   mode?: string; // resident-metal | streamed-metal | cpu-bit-exact
+  /**
+   * Concurrent decode streams the engine serves (llama-server --parallel).
+   * The hard bound on how many conversations may generate at the same time.
+   */
+  slots?: number;
+}
+
+/** One excerpt found in a stored conversation. */
+export interface ConvHit {
+  id: string;
+  title: string;
+  created: number;
+  updated: number;
+  line: number;
+  snippet: string;
+  score: number;
 }
 
 export interface McpToolInfo {
@@ -146,6 +162,8 @@ export const api = {
   convLoad: (id: string) => invoke<unknown>("conv_load", { id }),
   convSave: (id: string, data: string) => invoke<void>("conv_save", { id, data }),
   convDelete: (id: string) => invoke<void>("conv_delete", { id }),
+  convSearch: (query: string, k?: number) => invoke<ConvHit[]>("conv_search", { query, k }),
+  convRead: (id: string, maxChars?: number) => invoke<string>("conv_read", { id, maxChars }),
   docRead: (path: string, mode?: string) => invoke<string>("doc_read", { path, mode }),
   docCapabilities: () => invoke<{ swiftc: boolean; helper: boolean }>("doc_capabilities"),
   voiceStart: (locale?: string) => invoke<void>("voice_start", { locale }),

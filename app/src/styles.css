@@ -632,3 +632,96 @@ textarea.mem:focus { border-color: rgba(138, 124, 255, 0.4); }
 
 /* system notice line in the thread */
 .notice { align-self: center; max-width: 90%; font-size: 12px; color: var(--dim2); background: rgba(138,124,255,0.07); border: 1px solid rgba(138,124,255,0.18); border-radius: 20px; padding: 6px 14px; text-align: center; }
+
+/* ---------- team of sub-agents ---------- */
+
+/* A thread that is generating says so in the sidebar wherever the user is:
+   a teammate works in the background, and the list is the only place that
+   tells the truth about what is still alive. */
+.conv .runpip { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--acc-tx, #8a7cff);
+  box-shadow: 0 0 0 0 rgba(138,124,255,0.55); animation: runpulse 1.5s ease-out infinite; }
+.conv.busy .ct { color: var(--tx); }
+.conv .cq, .conv .cteam { flex: none; font-size: 10px; font-weight: 600; color: var(--dim2);
+  background: rgba(255,255,255,0.07); border-radius: 6px; padding: 1px 5px; }
+.conv .cteam { color: #a89cff; background: rgba(138,124,255,0.13); }
+@keyframes runpulse {
+  0%   { box-shadow: 0 0 0 0 rgba(138,124,255,0.5); }
+  70%  { box-shadow: 0 0 0 6px rgba(138,124,255,0); }
+  100% { box-shadow: 0 0 0 0 rgba(138,124,255,0); }
+}
+
+/* The tree in the sidebar: teammates hang under their conversation. */
+.conv.sub { padding-left: 6px; }
+.conv.sub .tw { flex: none; width: 12px; height: 12px; margin-left: 6px; border-left: 1px solid var(--bd2);
+  border-bottom: 1px solid var(--bd2); border-bottom-left-radius: 4px; margin-bottom: 5px; }
+.conv.sub .ct { font-size: 12px; }
+.conv.sub .cn { flex: none; font-size: 10px; color: var(--dim3); }
+.conv .subdot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--bd2); }
+
+/* The team above the thread: one chip per teammate, live, clickable. */
+.teamstrip { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; padding: 8px 20px 0; }
+.teamstrip .lbl { font-size: 9.5px; font-weight: 700; letter-spacing: 0.9px; color: var(--dim3); }
+.tchip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px;
+  background: rgba(255,255,255,0.04); border: 1px solid var(--bd2); color: var(--dim2);
+  font-size: 11.5px; cursor: default; transition: background .13s, border-color .13s; }
+.tchip:hover { background: rgba(138,124,255,0.1); border-color: rgba(138,124,255,0.35); color: var(--tx); }
+.tchip.busy { border-color: rgba(138,124,255,0.45); color: var(--tx); }
+.tchip b { font-weight: 600; }
+.tchip .rl { color: var(--dim3); max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tchip .n { font-size: 10px; color: var(--dim3); background: rgba(255,255,255,0.06); border-radius: 5px; padding: 0 4px; }
+.tchip .runpip { width: 6px; height: 6px; border-radius: 50%; background: var(--acc-tx, #8a7cff);
+  animation: runpulse 1.5s ease-out infinite; }
+.tchip .subdot { width: 6px; height: 6px; border-radius: 50%; background: var(--bd2); }
+
+/* A teammate's work, inside the thread that asked for it. It is a live block,
+   not a summary: it opens the teammate's whole thread. */
+.agentblk { border: 1px solid rgba(138,124,255,0.22); background: rgba(138,124,255,0.05);
+  border-radius: 12px; margin: 8px 0; overflow: hidden; }
+.agentblk.live { border-color: rgba(138,124,255,0.5); }
+.agentblk.bad { border-color: rgba(209,107,111,0.45); background: rgba(209,107,111,0.05); }
+.agentblk .ab-h { display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+  background: rgba(138,124,255,0.07); font-size: 12px; }
+.agentblk .ab-av { display: flex; align-items: center; justify-content: center; width: 18px; height: 18px;
+  flex: none; border-radius: 50%; background: rgba(138,124,255,0.18); color: #a89cff; font-size: 10px; }
+.agentblk .ab-h .nm { font-weight: 700; color: var(--tx); }
+.agentblk .ab-h .rl { color: var(--dim2); flex: 1; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.agentblk .ab-h .st { flex: none; font-size: 11px; color: var(--dim3); }
+.agentblk .ab-h .open { flex: none; font-size: 11px; color: #a89cff; border: 1px solid rgba(138,124,255,0.3);
+  border-radius: 7px; padding: 2px 8px; }
+.agentblk .ab-h .open:hover { background: rgba(138,124,255,0.16); color: #fff; }
+.agentblk .ab-q { padding: 9px 12px; font-size: 12.5px; color: var(--dim2); line-height: 1.5;
+  border-bottom: 1px solid rgba(138,124,255,0.13); white-space: pre-wrap; word-break: break-word; }
+.agentblk .ab-a { padding: 10px 12px; line-height: 1.55; }
+
+/* Inside a teammate's thread: who it is, its brief, and the way back. */
+.subhead { display: flex; align-items: center; gap: 12px; padding: 9px 20px;
+  border-bottom: 1px solid var(--bd2); background: rgba(138,124,255,0.05); }
+.subhead .back { font-size: 12px; color: #a89cff; }
+.subhead .back:hover { color: #fff; }
+.subhead .who { display: flex; align-items: baseline; gap: 9px; min-width: 0; }
+.subhead .who b { font-size: 13px; }
+.subhead .who .rl { font-size: 12px; color: var(--dim2); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.subhead .grow { flex: 1; }
+.subhead .brieftgl { font-size: 11px; color: var(--dim2); border: 1px solid var(--bd2);
+  border-radius: 7px; padding: 2px 9px; }
+.subhead .brieftgl:hover { color: var(--tx); border-color: rgba(138,124,255,0.4); }
+.briefbox { padding: 10px 20px; font-size: 12px; line-height: 1.55; color: var(--dim2);
+  background: rgba(255,255,255,0.02); border-bottom: 1px solid var(--bd2); white-space: pre-wrap; }
+.topbar .ttl .crumb { color: var(--dim2); }
+.topbar .ttl .crumb:hover { color: var(--tx); }
+.topbar .ttl .sep { color: var(--dim3); margin: 0 7px; }
+.seg-mode.off { opacity: .35; pointer-events: none; }
+
+/* A message put in this thread by ANOTHER agent. Never styled like something
+   the user typed: it did not come from them. */
+.row-u.from-agent .bub-u { background: rgba(138,124,255,0.09); border: 1px solid rgba(138,124,255,0.22);
+  border-radius: 14px 14px 4px 14px; }
+.row-u.from-agent .fromtag { display: block; font-size: 10px; font-weight: 700; letter-spacing: 0.4px;
+  text-transform: uppercase; color: var(--acc-tx, #8a7cff); margin-bottom: 5px; }
+.av.u.agent { background: rgba(138,124,255,0.15); border-color: rgba(138,124,255,0.35); color: #a89cff; }
+
+/* Which thread a permission dialog speaks for, when it is not the one on screen. */
+.modal .porigin { font-size: 12px; color: var(--acc-tx, #8a7cff); background: rgba(138,124,255,0.08);
+  border: 1px solid rgba(138,124,255,0.2); border-radius: 8px; padding: 6px 10px; margin-bottom: 12px; }
