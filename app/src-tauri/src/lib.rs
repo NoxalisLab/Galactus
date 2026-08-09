@@ -1,4 +1,4 @@
-// Galactus desktop — Rust side.
+// Galactus desktop, Rust side.
 //
 // Everything the frontend cannot or must not do lives here: hardware
 // inspection, the model registry, the llama-server lifecycle, the
@@ -514,7 +514,7 @@ fn component_matches(pat: &str, name: &str) -> bool {
 }
 
 /// First (lexicographic) file matching a simple glob pattern: `*`/`?` inside a
-/// component, `**` for any directory depth — the same idioms galactus.env uses.
+/// component, `**` for any directory depth, the same idioms galactus.env uses.
 /// The walk is bounded so a pack lookup stays instant even on a huge volume.
 fn glob_first(pattern: &str) -> Option<PathBuf> {
     use std::path::Component;
@@ -1277,12 +1277,12 @@ fn plan_cache(
 }
 
 /// Pick a port we can actually bind. A crashed run can leave an orphan holding
-/// the previous one, and other software may squat it too — so instead of
+/// the previous one, and other software may squat it too, so instead of
 /// fighting for a fixed port we scan a small range and take the first free
 /// slot. Orphaned llama-servers of ours are reaped along the way.
 /// Reap only servers WE left behind: a llama-server whose command line points
 /// at the configured Galactus folder. A llama-server the user started by hand
-/// elsewhere is never touched. Purely a memory courtesy — the dynamic port
+/// elsewhere is never touched. Purely a memory courtesy, the dynamic port
 /// already removes any bind conflict.
 fn reap_orphan_servers(root: &Path) {
     let root_str = root.to_string_lossy().into_owned();
@@ -1394,7 +1394,7 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
     // paths are the classic mono pack.
     let (pack_internal, pack_external) = resolve_packs(&root, &model_id, &entry)?;
     if !pack_internal.is_file() || !pack_external.is_file() {
-        return Err("pack not found — install the model first".into());
+        return Err("pack not found, install the model first".into());
     }
 
     let settings = settings_load();
@@ -1418,14 +1418,14 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
 
     // Engine resolution: a developer checkout build wins (always freshest);
     // otherwise the fully relocated llama-server shipped INSIDE the app
-    // bundle is used — no Homebrew, no checkout, plug and play.
+    // bundle is used, no Homebrew, no checkout, plug and play.
     let checkout_bin = root.join("third_party/llama.cpp/build/bin/llama-server");
     let server_bin = if checkout_bin.exists() {
         checkout_bin
     } else if let Some(bundled) = bundled_engine() {
         bundled
     } else {
-        return Err("llama-server binary not found — build it: cmake --build third_party/llama.cpp/build --target llama-server -j".into());
+        return Err("llama-server binary not found, build it: cmake --build third_party/llama.cpp/build --target llama-server -j".into());
     };
     // Product law: a certified model NEVER runs as a plain native llama.cpp.
     // A stock build accepts every flag and ignores every GALACTUS_H4_* var, so
@@ -1460,7 +1460,7 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
     let log_out = std::fs::File::create(&log_path).map_err(|e| e.to_string())?;
     let log_err = log_out.try_clone().map_err(|e| e.to_string())?;
 
-    // Engine regime — ALWAYS the H4 wiring, ALWAYS the certified numerics.
+    // Engine regime, ALWAYS the H4 wiring, ALWAYS the certified numerics.
     //
     // Certification rule (product law): a certified model runs BIT-EXACT.
     // That is the CPU-experts regime the certification benches validated:
@@ -1472,7 +1472,7 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
     //
     // The physical micro-batch stays at the planner's guarded value: the
     // certified curves were measured in this envelope, and a different batch
-    // shape changes kernel paths and accumulation order — do not trade
+    // shape changes kernel paths and accumulation order, do not trade
     // bit-exactness for prompt speed silently.
     // Residency is judged on the SAME geometry the planner used (the profile
     // measured at install when there is one), not on the registry estimate:
@@ -1539,7 +1539,7 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
         cmd.arg("--n-cpu-moe").arg("99");
     }
     // Logical batch stays normal (the server sizes its output buffers from
-    // it — a tiny value asserts in output_reserve). Only the PHYSICAL
+    // it, a tiny value asserts in output_reserve). Only the PHYSICAL
     // micro-batch is constrained by the expert-cache probation guard.
     cmd.arg("--batch-size")
         .arg("512")
@@ -1763,7 +1763,7 @@ fn delete_model_impl(model_id: &str) -> Result<String, String> {
     {
         let s = server_state().lock().unwrap_or_else(|e| e.into_inner());
         if s.child.is_some() && s.model_id.as_deref() == Some(model_id) {
-            return Err("model is running — stop it first".into());
+            return Err("model is running, stop it first".into());
         }
     }
     // Symmetric guard: an install in flight is writing the very files this
@@ -1773,16 +1773,16 @@ fn delete_model_impl(model_id: &str) -> Result<String, String> {
         .unwrap_or_else(|e| e.into_inner())
         .contains_key(model_id)
     {
-        return Err("an install is running for this model — cancel it first".into());
+        return Err("an install is running for this model, cancel it first".into());
     }
     let entry = registry_entry(&root, &model_id)?;
     let mut removed: Vec<String> = Vec::new();
     let mut spared: Vec<String> = Vec::new();
 
     // Packs resolved for this model: only delete inside the model's OWN
-    // folder of the pack store (artifacts/h4/packs/<id>/). Anything else —
+    // folder of the pack store (artifacts/h4/packs/<id>/). Anything else,
     // ~/GalactusH4, an external SSD, or a shared store folder like the GLM
-    // tour packs — is spared and reported.
+    // tour packs, is spared and reported.
     let own_store = root.join("artifacts/h4/packs").join(model_id);
     let (pack_i, pack_e) = resolve_packs(&root, model_id, &entry)?;
     let mut packs = vec![pack_i];
@@ -2064,7 +2064,7 @@ fn install_pipeline_with(
 
     // 3. Plan. The dual ratio stays at the planner's default (0.7157, the
     //    internal share): it is the P0v2 profile the engine's record split
-    //    reproduces at read time — a different ratio would corrupt reads.
+    //    reproduces at read time, a different ratio would corrupt reads.
     progress("plan", 65.0, "planning");
     let out = python3_cmd()
         .current_dir(root)
@@ -2276,7 +2276,7 @@ async fn tool_fs_read(path: String, max_bytes: usize, offset: Option<u64>) -> Re
     }
     if end < len {
         text.push_str(&format!(
-            "\n…(truncated at byte {end} of {len} — read further with offset={end})"
+            "\n…(truncated at byte {end} of {len}, read further with offset={end})"
         ));
     }
     Ok(text)
@@ -3841,7 +3841,7 @@ fn office_text(path: &str, ext: &str) -> Result<String, String> {
                 }
             }
             // NOTE: this is a Rust *raw* string, so `\n`/`\t` reach Python as
-            // escape sequences inside its own string literals — never put a
+            // escape sequences inside its own string literals, never put a
             // literal newline inside the Python quotes (SyntaxError).
             let script = r#"
 import sys, zipfile, re
@@ -3941,7 +3941,7 @@ async fn doc_read(path: String, mode: Option<String>) -> Result<String, String> 
 #[tauri::command]
 fn doc_capabilities() -> Value {
     // The Xcode stub at /usr/bin/swiftc exists even without the Command Line
-    // Tools — only a successful exit means the compiler is really usable.
+    // Tools, only a successful exit means the compiler is really usable.
     let swiftc = Command::new("swiftc")
         .arg("--version")
         .output()
@@ -4055,7 +4055,7 @@ fn voice_start(app: AppHandle, locale: Option<String>) -> Result<(), String> {
         if !terminal_sent {
             let _ = app.emit("galactus://voice", json!({"kind": "final", "text": ""}));
         }
-        // Reap OUR child only — a fresh dictation may already have replaced
+        // Reap OUR child only, a fresh dictation may already have replaced
         // it; and never hold the lock across wait().
         let mine = {
             let mut v = voice_state().lock().unwrap_or_else(|e| e.into_inner());

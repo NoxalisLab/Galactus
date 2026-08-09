@@ -124,9 +124,9 @@ const SENSITIVE_WRITE_PATTERNS = [
 export function isElevatedCommand(cmd: string): boolean {
   if (ELEVATED_PATTERNS.some((re) => re.test(cmd))) return true;
   // Destructive rm in ANY flag layout: `rm -rf`, `rm -r -f`, `rm --recursive`,
-  // `rm -f x` … Split on every separator that can chain commands — newlines,
+  // `rm -f x` … Split on every separator that can chain commands, newlines,
   // subshell parens, backticks and `$` included, so `$(rm …)` and `` `rm …` ``
-  // substitutions are scanned as their own segments — and scan EVERY `rm`
+  // substitutions are scanned as their own segments, and scan EVERY `rm`
   // token by BASENAME: `/bin/rm` must not slip past a whole-token compare,
   // and an indexOf of the first occurrence misses `echo ok && rm …`,
   // `for …; do rm …; done`, and `VAR=1 rm …`. Over-matching (a quoted
@@ -160,7 +160,7 @@ export function isElevatedWrite(path: string): boolean {
 /**
  * Lexical cleanup only: "." segments and duplicate slashes collapse so a
  * standing-rule prefix always compares against one canonical spelling.
- * ".." is never resolved here — it is rejected upstream, because resolving
+ * ".." is never resolved here, it is rejected upstream, because resolving
  * it lexically would legitimize "granted/../../secret" escapes.
  */
 export function normalizePath(p: string): string {
@@ -208,7 +208,7 @@ async function grantStanding(kind: PermissionKind, prefix: string) {
 function isStanding(kind: PermissionKind, detail: string): boolean {
   return standing.some((r) => {
     if (r.kind !== kind) return false;
-    // An empty prefix would match EVERYTHING for this kind — never honour one
+    // An empty prefix would match EVERYTHING for this kind, never honour one
     // (legacy rules stored by older builds become inert).
     if (r.prefix === "") return false;
     // Shell, vault, memory, file-write, history-read and code-proposal rules
@@ -705,7 +705,7 @@ function builtinTools(
       function: {
         name: "read_document",
         description:
-          "Read the text of a document: PDF (including scanned ones, via OCR), image (png/jpg/heic/tiff — text is extracted with OCR), Word/PowerPoint/Excel, RTF, HTML, or any plain-text file. Use this instead of read_file for anything that is not source code or plain text.",
+          "Read the text of a document: PDF (including scanned ones, via OCR), image (png/jpg/heic/tiff, text is extracted with OCR), Word/PowerPoint/Excel, RTF, HTML, or any plain-text file. Use this instead of read_file for anything that is not source code or plain text.",
         parameters: {
           type: "object",
           properties: {
@@ -1125,7 +1125,7 @@ export class Agent {
       /* unknown skill: fall through to the plain text */
     }
     const content = body
-      ? `[Skill « ${name} » activated — follow these instructions for this task]\n${body}\n\n[User request]\n${userText.trim() || "(start)"}`
+      ? `[Skill « ${name} » activated, follow these instructions for this task]\n${body}\n\n[User request]\n${userText.trim() || "(start)"}`
       : userText;
     this.messages.push({ role: "user", content });
     await this.turn(0);
@@ -1300,7 +1300,7 @@ export class Agent {
         }
       }
       // Request failed for real: surface it. Do NOT push an empty assistant
-      // message nor call finishTurn — that would end the turn twice.
+      // message nor call finishTurn, that would end the turn twice.
       this.hooks.onError(streamErr ?? "request failed");
       this.hooks.onActivity?.("done");
       return;
@@ -1336,7 +1336,7 @@ export class Agent {
     }
 
     // Execute every tool call and push exactly one tool message per call, in
-    // order — the API requires a 1:1 match with the assistant's tool_calls.
+    // order, the API requires a 1:1 match with the assistant's tool_calls.
     for (let ci = 0; ci < toolCalls.length; ci++) {
       const call = toolCalls[ci];
       let result: string;
@@ -1360,7 +1360,7 @@ export class Agent {
         try {
           const fname = `tool-${Date.now().toString(36)}-${call.function.name.replace(/[^\w-]/g, "_").slice(0, 40)}.txt`;
           const path = await api.scratchWrite(fname, result);
-          note = `\n[output truncated here — the FULL output (${result.length} chars) is saved at: ${path}\nRead precise sections with read_file (offset=<byte>, max_bytes=…) instead of assuming the rest.]`;
+          note = `\n[output truncated here, the FULL output (${result.length} chars) is saved at: ${path}\nRead precise sections with read_file (offset=<byte>, max_bytes=…) instead of assuming the rest.]`;
         } catch {
           note = `\n…(truncated, ${result.length} chars total)`;
         }
@@ -1549,7 +1549,7 @@ export class Agent {
         prefix = (req.detail.split(" · ")[0] ?? req.detail) + " · ";
       }
       // shell / obsidian / memory / fs_write: the FULL detail is stored and
-      // matched exactly — a broader rule (first token, whole folder) is an
+      // matched exactly, a broader rule (first token, whole folder) is an
       // escalation the user never saw.
       await grantStanding(req.kind, prefix);
     }

@@ -1,4 +1,4 @@
-// Galactus — live preview panel (signature feature).
+// Galactus, live preview panel (signature feature).
 //
 // When the assistant emits an HTML / SVG / Mermaid / markdown code block, the
 // user can open it rendered, live, in a side panel. `show()` is cheap and
@@ -17,7 +17,7 @@
 //    note.
 //
 // ───────────────────────────────────────────────────────────────────────────
-// CSS — the integrator adds these classes to styles.css (this module does not
+// CSS, the integrator adds these classes to styles.css (this module does not
 // touch styles.css itself). The panel host must be `position: relative`.
 //
 //   .pvw { position: absolute; top: 0; right: 0; bottom: 0; width: 46%;
@@ -64,7 +64,7 @@
 //          overflow: auto; }
 // ───────────────────────────────────────────────────────────────────────────
 //
-// i18n — all visible strings live in i18n.ts (preview.* keys) and go
+// i18n, all visible strings live in i18n.ts (preview.* keys) and go
 // through t(), like everywhere else in the app.
 
 import { renderMarkdown, wireCodeCopy } from "./markdown";
@@ -163,7 +163,7 @@ function sanitizeSvg(code: string): SVGElement | null {
   const walk = (el: Element): void => {
     for (const child of Array.from(el.children)) {
       const tag = child.tagName.toLowerCase();
-      // animate/set can rewrite href of a parent <a> at runtime (SMIL) —
+      // animate/set can rewrite href of a parent <a> at runtime (SMIL),
       // their targets are not covered by the URL_ATTRS scan below.
       if (
         tag === "script" || tag === "foreignobject" || tag === "iframe" ||
@@ -264,7 +264,7 @@ export class PreviewPanel {
     this.root.append(this.grip, this.head, this.body);
     host.appendChild(this.root);
 
-    // Listeners (bound arrow fields — removed in destroy()).
+    // Listeners (bound arrow fields, removed in destroy()).
     this.head.addEventListener("click", this.onHeadClick);
     this.resizeCleanup = wirePaneResizer({
       handle: this.grip,
@@ -286,7 +286,7 @@ export class PreviewPanel {
 
   /**
    * Show (or live-update) the preview. Safe to call repeatedly with new code:
-   * the panel and, for HTML, the iframe are reused — no flicker, no rebuild.
+   * the panel and, for HTML, the iframe are reused, no flicker, no rebuild.
    */
   show(code: string, kind: PreviewKind, title?: string): void {
     if (this.destroyed) return;

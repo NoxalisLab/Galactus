@@ -1,4 +1,4 @@
-// Galactus — automatic task detection and model hot-swap policy.
+// Galactus, automatic task detection and model hot-swap policy.
 //
 // Two honest truths shape this module:
 //  1. Swapping the PERSONA (system prompt + temperature) is free and instant.
@@ -7,7 +7,7 @@
 //     model genuinely does not cover the detected task, and we tell the user
 //     what it will cost.
 //
-// Detection is local heuristics — no round trip, no latency. It errs towards
+// Detection is local heuristics, no round trip, no latency. It errs towards
 // "keep the current task" when the signal is weak, because a wrong swap is far
 // more annoying than a missed one.
 
@@ -41,7 +41,7 @@ const SIGNALS: Signal[] = [
     task: "code",
     weight: 2.5,
     reason: "vocabulaire de programmation",
-    // NB: c++ sits OUTSIDE the trailing \b — after "++" a word boundary only
+    // NB: c++ sits OUTSIDE the trailing \b, after "++" a word boundary only
     // exists if a word char follows, so "du c++." would never match inside.
     re: /\bc\+\+|\b(refactor(?:e|ise|ing)?|debug(?:ge|guer)?|compil(?:e|er|ation)|stack ?trace|traceback|exception|segfault|typescript|javascript|python|rust|golang|swift|kotlin|java\b|react|vue\b|angular|django|flask|fastapi|npm|cargo|webpack|vite|eslint|pytest|jest\b|unit test|tests? unitaires?)\b/,
   },
@@ -91,7 +91,7 @@ const SIGNALS: Signal[] = [
   },
   {
     task: "writing",
-    // Weak: "write me ..." says nothing about the medium on its own — a code
+    // Weak: "write me ..." says nothing about the medium on its own, a code
     // request phrased that way must not land here.
     weight: 1.2,
     reason: "demande de production",
@@ -177,11 +177,11 @@ export interface SwapPlan {
   task: TaskId;
   /** Model that should serve it, null when no change is called for. */
   modelId: string | null;
-  /** True when the running model already covers the task — persona swap only. */
+  /** True when the running model already covers the task, persona swap only. */
   personaOnly: boolean;
   /**
    * none     : the running model is the best installed choice, nothing to do.
-   * required : the running model is not fit for this task at all — swap when
+   * required : the running model is not fit for this task at all, swap when
    *            confident (a reload the user will understand).
    * upgrade  : the running model works, but a better-ranked one is installed.
    *            Never automatic: a reload is too expensive to impose for a
@@ -227,7 +227,7 @@ export function planSwap(
       : { ...base, modelId: bestInstalled, personaOnly: false, kind: "required" };
   }
 
-  // It is fit — is something strictly better installed?
+  // It is fit, is something strictly better installed?
   const betterIndex = prefs.findIndex((id, i) => i < rank && installedIds.includes(id));
   if (betterIndex >= 0) {
     return { ...base, modelId: prefs[betterIndex], personaOnly: false, kind: "upgrade" };

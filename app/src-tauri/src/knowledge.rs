@@ -1,4 +1,4 @@
-// Galactus desktop — local knowledge index.
+// Galactus desktop, local knowledge index.
 //
 // Pure-Rust BM25 search over user-configured folders. Zero external
 // dependency beyond std + serde/serde_json (already in the project). The

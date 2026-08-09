@@ -1,4 +1,4 @@
-// Galactus — lightweight, safe markdown renderer for chat messages.
+// Galactus, lightweight, safe markdown renderer for chat messages.
 //
 // Design notes:
 //  - Everything is HTML-escaped FIRST, then markup is applied to the escaped
@@ -131,7 +131,7 @@ function inline(text: string): string {
     return placeholder(slots.length - 1);
   };
 
-  // inline code first — its contents are never interpreted
+  // inline code first, its contents are never interpreted
   let s = text.replace(/`([^`\n]+)`/g, (_m, c: string) => stash("<code>" + c + "</code>"));
 
   // explicit links
@@ -146,7 +146,7 @@ function inline(text: string): string {
     pre + stash('<a href="' + url + '" target="_blank" rel="noreferrer">' + url + "</a>")
   );
 
-  // emphasis — bold before italic
+  // emphasis, bold before italic
   s = s.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
   s = s.replace(/__([^_\n]+)__/g, "<strong>$1</strong>");
   s = s.replace(/(^|[^*\w])\*([^*\n]+)\*(?![*\w])/g, "$1<em>$2</em>");
@@ -336,7 +336,7 @@ export function wireCodeCopy(container: HTMLElement, label = "copied"): void {
   container.addEventListener("click", async (e) => {
     const btn = (e.target as HTMLElement).closest(".cb-c") as HTMLElement | null;
     if (!btn) return;
-    // dataset.code is ALREADY entity-decoded by the HTML parser — running it
+    // dataset.code is ALREADY entity-decoded by the HTML parser, running it
     // through a textarea innerHTML would decode a second time and corrupt
     // code that legitimately contains &lt; &amp; sequences.
     const code = btn.dataset.code ?? "";

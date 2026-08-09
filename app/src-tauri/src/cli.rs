@@ -29,7 +29,7 @@ fn print_models(root: &Path) -> Result<(), String> {
         let id = m["id"].as_str().unwrap_or("?");
         let (dir, _pack, _) = model_paths(root, id);
         // Meme regle que l'app : les packs resolus (registre, settings, mono)
-        // doivent exister — le GLM double-pack compte comme installe.
+        // doivent exister, le GLM double-pack compte comme installe.
         let installed = find_gguf(&dir).is_some()
             && resolve_packs(root, id, &m)
                 .map(|(i, e)| i.is_file() && e.is_file())
@@ -60,7 +60,7 @@ fn serve(root: &Path, model_id: &str, args: &[String]) -> Result<(), String> {
     let ram_mode = ram_mode_from_args(args);
     let ram_gb = hw_info_impl().ram_gb.max(8);
     // Same opt-in surface as the app: flag, registry entry, or the shared
-    // setting — otherwise `galactus serve` would silently contradict the
+    // setting, otherwise `galactus serve` would silently contradict the
     // regime the user picked in the app. Resolved before planning, since the
     // cross-check regime keeps a small micro-batch.
     let cpu_moe = args.iter().any(|a| a == "--cpu-moe")
@@ -260,7 +260,7 @@ pub fn cli_main() {
                 Ok(())
             }
             _ => {
-                println!("galactus — moteur MoE local (Noxalis Lab)\n");
+                println!("galactus, moteur MoE local (Noxalis Lab)\n");
                 println!("  galactus models                       liste des modeles certifies");
                 println!("  galactus install <modele>             telecharge + profile + plan + pack");
                 println!("  galactus serve <modele> [options]     sert le modele (API OpenAI locale)");

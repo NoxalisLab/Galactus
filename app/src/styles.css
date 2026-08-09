@@ -1,7 +1,7 @@
-/* Galactus — design system, ported from the Noxalis design mock.
+/* Galactus, design system, ported from the Noxalis design mock.
    IBM Plex, near-black surfaces, one violet accent gradient.
    Fonts are bundled (public/fonts): the packaged app is fully offline and the
-   CSP blocks Google Fonts anyway. Sans is the variable file (covers 400–600). */
+   CSP blocks Google Fonts anyway. Sans is the variable file (covers 400-600). */
 @font-face {
   font-family: "IBM Plex Sans"; font-style: normal; font-weight: 400 600; font-display: swap;
   src: url("/fonts/ibm-plex-sans-latin.woff2") format("woff2");
@@ -140,7 +140,7 @@ svg { display: block; }
 html.pane-dragging, html.pane-dragging * { cursor: col-resize !important; user-select: none !important; }
 html.pane-dragging iframe { pointer-events: none !important; }
 /* Empty drag strip: the REAL macOS traffic lights overlay here (titleBarStyle
-   Overlay) — no fake placeholders. */
+   Overlay), no fake placeholders. */
 .side-head { height: 52px; flex: none; border-bottom: 1px solid var(--bd); -webkit-app-region: drag; }
 .brand2 { display: flex; align-items: center; gap: 11px; padding: 18px 20px 14px; }
 .brand2 .mark { width: 30px; height: 30px; flex: none; }

@@ -1,4 +1,4 @@
-// tasks.ts — bascule de modele par tache (task-based model switching).
+// tasks.ts, bascule de modele par tache (task-based model switching).
 //
 // Lit `task_personas` + `task_models` du registre (scripts/models-registry.json)
 // et fournit a l'agent la persona (system prompt + temperature) et la liste
@@ -7,7 +7,7 @@
 // on ne bascule QUE si le modele en cours n'est pas deja un des preferes.
 //
 // ---------------------------------------------------------------------------
-// POUR L'INTEGRATEUR — classes CSS attendues (a definir dans styles.css avec
+// POUR L'INTEGRATEUR, classes CSS attendues (a definir dans styles.css avec
 // les variables existantes --bg / --card / --acc / --grad) :
 //   .task-bar          conteneur horizontal des puces de tache (dans le chat)
 //   .task-chip         puce cliquable d'une tache (fond --card, bord arrondi)
@@ -22,7 +22,7 @@
 //   "task.keepModel"   en: "model already loaded"    fr: "modèle déjà chargé"
 //   "task.noModel"     en: "no preferred model installed"
 //                      fr: "aucun modèle préféré installé"
-// (Les labels des taches elles-memes viennent du registre — label_fr/label_en —
+// (Les labels des taches elles-memes viennent du registre, label_fr/label_en,
 //  ou des replis ci-dessous, PAS du dictionnaire i18n.)
 // ---------------------------------------------------------------------------
 
@@ -118,7 +118,7 @@ function asModelList(v: unknown): string[] {
 
 /**
  * Construit les 5 TaskDef a partir du registre brut (objet deja parse ou
- * chaine JSON). Chaque champ manquant ou invalide retombe sur le repli —
+ * chaine JSON). Chaque champ manquant ou invalide retombe sur le repli,
  * le resultat contient TOUJOURS les 5 taches, dans un ordre stable.
  */
 export function loadTasks(registryRaw: unknown): TaskDef[] {
@@ -160,7 +160,7 @@ export function loadTasks(registryRaw: unknown): TaskDef[] {
  *   depuis le SSD) coute cher, on ne recharge que si necessaire.
  * - Sinon, on rend le PREMIER modele prefere qui soit installe, avec
  *   needsSwitch=true (ou false s'il n'y a rien a charger car deja en cours).
- * - Si aucun prefere n'est installe : { modelId: null, needsSwitch: false } —
+ * - Si aucun prefere n'est installe : { modelId: null, needsSwitch: false },
  *   l'appelant garde le modele courant et n'applique que la persona.
  */
 export function pickModelFor(

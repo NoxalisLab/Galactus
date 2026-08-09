@@ -1,4 +1,4 @@
-// chatx.ts — extras chat "pro" : export markdown, recherche de conversations,
+// chatx.ts, extras chat "pro" : export markdown, recherche de conversations,
 // pieces jointes, zone de depot (drag & drop) et statistiques de generation.
 //
 // Tout est pur / sans etat sauf wireDropZone (qui rend une fonction de
@@ -7,7 +7,7 @@
 // ouvert, et le desabonnement libere tout.
 //
 // ---------------------------------------------------------------------------
-// POUR L'INTEGRATEUR — cle CSS attendue (variables existantes --acc / --card) :
+// POUR L'INTEGRATEUR, cle CSS attendue (variables existantes --acc / --card) :
 //   .dropzone-active   appliquee sur l'element hote pendant un survol de drop
 //                      (ex. bord 1px dashed var(--acc), fond var(--card))
 //
@@ -70,12 +70,12 @@ function renderItem(it: ChatItem): string {
     case "assistant":
       return `**${t("chatx.exportAssistant")}**\n\n${it.text.trim()}`;
     case "tool": {
-      const head = `> **${t("chatx.exportTool")} — ${toolLabel(it.name)}**` + (it.arg ? ` \`${it.arg}\`` : "");
+      const head = `> **${t("chatx.exportTool")}, ${toolLabel(it.name)}**` + (it.arg ? ` \`${it.arg}\`` : "");
       const body = it.done ? quoted(it.result) : "> " + t("chat.running");
       return body ? head + "\n>\n" + body : head;
     }
     case "error":
-      return `> **${t("chatx.exportError")}** — ${it.text.trim()}`;
+      return `> **${t("chatx.exportError")}**, ${it.text.trim()}`;
     case "notice":
       return `*${it.text.trim()}*`;
     case "agent": {
@@ -138,7 +138,7 @@ function fold(s: string): string {
 /**
  * Filtre les metadonnees par titre : insensible a la casse et aux accents,
  * mots de la requete acceptes dans n'importe quel ordre ("recette ete"
- * trouve "Idées d'été — recettes"). Requete vide = tout.
+ * trouve "Idées d'été, recettes"). Requete vide = tout.
  */
 export function searchConversations(metas: ConvMeta[], query: string): ConvMeta[] {
   const words = fold(query).split(/\s+/).filter((w) => w !== "");
@@ -206,7 +206,7 @@ function pathsFromDomDrop(ev: DragEvent): string[] {
  *
  * Utilise le drag & drop natif de Tauri quand il est disponible (import
  * dynamique de "@tauri-apps/api/webview" → getCurrentWebview().onDragDropEvent)
- * — le seul canal qui fournit de vrais chemins disque — avec repli sur les
+ *, le seul canal qui fournit de vrais chemins disque, avec repli sur les
  * evenements DOM dragover/drop. Ne casse rien si l'API n'existe pas.
  *
  * Rend une fonction de desabonnement ; l'appelant DOIT l'invoquer quand la

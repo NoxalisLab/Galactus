@@ -1,4 +1,4 @@
-// Galactus — visualisation "agents au travail" en pixel-art.
+// Galactus, visualisation "agents au travail" en pixel-art.
 // Sprite 16x16 dessine par code, echelle x3, boucle ~12 fps.
 // Zero dependance, TypeScript strict, canvas HTML5 uniquement.
 
@@ -469,7 +469,7 @@ export class PixelViz {
     P(7 + headDx, 2, ACC2);
     P(7 + headDx, 1, f % 24 < 12 ? WHITE : ACC2, f % 24 < 12 ? 1 : 0.8); // tip clignotant
 
-    // Tete (8x6, coins arrondis) — legerement etoilee par l'antenne
+    // Tete (8x6, coins arrondis), legerement etoilee par l'antenne
     for (let y = 3; y <= 8; y++) {
       for (let x = 4; x <= 11; x++) {
         const corner = (x === 4 || x === 11) && (y === 3 || y === 8);

@@ -1296,7 +1296,7 @@ function toolCardEl(it: Extract<ChatItem, { kind: "tool" }>): HTMLElement {
   const rev = card.querySelector<HTMLElement>("[data-revert]");
   rev?.addEventListener("click", async () => {
     const p = rev.dataset.revert!;
-    // Two-step: restoring overwrites the current file — one accidental click
+    // Two-step: restoring overwrites the current file, one accidental click
     // must not be enough.
     if (!rev.dataset.armed) {
       rev.dataset.armed = "1";
@@ -1647,7 +1647,7 @@ async function ensureAgent(sess: Thread): Promise<void> {
     applyTaskPersona();
   }
   // Restore this thread's context, then load memory/skills/connectors BEFORE
-  // the first turn — otherwise the first message runs without any of them.
+  // the first turn, otherwise the first message runs without any of them.
   if (sess.data.history.length) inst.loadHistory(sess.data.history, sess.data.contextSummary);
   try {
     const [mem, s, tools, skills, kbFolders] = await Promise.all([
@@ -2292,7 +2292,7 @@ function modelsView(): HTMLElement {
           <div class="nm"><b>${esc(m.name)}</b><span class="chip-cert ${certification.canExecute ? "" : "pending"}">${certification.canExecute ? "✓" : "◷"} ${esc(certLabel)}</span></div>
           <span class="meta">${esc(m.arch)} · ${fmtGb(m.gguf_bytes)} · ${m.experts_used ?? "?"}/${m.experts ?? "?"}</span>
         </div>
-        <div class="spd"><b style="color:${speedColor}">${tps && v.ok ? (measured ? "" : "~") + tps.toFixed(0) : "—"}</b><small>${esc(v.ok ? t(measured ? "models.measured" : "models.onThisMac") : "—")}</small></div>
+        <div class="spd"><b style="color:${speedColor}">${tps && v.ok ? (measured ? "" : "~") + tps.toFixed(0) : "·"}</b><small>${esc(v.ok ? t(measured ? "models.measured" : "models.onThisMac") : "·")}</small></div>
       </div>
       <div class="bar"><div style="width:${bar}%"></div></div>
       <div class="foot"><span class="n">${prog ? `<b style="color:var(--acc-tx)">${Math.round(prog.pct)}%</b> · ${esc(installLabel(prog.label))}` : esc(v.note || (m.installed ? t("models.installed") : (m.arch + " · " + (m.experts_used ?? "?") + " active")))}</span><span data-a></span></div>
@@ -2780,7 +2780,7 @@ function agentView(): HTMLElement {
     }
     for (const k of skills) {
       const on = !skillsOff.has(k.name);
-      const c = el(`<div class="skcard"><div class="kico">📖</div><div class="ki"><b>${esc(k.name)}</b><span>${esc(k.description || "—")}</span></div><div class="tgl sm ${on ? "on" : ""}" data-t><div class="k"></div></div></div>`);
+      const c = el(`<div class="skcard"><div class="kico">📖</div><div class="ki"><b>${esc(k.name)}</b><span>${esc(k.description || "·")}</span></div><div class="tgl sm ${on ? "on" : ""}" data-t><div class="k"></div></div></div>`);
       c.querySelector("[data-t]")!.addEventListener("click", async () => {
         if (skillsOff.has(k.name)) skillsOff.delete(k.name); else skillsOff.add(k.name);
         await api.settingsSet("skills_off", JSON.stringify([...skillsOff]));
@@ -3291,7 +3291,7 @@ async function exportConversation(id: string, trigger: HTMLElement): Promise<voi
     (conv.title || t("conv.untitled")).replace(/[\\/:*?"<>|]/g, "_").trim().slice(0, 60) || "conversation";
   try {
     await api.fsWrite(`${dir}/${name}.md`, md);
-    trigger.textContent = "✓"; // transient — the row is rebuilt on next render
+    trigger.textContent = "✓"; // transient, the row is rebuilt on next render
   } catch (e: any) {
     trigger.textContent = "!";
     trigger.title = String(e?.message ?? e);

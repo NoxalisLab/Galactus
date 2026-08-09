@@ -384,7 +384,7 @@ export async function benchOnce(port: number): Promise<{ tps: number; tokens: nu
   const tokens = Number(j?.usage?.completion_tokens ?? 0);
   if (!tokens) throw new Error("no usage in response");
   // llama-server reports its own generation speed (prompt eval and network
-  // excluded) — far more honest than wall-clock; fall back to wall-clock.
+  // excluded), far more honest than wall-clock; fall back to wall-clock.
   const serverTps = Number(j?.timings?.predicted_per_second);
   const tps = Number.isFinite(serverTps) && serverTps > 0 ? serverTps : tokens / (ms / 1000);
   return { tps, tokens, ms };
@@ -481,7 +481,7 @@ export interface StreamHandlers {
 /**
  * Stream one chat completion. Returns true when the stream finished normally
  * (including a user abort, which is not an error) and false when the request
- * failed — in that case onError has already been called and the caller must
+ * failed, in that case onError has already been called and the caller must
  * NOT treat the turn as completed.
  */
 export async function streamChat(
@@ -509,7 +509,7 @@ export async function streamChat(
       signal: abort,
     });
   } catch (e: any) {
-    // A user stop while connecting surfaces as an AbortError — not an error.
+    // A user stop while connecting surfaces as an AbortError, not an error.
     if (abort.aborted) {
       handlers.onDone();
       return true;
@@ -582,7 +582,7 @@ export async function streamChat(
               pending.get(idx) ??
               ({ id: "", type: "function", function: { name: "", arguments: "" } } as ToolCall);
             if (tc.id) cur.id = tc.id;
-            // The name arrives whole (never chunked): assign, don't append —
+            // The name arrives whole (never chunked): assign, don't append,
             // appending doubles it when a server repeats it per chunk.
             if (tc.function?.name) cur.function.name = tc.function.name;
             if (tc.function?.arguments) cur.function.arguments += tc.function.arguments;

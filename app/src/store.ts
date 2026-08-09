@@ -1,8 +1,8 @@
-// Galactus — conversation store.
+// Galactus, conversation store.
 //
 // The chat used to be drawn straight into DOM nodes captured by the agent's
 // callbacks. Any re-render (server event, mode switch, navigation) detached
-// those nodes and every later token went into a dead subtree — the thread
+// those nodes and every later token went into a dead subtree, the thread
 // simply stopped updating. Everything now lives in this store; the view is a
 // pure function of it, and callbacks mutate state then ask for a repaint.
 //

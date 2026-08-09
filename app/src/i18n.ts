@@ -2,7 +2,7 @@
 export type Lang = "en" | "fr";
 
 const dict: Record<string, { en: string; fr: string }> = {
-  "brand.by": { en: "by Noxalis Lab · v0.1.3", fr: "par Noxalis Lab · v0.1.3" },
+  "brand.by": { en: "by Noxalis Lab · v0.1.4", fr: "par Noxalis Lab · v0.1.4" },
   "nav.chat": { en: "Chat", fr: "Discussion" },
   "nav.code": { en: "Code", fr: "Code" },
   "nav.models": { en: "Models", fr: "Modèles" },
@@ -822,7 +822,7 @@ const dict: Record<string, { en: string; fr: string }> = {
   "preview.empty": { en: "Nothing to preview.", fr: "Rien à prévisualiser." },
 };
 
-// localStorage can throw in restricted webviews — this module runs at import
+// localStorage can throw in restricted webviews, this module runs at import
 // time, so an unguarded access would take the whole app down.
 function readStoredLang(): Lang {
   try { return (localStorage.getItem("galactus.lang") as Lang) || "fr"; } catch { return "fr"; }
