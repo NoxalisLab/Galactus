@@ -2,7 +2,7 @@
 export type Lang = "en" | "fr";
 
 const dict: Record<string, { en: string; fr: string }> = {
-  "brand.by": { en: "by Noxalis Lab · v0.1.4", fr: "par Noxalis Lab · v0.1.4" },
+  "brand.by": { en: "by Noxalis Lab · v0.1.5", fr: "par Noxalis Lab · v0.1.5" },
   "nav.chat": { en: "Chat", fr: "Discussion" },
   "nav.code": { en: "Code", fr: "Code" },
   "nav.models": { en: "Models", fr: "Modèles" },

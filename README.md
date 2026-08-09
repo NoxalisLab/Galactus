@@ -51,9 +51,7 @@ A native macOS app for Apple Silicon, fully self-contained and fully offline. Th
 
 Grab `Galactus_x.y.z_aarch64.dmg` from the Releases page, drag it to Applications, launch it.
 
-[![Galactus desktop app tour](docs/media/demos/galactus-tour.gif)](docs/media/demos/galactus-tour.mp4)
-
-*A 31-second tour of the native app: chat, hardware-aware model catalog, connectors, local memory, agent skills and settings. Click the preview for the full-resolution MP4.*
+> *Video placeholder: two-minute tour of the app.*
 
 ### Models that fit, told honestly
 
@@ -61,9 +59,7 @@ The catalog shows what actually runs on **your** Mac, with speeds interpolated f
 
 Installing a large model offers a mono or dual-SSD layout. The app detects candidate volumes, measures each drive's real sequential throughput with cache-bypassing reads, and shows the verdict before you confirm: striping across both when both pull their weight, mono on the fast drive when the slow one would bottleneck the pair. Deleting is symmetric and conservative, packs living outside the app's own store are spared and reported rather than silently removed.
 
-[![Hardware-aware model policy](docs/media/demos/galactus-model-policy.gif)](docs/media/demos/galactus-model-policy.mp4)
-
-*The catalog on an M5 Max with 128 GB unified memory, followed by the live memory and performance policy. The app only exposes models that its certified hardware gate allows. Click for MP4.*
+> *Video placeholder: the catalog on this Mac, then installing a model across two SSDs with the bandwidth probe and its verdict on screen.*
 
 ### An agent, not a textbox
 
@@ -73,9 +69,7 @@ The chat is a full agent loop with three autonomy levels, manual, assisted and a
 
 While the model is writing you keep typing. Messages queue, appear in the thread immediately, and run turn by turn. Context is managed adaptively: large tool outputs spill to scratch files the model rereads on demand, knowledge-base results are fitted to a token budget computed from the live window, and long threads are summarized by the model itself before the window overflows. Conversations do not die at the context edge, and they survive a restart.
 
-[![Agent and Code workspace](docs/media/demos/galactus-agent-ide.gif)](docs/media/demos/galactus-agent-ide.mp4)
-
-*One continuous thread from agent tool calls to the restored repository, native file palette and editor. Model writes remain proposals until the user accepts them. Click for MP4.*
+> *Video placeholder: the agent reading a folder, patching a file with visible diffs, then a team of teammates working in parallel.*
 
 ### The Code view
 
@@ -100,6 +94,8 @@ Project search, the file palette (`Cmd+P`), the symbol palette (`Shift+Cmd+O`) a
 A local BM25 index turns any folders you pick into a searchable knowledge base, and results are fitted to a token budget computed from the live context window, whole entries only, with the omission reported rather than a truncated hit passed off as complete.
 
 The app ships **a 50-note starter vault**, seeded on first launch and never overwritten afterwards: conventions, working practices, and trade-specific notes. Connect it, or your own Obsidian vault, and the agent reads and writes notes with the same diff discipline. The Constellation view renders the vault's wikilink graph as a navigable 3D starfield, click a star to read or edit the note.
+
+> *Video placeholder: dictating a question, the answer spoken back, then the vault constellation.*
 
 ### Skills
 
@@ -131,9 +127,7 @@ galactus status | stop
 
 `serve` accepts `--ram eco|balanced|perf`, `--cpu-moe`, `--slots N` and `--port N`, and prints the chosen regime and the pack layout before the endpoint comes up.
 
-[![The Galactus CLI](docs/media/demos/galactus-cli.gif)](docs/media/demos/galactus-cli.mp4)
-
-*The binary inside the app bundle, run from a shell: help, the certified catalog with install status read from the real pack store, and server state. Unedited, no model loaded. Click for MP4.*
+> *Video placeholder: a CLI session, help, catalog and server state.*
 
 ---
 
