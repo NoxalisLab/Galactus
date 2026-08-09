@@ -1443,3 +1443,123 @@ html.pane-dragging .pvw-frame { pointer-events: none; }
   font-size: 11.5px; line-height: 1.6; color: var(--tx2); white-space: pre;
   overflow-x: auto; background: rgba(138, 124, 255, 0.05);
 }
+
+/* ============================================================ RUNS
+   An unattended run is a reading, not a card: a plate with corner brackets,
+   a coordinate grid behind its transcript, and square angles everywhere. The
+   view adds no new visual vocabulary, it reuses the three the plate already
+   fixed. The brackets come from `.plate`, applied in the markup, so a run card
+   carries no border of its own: a border would describe a container, and a
+   bracket designates a zone. */
+
+/* A card that takes the brackets gives up its border: keeping both would draw
+   a double frame, which is the one thing the plate section forbids outright. */
+.card.plate { border-color: transparent; }
+
+.runlist { display: flex; flex-direction: column; gap: 12px; }
+
+.runcard {
+  background: var(--card); padding: 15px 16px;
+  display: flex; flex-direction: column; gap: 12px;
+  --bk: 12px; --bkc: rgba(138, 124, 255, 0.30);
+}
+/* Same rule as `.mcard`: the arms lengthen instead of a border lighting up. */
+.runcard:hover { --bk: 20px; --bkc: rgba(138, 124, 255, 0.5); }
+/* A run waiting on a human is the one thing on this screen that needs an
+   answer, so its brackets stay long and lit whether or not the pointer is
+   near it. The state is a class rather than `:has()`: the build targets
+   Safari 15, where the rule would simply be dropped. */
+.runcard.needs-answer { --bk: 22px; --bkc: rgba(217, 164, 65, 0.6); }
+
+.runs-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.runs-head b { font-size: 13.5px; font-weight: 600; }
+.runs-grow { flex: 1; min-width: 0; }
+
+/* The state is a square block of colour, never a pill. */
+.runs-state {
+  flex: none; padding: 3px 9px; font-size: 10px; font-weight: 700;
+  letter-spacing: 1px; text-transform: uppercase; color: var(--win);
+  background: var(--dim3);
+}
+.runs-state.s-queued { background: var(--dim3); }
+.runs-state.s-running { background: var(--acc); }
+.runs-state.s-blocked { background: var(--warn); color: #0b0b10; }
+.runs-state.s-finished { background: var(--good); color: #0b0b10; }
+.runs-state.s-failed { background: var(--bad); }
+.runs-state.s-cancelled { background: var(--dim4); }
+.runs-state.s-exhausted { background: var(--dim4); }
+
+.runs-pol {
+  flex: none; padding: 2px 8px; font-size: 10.5px; color: var(--acc-tx);
+  background: rgba(138, 124, 255, 0.12); border: 1px solid rgba(138, 124, 255, 0.25);
+}
+.runs-granted { color: var(--tx2); background: rgba(255, 255, 255, 0.05); border-color: var(--bd3); }
+.runs-budget-read { font-size: 11.5px; color: var(--dim2); font-variant-numeric: tabular-nums; }
+
+.runs-task {
+  font-size: 12px; line-height: 1.6; color: var(--dim2); white-space: pre-wrap;
+  word-break: break-word; padding-left: 10px;
+  border-left: 1px solid rgba(138, 124, 255, 0.25);
+}
+
+/* The declaration form. One column of labelled fields, the same inset inputs
+   the rest of the app uses, and the budget on one line because turns and
+   minutes are one decision. */
+.runs-field { display: flex; flex-direction: column; gap: 6px; }
+.runs-field > small { font-size: 11px; color: var(--dim); }
+.runs-field .inset-input { height: 34px; }
+.runs-grants { font-size: 10.5px; color: var(--dim3); word-break: break-word; }
+.runs-budget { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
+.runs-budget .runs-field { width: 110px; }
+.runs-budget-hint { flex: 1; min-width: 160px; font-size: 11px; color: var(--dim3); line-height: 1.45; }
+
+/* The block. It is the reason blocking exists rather than refusing, so it is
+   the loudest thing on the card: amber brackets, the question in full, and
+   two answers side by side. */
+.runs-block {
+  padding: 13px 14px; display: flex; flex-direction: column; gap: 10px;
+  background: rgba(217, 164, 65, 0.06);
+  --bk: 14px; --bkc: rgba(217, 164, 65, 0.55);
+}
+.runs-block-hd { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.runs-block-hd b { font-size: 12.5px; font-weight: 600; color: var(--warn); }
+.runs-block-hd span { font-size: 11px; color: var(--dim); }
+.runs-question { font-size: 12.5px; line-height: 1.6; color: var(--tx2); word-break: break-word; }
+.runs-answer { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.runs-answer .inset-input { flex: 1; min-width: 180px; }
+
+.runs-result, .runs-failure { display: flex; flex-direction: column; gap: 5px; }
+.runs-result > div, .runs-failure > div {
+  font-size: 12.5px; line-height: 1.65; color: var(--tx2); white-space: pre-wrap;
+  word-break: break-word; max-height: 260px; overflow: auto; padding-left: 10px;
+  border-left: 1px solid rgba(138, 124, 255, 0.25);
+}
+.runs-failure > div { color: #b39c9e; border-left-color: rgba(209, 107, 111, 0.35); }
+
+/* The transcript, on the same coordinate grid as the thread and the pages:
+   a record read on a plate, not a console. */
+.runs-log {
+  max-height: 340px; overflow: auto; padding: 9px 10px;
+  background-color: var(--pre);
+  background-image:
+    repeating-linear-gradient(to right, rgba(138, 124, 255, 0.035) 0 1px, transparent 1px 64px),
+    repeating-linear-gradient(to bottom, rgba(138, 124, 255, 0.035) 0 1px, transparent 1px 64px);
+  background-attachment: local;
+}
+.runs-line {
+  display: flex; gap: 9px; align-items: baseline;
+  font-family: var(--mono); font-size: 11px; line-height: 1.75; color: #9a9aac;
+}
+.runs-line .rl-n { flex: none; width: 34px; text-align: right; color: var(--dim4); font-variant-numeric: tabular-nums; }
+.runs-line .rl-t { flex: none; width: 62px; color: var(--dim3); }
+.runs-line .rl-x { flex: 1; min-width: 0; word-break: break-word; }
+/* The gate is shown in full, and the tones say what it answered. An allowed
+   call is not silent here: a record that only kept the denials would say what
+   the run was stopped from doing and never what it did. */
+.runs-line.tone-allow .rl-t, .runs-line.tone-allow .rl-x { color: var(--good); }
+.runs-line.tone-refuse .rl-t, .runs-line.tone-refuse .rl-x { color: var(--bad); }
+.runs-line.tone-block .rl-t, .runs-line.tone-block .rl-x { color: var(--warn); }
+.runs-line.tone-bad .rl-x { color: var(--bad); }
+.runs-line.tone-good .rl-x { color: var(--good); }
+.runs-line.tone-ask .rl-t, .runs-line.tone-ask .rl-x { color: var(--acc-tx); }
+.runs-line.tone-stream .rl-x { color: var(--tx2); }

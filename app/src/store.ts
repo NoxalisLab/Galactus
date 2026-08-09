@@ -17,6 +17,7 @@
 
 import { api, ChatMessage } from "./api";
 import type { PlanStep } from "./agent";
+import { isRunId } from "./runrecord";
 
 export type ChatItem =
   | { kind: "user"; text: string; /** Set when another agent of the team sent this. */ from?: string }
@@ -179,7 +180,12 @@ export function startNew(): Conversation {
 export async function refreshList(): Promise<ConvMeta[]> {
   try {
     const raw = (await api.convList()) as any[];
-    list = raw.map((v) => ({
+    // Unattended runs are stored through the same per-file path (runsview.ts
+    // persists a run exactly the way this module persists a thread), so they
+    // come back in the same listing. They are not conversations and must not
+    // appear in the sidebar as empty ones: the id namespace is what tells them
+    // apart, and this is the only place the distinction has to be made.
+    list = raw.filter((v) => !isRunId(String(v?.id ?? ""))).map((v) => ({
       id: String(v.id ?? ""),
       title: String(v.title ?? ""),
       created: Number(v.created ?? 0),

@@ -24,6 +24,7 @@ import { exportConversationMarkdown, formatStats, searchConversations, wireDropZ
 import * as store from "./store";
 import type { ChatItem, Conversation, ConvMeta, SubAgent, ThreadData } from "./store";
 import { hasVerifiedDownload, modelAvailability, modelCertification } from "./model-policy";
+import * as runsview from "./runsview";
 import { configurePanePreferences, wirePaneResizer } from "./layout/pane-resize";
 import {
   applyMention,
@@ -36,7 +37,7 @@ import {
 const app = document.getElementById("app")!;
 const LOGO = "/galactus-mark.svg";
 
-type View = "chat" | "code" | "models" | "connectors" | "memory" | "agent" | "settings";
+type View = "chat" | "code" | "models" | "connectors" | "runs" | "memory" | "agent" | "settings";
 type Autonomy = "manual" | "assisted" | "autonomous";
 
 let view: View = "chat";
@@ -112,8 +113,15 @@ function toolsBlocked(): boolean {
  */
 type AppMode = "app" | "server";
 let appMode: AppMode = "app";
-/** The only views that survive server mode. */
-const SERVER_MODE_VIEWS: View[] = ["models", "connectors", "settings"];
+/**
+ * The only views that survive server mode.
+ *
+ * Runs is here rather than beside the assistant surfaces because it is the
+ * reason server mode is more than a model host: a machine serving a model with
+ * nobody in front of it can still be given a task and left alone. It stays
+ * available in assistant mode too, like the other three.
+ */
+const SERVER_MODE_VIEWS: View[] = ["models", "connectors", "runs", "settings"];
 
 /** Port the relay listens on. Distinct from the engine's, which stays local. */
 const RELAY_PORT = 8788;
@@ -483,6 +491,7 @@ const I = {
   conn: `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 17H7a5 5 0 0 1 0-10h2"/><path d="M15 7h2a5 5 0 0 1 0 10h-2"/><path d="M8 12h8"/></svg>`,
   mem: `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4a4 4 0 0 0-4 4 3.5 3.5 0 0 0-1 6.8V17a3 3 0 0 0 5 2.2A3 3 0 0 0 17 17v-2.2A3.5 3.5 0 0 0 16 8a4 4 0 0 0-4-4z"/></svg>`,
   agent: `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v3"/><rect x="5" y="6" width="14" height="11" rx="3"/><path d="M9 11h.01M15 11h.01"/><path d="M9 14h6"/><path d="M5 12H3M21 12h-2"/></svg>`,
+  runs: `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h9M4 12h9M4 19h6"/><path d="M17 15v6l5-3z"/></svg>`,
   set: `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 7.5 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 1.1-2.7H1.7a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 4.6 7.5a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 2.7-1.1V1.7a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 2.7 1.1 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-1.1 2.7h.1a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1.1z"/></svg>`,
   plus: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>`,
   up: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>`,
@@ -673,6 +682,10 @@ function stopAllThreads(): void {
   // Every agent is going away: a dialog left open would answer for nobody, and
   // the gate waiting on it would hold its turn open forever.
   cancelPermissions(() => true);
+  // Unattended runs drive their own agents on the same engine, and nobody is
+  // watching them: a run left in `running` after its engine went away would
+  // sit there claiming to work until someone opened the view.
+  runsview.stopRuns(t("runs.engineGone"));
   for (const th of threads.values()) {
     checkpoint(th);
     th.agent?.stop();
@@ -3395,7 +3408,10 @@ function render() {
   // and the failure would be silent. The surfaces that need tools are
   // disabled, carrying the reason, rather than left to disappoint.
   const nav = (v: View, ic: string, label: string, badge = 0) => {
-    const off = v === "code" && toolsBlocked();
+    // A run drives the same agent loop as the Code view, so a model that emits
+    // no tool call gives it nothing to do either: it would read no file, run
+    // no command, and burn its budget answering in prose.
+    const off = (v === "code" || v === "runs") && toolsBlocked();
     const why = off ? esc(t("tools.blocked")) : "";
     return `<button type="button" class="nav-item ${view === v ? "on" : ""}${off ? " off" : ""}" data-v="${v}"${off ? ` disabled aria-disabled="true" title="${why}"` : ""} aria-current="${view === v ? "page" : "false"}">${ic}<span>${esc(label)}</span>${badge > 0 ? `<span class="navbadge" title="${esc(t("code.pendingNav"))}">${badge}</span>` : ""}</button>`;
   };
@@ -3409,6 +3425,7 @@ function render() {
         ${appMode === "server" ? "" : nav("code", I.code, t("nav.code"), codeview.pendingCount())}
         ${nav("models", I.models, t("nav.models"))}
         ${nav("connectors", I.conn, t("nav.connectors"))}
+        ${nav("runs", I.runs, t("nav.runs"))}
         ${appMode === "server" ? "" : nav("memory", I.mem, t("nav.memory"))}
         ${appMode === "server" ? "" : nav("agent", I.agent, t("nav.agent"))}
         ${nav("settings", I.set, t("nav.settings"))}
@@ -3430,6 +3447,7 @@ function render() {
     : view === "code" ? codeview.codeView()
     : view === "models" ? modelsView()
     : view === "connectors" ? connectorsView()
+    : view === "runs" ? runsview.runsView()
     : view === "memory" ? memoryView()
     : view === "agent" ? agentView()
     : settingsView()
@@ -3719,6 +3737,14 @@ async function boot() {
     root: () => codeview.codeRoot(),
     propose: (path, rel, content) => codeview.fileProposal(path, rel, content, true),
   });
+  // What the runs view cannot know on its own: which port the engine is on
+  // right now, whether it can actually drive an agent, and how to say
+  // something to the user. Installed before any run can be declared.
+  runsview.configureRuns({
+    port: () => server.port,
+    ready: () => server.running && server.phase === "ready" && !toolsBlocked(),
+    toast: (message, kind) => toast(message, kind),
+  });
   await loadStandingPermissions().catch(() => {});
   const s = await api.settingsGet().catch(() => ({} as Record<string, string>));
   configurePanePreferences(s, (key, value) => api.settingsSet(key, value));
@@ -3825,7 +3851,11 @@ async function boot() {
       render();
       return;
     }
-    if (view === "memory" || view === "connectors" || view === "code") {
+    // The Runs view is in the same list, and for a stronger reason than a
+    // draft: it repaints itself from its own state as its runs move, and a
+    // rebuild every two seconds during a model start would fight that repaint
+    // and take the caret out of a note somebody is typing into a blocked run.
+    if (view === "memory" || view === "connectors" || view === "code" || view === "runs") {
       renderServerPill();
       paintComposerReady();
     } else render();
@@ -3869,14 +3899,16 @@ async function boot() {
   // Quitting or hiding the window: flush EVERY thread's pending debounced
   // save. With one timer per conversation, a single global flush on the active
   // one would have dropped whatever the background threads just wrote.
-  window.addEventListener("beforeunload", () => store.flushAll());
+  // Runs are on the same checkpoint: their debounced writes are the only
+  // record of a turn that already happened.
+  window.addEventListener("beforeunload", () => { store.flushAll(); runsview.flushRuns(); });
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "hidden") store.flushAll();
+    if (document.visibilityState === "hidden") { store.flushAll(); runsview.flushRuns(); }
   });
 
-  // Keyboard shortcuts: ⌘N new chat, ⌘1..7 navigation, and inside the Code
+  // Keyboard shortcuts: ⌘N new chat, ⌘1..8 navigation, and inside the Code
   // view ⌘P (file palette), ⇧⌘O (symbol palette), ⇧⌘F (project search).
-  const NAV_ORDER: View[] = ["chat", "code", "models", "connectors", "memory", "agent", "settings"];
+  const NAV_ORDER: View[] = ["chat", "code", "models", "connectors", "runs", "memory", "agent", "settings"];
   window.addEventListener("keydown", (e) => {
     if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
     if (!root) return;
@@ -3898,7 +3930,7 @@ async function boot() {
     if (k === "n") {
       e.preventDefault();
       newChat();
-    } else if (k >= "1" && k <= "7" && k.length === 1) {
+    } else if (k >= "1" && k <= "8" && k.length === 1) {
       e.preventDefault();
       view = NAV_ORDER[Number(k) - 1];
       render();

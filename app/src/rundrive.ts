@@ -50,6 +50,26 @@ export interface DrivePermissionRequest {
   noAlways?: boolean;
 }
 
+/**
+ * What a human already granted this run.
+ *
+ * A block exists so a person can decide, and a decision nobody can act on twice
+ * is not much of a decision: without this, granting a permission would park the
+ * run again on the very next identical request. So a grant turns a BLOCK into an
+ * allow, and nothing else.
+ *
+ * It is consulted here, after the gate has spoken, and never before it. Placing
+ * it in front of the gate is the obvious shortcut and it is wrong three times
+ * over: a cancelled run would still be served, a run past its wall clock would
+ * too, and neither request would appear in the transcript, because the gate is
+ * also what records. A grant may overrule the policy, which is what a human
+ * granted. It may not overrule the run's state, which nobody granted.
+ */
+export interface DriveGrants {
+  /** True when a human already granted this exact request for this run. */
+  granted(req: DrivePermissionRequest): boolean;
+}
+
 /** Where the driver reports what happened, for a UI or for a log. */
 export interface DriveSink {
   /** Assistant text, as it streams. */
@@ -121,6 +141,7 @@ export async function driveTurn(
   prompt: string,
   bind: (turn: RunTurnHooks) => void,
   sink: DriveSink = {},
+  grants: DriveGrants | null = null,
 ): Promise<TurnOutcome | null> {
   let outcome: TurnOutcome | null = null;
   await run.execute(async (ctx) => {
@@ -133,6 +154,15 @@ export async function driveTurn(
           return "once";
         }
         if (gated.decision === "block") {
+          // A grant turns this one block into an allow. The gate entry above
+          // already recorded that the policy said no, and the note below
+          // records why it went ahead anyway: an audit that showed "allow"
+          // here would hide the human, which is the only interesting part.
+          if (!req.elevated && grants?.granted(req)) {
+            ctx.note(`granted earlier by a human: ${req.kind}: ${req.detail}`);
+            sink.gate?.(req, "once");
+            return "once";
+          }
           // Park the run on the FIRST thing a human could grant. Recording
           // later ones would only queue questions nobody asked for yet, and the
           // model's next step probably depends on this one anyway.
@@ -207,12 +237,13 @@ export async function driveRun(
   bind: (turn: RunTurnHooks) => void,
   nextPrompt: (last: TurnOutcome, turn: number) => string | null,
   sink: DriveSink = {},
+  grants: DriveGrants | null = null,
 ): Promise<void> {
   let prompt: string | null = firstPrompt;
   let turn = 0;
   while (prompt !== null) {
     turn += 1;
-    const outcome = await driveTurn(run, agent, prompt, bind, sink);
+    const outcome = await driveTurn(run, agent, prompt, bind, sink, grants);
     // Null means the run refused the turn: out of budget, cancelled, already
     // terminal. The run has recorded why; there is nothing to add here.
     if (outcome === null) return;

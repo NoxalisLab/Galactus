@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": [
+      "ES2022",
+      "DOM"
+    ],
+    "strict": true,
+    "skipLibCheck": true,
+    "types": [],
+    "rootDir": "../..",
+    "outDir": "./out",
+    "sourceMap": false,
+    "declaration": false
+  },
+  "exclude": [
+    "./out/**"
+  ],
+  "files": [
+    "../../src/runs.ts",
+    "../../src/rundrive.ts",
+    "../../src/runrecord.ts",
+    "record.test.ts",
+    "grants.test.ts",
+    "display.test.ts"
+  ]
+}

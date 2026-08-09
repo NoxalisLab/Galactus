@@ -304,3 +304,100 @@ test("a cancelled run stops the loop even mid stream", async () => {
   assert.equal(run.getState(), "cancelled");
   assert.equal(run.finalResult(), null, "a cancelled run reports no answer");
 });
+
+// ---------------------------------------------------------------- grants
+//
+// A grant is what a human answered when the run parked. It exists because a
+// block nobody can act on twice is not a decision: without it, granting a
+// permission would park the run again on the very next identical request.
+//
+// The first version of this consulted grants BEFORE the gate, in the view.
+// That reads as a small shortcut and it is three holes: the gate is not only
+// the policy, it is also the state check and the record.
+
+const GRANT_ALL = { granted: () => true };
+
+test("a grant turns a block into an allow, and only a block", async () => {
+  const run = newRun("read_only");
+  const s = scripted([{ ask: WRITE }, { say: "wrote it" }]);
+  const outcome = await driveTurn(run, s.agent, "go", s.bind, {}, GRANT_ALL);
+  assert.deepEqual(s.asked, ["once"]);
+  assert.equal(run.getState(), "finished", "a granted run does not park again");
+  assert.deepEqual(outcome, { kind: "final", text: "wrote it" });
+});
+
+test("a grant cannot serve a cancelled run", async () => {
+  // The cancel lands mid turn, so the state has not changed yet and only the
+  // gate knows. A grant consulted before it would hand the run a capability
+  // after a human told it to stop.
+  const run = newRun("read_only");
+  let hooks: RunTurnHooks | null = null;
+  const agent: DrivableAgent = {
+    async send() {
+      run.cancel("user");
+      const d = await hooks!.askPermission(WRITE);
+      assert.equal(d, "deny", "cancelled outranks any grant");
+    },
+    stop() {},
+  };
+  await driveTurn(run, agent, "go", (h) => { hooks = h; }, {}, GRANT_ALL);
+  assert.equal(run.getState(), "cancelled");
+});
+
+test("a grant cannot serve a run past its wall clock", async () => {
+  let t = 0;
+  const run = Run.create({
+    id: "r", name: "n",
+    limits: { maxTurns: 5, maxWallClockMs: 1000, policy: "read_only" },
+    now: () => t,
+  });
+  let hooks: RunTurnHooks | null = null;
+  const agent: DrivableAgent = {
+    async send() {
+      t = 1000;
+      const d = await hooks!.askPermission(WRITE);
+      assert.equal(d, "deny", "a grant is a permission, not an extension of the budget");
+    },
+    stop() {},
+  };
+  await driveTurn(run, agent, "go", (h) => { hooks = h; }, {}, GRANT_ALL);
+});
+
+test("a grant can never cover an elevated request", async () => {
+  // Elevated is refused, not blocked, so no human was ever asked about it and
+  // there is nothing to have granted. The grant hook is not even consulted.
+  //
+  // Honest about what this pins and what it does not: the `!req.elevated`
+  // guard in driveTurn is unreachable today, because decideGate answers
+  // `refuse` before any block branch runs, and deleting it breaks no test. It
+  // stays because it costs nothing and the day someone reorders decideGate it
+  // is the difference between a bug and a non-event. What IS pinned here is
+  // the property that matters: elevated is denied and no grant is looked up.
+  const run = newRun("autonomous");
+  let consulted = 0;
+  const s = scripted([{ ask: SUDO }]);
+  await driveTurn(run, s.agent, "go", s.bind, {}, {
+    granted: () => { consulted += 1; return true; },
+  });
+  assert.deepEqual(s.asked, ["deny"]);
+  assert.equal(consulted, 0, "an elevated request must not even ask whether it was granted");
+});
+
+test("a granted step is still in the transcript, block first, reason after", async () => {
+  // Recording it as an allow would hide the only interesting part, which is
+  // that the policy said no and a person overruled it.
+  const run = newRun("read_only");
+  const s = scripted([{ ask: WRITE }]);
+  await driveTurn(run, s.agent, "go", s.bind, {}, GRANT_ALL);
+  const gate = run.transcript().find((e) => e.type === "gate");
+  assert.equal(gate?.type === "gate" ? gate.decision : "", "block");
+  const notes = run.transcript().filter((e) => e.type === "note").map((e) => (e.type === "note" ? e.text : ""));
+  assert.ok(notes.some((n) => /granted earlier by a human/.test(n) && /\/w\/a\.ts/.test(n)));
+});
+
+test("without grants nothing changes", async () => {
+  const run = newRun("read_only");
+  const s = scripted([{ ask: WRITE }]);
+  await driveTurn(run, s.agent, "go", s.bind);
+  assert.equal(run.getState(), "blocked");
+});
