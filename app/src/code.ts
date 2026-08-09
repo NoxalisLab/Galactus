@@ -34,6 +34,7 @@ import { css } from "@codemirror/lang-css";
 
 import { api, onEvent, CodeEntry, GitChange, GitCommitInfo, GitInfo } from "./api";
 import type { PermissionRequest } from "./agent";
+import { isElevatedCommand } from "./agent";
 import { t, getLang } from "./i18n";
 
 import { Docs, type Doc } from "./code/docs";
@@ -43,6 +44,7 @@ import { cmPhrases } from "./code/phrases";
 import { resolveRestoredRoot } from "./code/restored-root";
 import { ReviewGate, reviewInstruction } from "./code/review-gate";
 import { autoTabExtension } from "./code/auto-tab";
+import { inlineEditExtension } from "./code/inline-edit";
 import { diagnosticsExtension, registerDiagnosticSource } from "./code/diagnostics";
 import type { Diagnostic } from "./code/diagnostics";
 import {
@@ -56,6 +58,22 @@ import {
 import { registerTreeDiagnostics, setDiagTranslator } from "./code/treediag";
 import { setTierTranslator, tierBadgeHtml, tierFor } from "./code/tiers";
 import { forgetPython, isPython, pyDiagnostics, pyOutline } from "./code/pylang";
+import {
+  closeRustBuffer,
+  configureRustLsp,
+  disableRustLsp,
+  enableRustLsp,
+  isRust,
+  planRustRename,
+  registerRustLsp,
+  rustIntelExtensions,
+  rustReady,
+  rustTierNote,
+  shouldStartRustLsp,
+  syncRustBuffer,
+} from "./code/rust-lsp";
+import { TerminalPanel } from "./code/terminal";
+import type { PtyOutputEvent, TerminalHost } from "./code/terminal";
 import {
   cancelSearch,
   makeSearchSink,
@@ -80,6 +98,7 @@ import type * as TsIntel from "./tsintel/client";
 import type * as TsBindings from "./tsintel/bindings";
 import { shouldLoadTsIntel } from "./tsintel/eligibility";
 import { wirePaneResizer } from "./layout/pane-resize";
+import { forceLinting } from "@codemirror/lint";
 
 // ---------------------------------------------------------------- helpers
 
@@ -122,6 +141,18 @@ export interface CodeDeps {
   autoTabReady(): boolean;
   /** Request one local, insertion-only completion around the caret. */
   inlineComplete(rel: string, prefix: string, suffix: string, signal: AbortSignal): Promise<string | null>;
+  /**
+   * The local model can answer right now. Deliberately NOT the Auto Tab flag:
+   * Cmd+K is an explicit gesture, and switching ghost text off is not a
+   * request to lose the editor's only way to ask for a rewrite.
+   */
+  inlineEditReady(): boolean;
+  /**
+   * One inline edit (Cmd+K): a whole prompt in, the model's raw answer out.
+   * Raw on purpose. code/inline-edit.ts knows what the region was and is the
+   * only place that can tell a usable answer from a chatty one.
+   */
+  inlineEdit(prompt: string, signal: AbortSignal): Promise<string | null>;
 }
 
 let deps: CodeDeps | null = null;
@@ -305,6 +336,22 @@ const docs: Docs = new Docs((rel, text, extra): EditorState =>
         complete: (file, prefix, suffix, signal) =>
           deps?.inlineComplete(file, prefix, suffix, signal) ?? Promise.resolve(null),
       }),
+      // Cmd+K at the cursor. It never writes: the rewritten document goes
+      // through fileProposal like any model edit, so it lands as a pending
+      // diff reviewed hunk by hunk in the same merge view. `rel` and not
+      // docs.activeRel(), because the region belongs to THIS document's state
+      // and the box may outlive a tab switch by a few milliseconds.
+      inlineEditExtension({
+        file: () => rel,
+        enabled: () => deps?.inlineEditReady() ?? false,
+        reviewing: () => docs.active()?.mergeBase !== null,
+        ask: (request, signal) =>
+          deps?.inlineEdit(request.prompt, signal) ?? Promise.resolve(null),
+        propose: async (target, next) => {
+          if (root) await fileProposal(root + "/" + target, target, next);
+        },
+        t,
+      }),
       mergeComp.of([]),
       EditorView.updateListener.of(onEditorUpdate),
       extra,
@@ -377,6 +424,7 @@ export async function fileProposal(
     docs.open(rel, existed ? before : "", content);
     setReview(rel, existed ? before : "");
     applyTsBindings(rel);
+    applyRustBindings(rel);
     if (docs.activeRel() === rel) paintMid();
   }
   paintPending();
@@ -464,6 +512,12 @@ async function setWorkspace(p: string): Promise<void> {
   offSearch?.();
   offSearch = null;
   tsintel?.disable();
+  // The previous workspace's crate index is worth hundreds of megabytes, and
+  // nothing on screen would say it is still held.
+  void disableRustLsp();
+  // Same for the shells: their cwd is a folder the user just left, and a
+  // terminal sitting in a directory the file tree no longer shows is a trap.
+  disposeTerminal();
   await deps?.saveSetting("code_root", root);
   await refreshGit();
   await loadDir("");
@@ -483,6 +537,18 @@ async function startWorkspaceServices(): Promise<void> {
     offSearch = workspaceApi.onSearch(makeSearchSink(searchState, searchDeps()));
   }
   const top = treeCache.get("")?.map((e) => e.name) ?? [];
+  // Rust is independent of the TypeScript gate: a repository can be both, and
+  // this one is. It also has to be decided BEFORE the early return below, or a
+  // pure Rust workspace would never reach it.
+  if (shouldStartRustLsp(top)) {
+    void enableRustLsp(root).then(() => {
+      applyRustBindings();
+      paintFileHead();
+      paintTabs();
+    });
+  } else {
+    void disableRustLsp();
+  }
   if (!shouldLoadTsIntel(top)) {
     tsintel?.disable();
     return;
@@ -654,6 +720,7 @@ function onEditorUpdate(u: ViewUpdate): void {
   if (u.docChanged) {
     scheduleOutline();
     if (tsActive()) tsintel!.updateBuffer(d.rel, u.state.doc.toString());
+    if (isRust(d.rel)) syncRustBuffer(d.rel, u.state.doc.toString());
   }
   if (d.mergeBase === null) {
     paintFileHead();
@@ -816,6 +883,7 @@ export async function openFile(rel: string): Promise<void> {
   docs.open(rel, saved, prop?.after);
   if (prop) setReview(rel, saved);
   applyTsBindings(rel);
+  applyRustBindings(rel);
   remember(rel);
   paintMid();
   paintTree();
@@ -868,7 +936,9 @@ async function reloadOpenFromDisk(): Promise<void> {
     docs.setSaved(d.rel, disk);
     docs.setError(d.rel, null);
     applyTsBindings(d.rel);
+    applyRustBindings(d.rel);
     forgetPython(d.rel);
+    closeRustBuffer(d.rel);
   }
   if (kept.length) {
     deps?.toast(
@@ -1271,10 +1341,41 @@ function applyTsBindings(rel?: string): void {
   }
 }
 
+/**
+ * The Rust equivalent of `applyTsBindings`, through the same `intelComp`.
+ *
+ * Safe to run while the server is off, starting or dead: every binding
+ * re-checks `rustReady()` on each call and contributes nothing when it is
+ * false, so the extension set never has to be rebuilt on a state change.
+ * `tsDeps` is reused as is because `RustLspDeps` declares exactly the same
+ * four members, and two objects saying the same thing is how they drift.
+ */
+function applyRustBindings(rel?: string): void {
+  const targets = rel ? [docs.get(rel)].filter((d): d is Doc => d !== null) : docs.list();
+  for (const d of targets) {
+    if (!isRust(d.rel)) continue;
+    const support = langFor(d.rel);
+    if (!support.length) continue;
+    const ext = rustIntelExtensions(support[0] as never, tsDeps);
+    if (editor && docs.byView(editor)?.rel === d.rel) {
+      editor.dispatch({ effects: intelComp.reconfigure(ext) });
+      docs.capture(editor);
+    } else {
+      d.state = d.state.update({ effects: intelComp.reconfigure(ext) }).state;
+    }
+  }
+}
+
 /** F2 on the caret: a rename, as proposals, never as a write. */
 async function renameAtCaret(): Promise<void> {
   const d = docs.active();
   if (!root || !d || !editor) return;
+  // Rust first, because the TypeScript guard below would otherwise refuse a
+  // .rs file with a message about a service that was never going to serve it.
+  if (isRust(d.rel)) {
+    await renameRustAtCaret(d, editor);
+    return;
+  }
   if (!tsintel || !tsActive()) {
     deps?.toast(t("tsintel.needsTierA"));
     return;
@@ -1290,6 +1391,50 @@ async function renameAtCaret(): Promise<void> {
         return undefined;
       }
     });
+    if (!edits.length) {
+      deps?.toast(t("code.replace.none"));
+      return;
+    }
+    for (const e of edits) await fileProposal(root + "/" + e.rel, e.rel, e.content);
+    deps?.toast(t("tsintel.renameProposed").replace("%n", String(edits.length)), "ok");
+  } catch (e: any) {
+    deps?.toast(t("tsintel.renameFail").replace("%s", String(e?.message ?? e)));
+  }
+}
+
+/**
+ * The Rust half of F2. Same contract as the TypeScript one, and the same
+ * ending: whole files handed to `fileProposal`, never a write. The server is
+ * asked only once it has finished indexing, because a rename planned against a
+ * half-loaded crate graph misses call sites, and a rename that misses call
+ * sites is worse than no rename at all.
+ */
+async function renameRustAtCaret(d: Doc, view: EditorView): Promise<void> {
+  if (!rustReady()) {
+    deps?.toast(t("rustlsp.needsReady"));
+    return;
+  }
+  const name = await promptModal(
+    t("tsintel.renameTitle"),
+    t("tsintel.renameBody"),
+    t("tsintel.renamePrompt")
+  );
+  if (!name) return;
+  try {
+    const edits = await planRustRename(
+      d.rel,
+      view.state.doc,
+      view.state.selection.main.head,
+      name,
+      async (rel) => {
+        try {
+          return await api.codeRead(root!, rel);
+        } catch {
+          return undefined;
+        }
+      },
+      (text) => EditorState.create({ doc: text }).doc
+    );
     if (!edits.length) {
       deps?.toast(t("code.replace.none"));
       return;
@@ -1597,6 +1742,7 @@ function headHtml(): string {
     branch +
     netButtons +
     `<button class="bs" id="cpick">${esc(t("code.change"))}</button>` +
+    `<button class="bs" id="ctermt">${esc(t("term.toggle"))}</button>` +
     `<button class="iconbtn cagentt" id="cagentt" title="${esc(t("code.agentPane"))}">☰</button>`
   );
 }
@@ -1834,6 +1980,23 @@ function paintFileHead(): void {
   box.innerHTML = fileHeadHtml();
 }
 
+/**
+ * The Rust server's state as a badge, or nothing.
+ *
+ * Only on .rs files, and only when there is something honest to add: on a
+ * ready server with a full toolchain `rustTierNote()` returns null and the
+ * tier badge already says everything. The fallback English comes from the
+ * module itself, so the badge is never a raw key.
+ */
+function rustBadgeHtml(rel: string): string {
+  if (!isRust(rel)) return "";
+  const note = rustTierNote();
+  if (!note) return "";
+  const translated = t(note.key);
+  const text = (translated === note.key ? note.fallback : translated).replace("%s", note.detail);
+  return `<span class="fbadge rustlsp" title="${esc(text)}">${esc(text)}</span>`;
+}
+
 function fileHeadHtml(): string {
   const d = docs.active();
   if (!d) return "";
@@ -1841,7 +2004,12 @@ function fileHeadHtml(): string {
   const dirty = !pending && docs.isDirty(d.rel);
   return (
     `<span class="fp mono" title="${esc(d.rel)}">${LRM}${esc(d.rel)}</span>` +
-    tierBadgeHtml(tierFor(d.rel, tsActive())) +
+    tierBadgeHtml(tierFor(d.rel, tsActive(), rustReady())) +
+    // The Rust server's own state, next to the tier it produced. "Starting",
+    // "indexing" and "limited: no cargo" are three different answers to "why
+    // is this file only Syntax", and a badge that says only "Syntax" makes all
+    // three read as a bug.
+    rustBadgeHtml(d.rel) +
     (deps?.autoTabReady() && !pending ? `<span class="fbadge autotab">${esc(t("code.autoTabReady"))}</span>` : "") +
     (pending ? `<span class="fbadge">${esc(t("code.reviewing"))}</span>` : "") +
     (dirty ? `<span class="fbadge dirty">${esc(t("code.unsaved"))}</span>` : "") +
@@ -1927,6 +2095,120 @@ function paintEditorChrome(): void {
   paintFileHead();
 }
 
+// ---------------------------------------------------------------- terminal
+
+let terminal: TerminalPanel | null = null;
+let termOpen = false;
+
+/**
+ * The cell box, measured once against the real font.
+ *
+ * Hard coding it would be wrong twice: on the first paint the webfont has not
+ * loaded, and at any other zoom level the metric moves. A cell width off by a
+ * pixel puts the child's column count out by several columns on a wide pane,
+ * and the shell then wraps in the wrong place for the rest of the session.
+ */
+let cellBox: { width: number; height: number } | null = null;
+
+function measureCell(): { width: number; height: number } {
+  if (cellBox) return cellBox;
+  const probe = el(
+    `<span style="position:absolute;visibility:hidden;white-space:pre;` +
+      `font-family:var(--mono);font-size:12px;line-height:1.35">${"M".repeat(100)}</span>`
+  );
+  document.body.appendChild(probe);
+  const r = probe.getBoundingClientRect();
+  probe.remove();
+  const box = { width: r.width / 100, height: r.height };
+  // Before the webfont resolves the probe can measure zero. Never cache a
+  // zero: gridSizeFor would then fall back to 80x24 for the rest of the
+  // session, whatever the pane is really worth.
+  if (box.width > 0 && box.height > 0) cellBox = box;
+  return cellBox ?? { width: 7.2, height: 16.2 };
+}
+
+const terminalHost: TerminalHost = {
+  spawn: (r) => api.ptySpawn(r.cwd, r.cols, r.rows, r.owner),
+  write: (r) => api.ptyWrite(r.id, r.data, r.origin, r.gated),
+  resize: (id, cols, rows) => api.ptyResize(id, cols, rows),
+  kill: (id) => api.ptyKill(id),
+  onOutput: (cb) => {
+    let off: (() => void) | null = null;
+    let cancelled = false;
+    void onEvent("galactus://pty", (p: PtyOutputEvent) => cb(p)).then((u) => {
+      // The panel may have been disposed before the subscription resolved.
+      if (cancelled) u();
+      else off = u;
+    });
+    return () => {
+      cancelled = true;
+      off?.();
+      off = null;
+    };
+  },
+  // The SAME dialog `run_command` raises, with the same `shell` kind. A
+  // terminal must never get a cheaper permission than the tool that does the
+  // identical thing, or the terminal becomes the way round the gate.
+  //
+  // `deps.ask` answers with a boolean, and decideTerminalWrite wants a
+  // decision, so the mapping is to "once" and never to "always". That is the
+  // conservative direction: a standing licence would have to be granted by the
+  // app's own permission queue, which is where standing rules belong, and
+  // never invented here.
+  requestShellPermission: async (detail: string) => {
+    const req: PermissionRequest = { kind: "shell", detail, elevated: isElevatedCommand(detail) };
+    const ok = (await deps?.ask(req)) ?? false;
+    return ok ? "once" : "deny";
+  },
+};
+
+/** Kill every terminal. Called when the workspace changes: the cwd is gone. */
+function disposeTerminal(): void {
+  terminal?.dispose();
+  terminal = null;
+  termOpen = false;
+}
+
+function toggleTerminal(wrap: HTMLElement): void {
+  termOpen = !termOpen;
+  mountTerminal(wrap);
+}
+
+/**
+ * Put the terminal into THIS instance of the Code view.
+ *
+ * The panel object outlives the DOM on purpose. `render()` in main.ts rebuilds
+ * the whole view on every navigation, and disposing here would mean switching
+ * to Chat and back kills the user's shells, including whatever long build was
+ * running in them. The panel's element is simply re-parented into the new
+ * host, which is why `TerminalPanel` never assumes it is connected.
+ */
+function mountTerminal(wrap: HTMLElement): void {
+  const box = wrap.querySelector<HTMLElement>("#codeterm");
+  const midwrap = wrap.querySelector<HTMLElement>("#codemidwrap");
+  if (!box || !midwrap) return;
+  midwrap.classList.toggle("showterm", termOpen);
+  if (!termOpen) return;
+  if (!terminal) {
+    terminal = new TerminalPanel({
+      host: terminalHost,
+      root: () => root,
+      repaint: () => undefined, // the panel drives its own frame-scheduled paint
+      toast: (m) => deps?.toast(m),
+      cell: measureCell,
+    });
+  }
+  box.appendChild(terminal.element());
+  terminal.paint();
+  // The pane was display:none until now, so it measured zero: size it only
+  // once it is really on screen and has a box.
+  requestAnimationFrame(() => {
+    if (!terminal) return;
+    if (terminal.controller.sessions.size === 0) void terminal.openSession();
+    else terminal.fit();
+  });
+}
+
 // ---------------------------------------------------------------- view
 
 export function codeView(): HTMLElement {
@@ -1938,7 +2220,10 @@ export function codeView(): HTMLElement {
     <div class="codebody">
       <div class="codeleft" id="codeleft"></div>
       <div class="pane-splitter code-left-splitter" id="codeleftsplit"></div>
-      <div class="codemid" id="codemid"></div>
+      <div class="codemidwrap" id="codemidwrap">
+        <div class="codemid" id="codemid"></div>
+        <div class="codeterm" id="codeterm"></div>
+      </div>
       <div class="pane-splitter code-agent-splitter" id="codeagentsplit"></div>
       <div class="codeside" id="codeside"></div>
     </div>
@@ -1968,6 +2253,7 @@ export function codeView(): HTMLElement {
     else if (b.id === "cpush") void push();
     else if (b.id === "cpull") void pull();
     else if (b.id === "cagentt") wrap.querySelector(".codebody")!.classList.toggle("showagent");
+    else if (b.id === "ctermt") toggleTerminal(wrap);
   });
 
   // Left column: tabs, pending proposals, tree / search / outline / git.
@@ -2109,6 +2395,7 @@ export function codeView(): HTMLElement {
       if (tab.action === "close") {
         if (editor) docs.capture(editor, editor.scrollSnapshot());
         forgetPython(tab.rel);
+        closeRustBuffer(tab.rel);
         docs.close(tab.rel);
         paintMid();
         paintTree();
@@ -2186,6 +2473,7 @@ export function codeView(): HTMLElement {
     paintHead();
     paintLeft();
     paintMid();
+    mountTerminal(wrap);
     await startWorkspaceServices();
   })();
 
@@ -2228,6 +2516,29 @@ export function codeShortcut(key: string, shift: boolean): boolean {
  */
 setDiagTranslator(t);
 setTierTranslator(t);
+
+// The Rust tier. The transport is the five Tauri commands and nothing more;
+// everything else about LSP (framing, correlation, the read-only allowlist)
+// lives in src-tauri/src/lsp.rs, and everything about the editor side lives in
+// code/rust-lsp.ts.
+configureRustLsp({
+  start: (r) => api.rustLspStart(r),
+  stop: () => api.rustLspStop(),
+  request: (method, params, timeoutMs) => api.rustLspRequest(method, params, timeoutMs),
+  notify: (method, params) => api.rustLspNotify(method, params),
+  listen: (handler) => onEvent("galactus://rust-lsp", handler),
+  log: (line) => console.debug(line),
+});
+registerRustLsp({
+  registerDiagnostics: (id, source) => registerDiagnosticSource(id, source),
+  // Diagnostics are UNSOLICITED in LSP, and the editor's linter is debounced,
+  // so without this the gutter shows the pre-fix set until the user types
+  // again. `forceLinting` is the only way to ask CodeMirror to re-run a
+  // debounced linter out of band.
+  refresh: (rel) => {
+    if (editor && docs.byView(editor)?.rel === rel) forceLinting(editor);
+  },
+});
 registerTreeDiagnostics((id, src) =>
   registerDiagnosticSource(id, async (state, rel) => {
     // The grammar pass says nothing about Python: CPython answers for it, one

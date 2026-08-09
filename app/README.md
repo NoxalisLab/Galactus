@@ -1,4 +1,4 @@
-# Galactus — desktop assistant
+# Galactus, desktop assistant
 
 A native macOS assistant (Tauri 2) for the Galactus MoE acceleration engine.
 It runs certified open-source Mixture-of-Experts models fully on-device, at
@@ -9,7 +9,7 @@ gated access to your files and shell so it can actually get work done.
 
 - **Chat** with any installed model, streamed, with tool use.
 - **Tools behind a permission gate**: read/write files, list folders, run shell
-  commands. Every call raises a permission dialog — Allow once, Always allow
+  commands. Every call raises a permission dialog, Allow once, Always allow
   (stores a standing rule), or Deny. Commands that can modify the system
   (`sudo`, `rm -rf`, `diskutil`, writes under `/System`, `/Library`, …) are
   flagged as *elevated* and require typing `ALLOW` to confirm; they are never

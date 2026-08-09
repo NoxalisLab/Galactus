@@ -1,0 +1,29 @@
+{
+  "//": "Compiles the integrated terminal and its tests to plain ESM, so `node --test` can run them with no bundler, no test framework and no new dependency. Run from app/: ./node_modules/.bin/tsc -p tools/terminal/tsconfig.json && node --test \"tools/terminal/out/**/*.test.js\"",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "types": [],
+    "sourceMap": false,
+    "removeComments": true,
+    "declaration": false,
+    "rootDir": "../..",
+    "outDir": "out"
+  },
+  "//files": "An explicit list, never a glob: src/code/ also holds modules owned by other parts of the app, and this project must compile exactly the terminal surface and its tests.",
+  "files": [
+    "../../src/i18n.ts",
+    "../../src/code/terminal.ts",
+    "fake.ts",
+    "ring.test.ts",
+    "gate.test.ts",
+    "emulator.test.ts",
+    "controller.test.ts",
+    "regress.test.ts"
+  ]
+}

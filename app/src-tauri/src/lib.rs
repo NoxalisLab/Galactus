@@ -7,6 +7,8 @@
 
 mod code;
 mod knowledge;
+mod lsp;
+mod pty;
 mod pylang;
 mod search;
 mod snapshot;
@@ -4326,6 +4328,24 @@ pub fn run() {
             // Tier B, Python: exact SyntaxError and outline from bundled CPython.
             pylang::py_analyze,
             rust_analyzer_paths,
+            // Tier A for .rs: the bundled rust-analyzer over LSP. The command
+            // surface is deliberately thin, and lsp.rs refuses any method that
+            // is not read-only (no executeCommand, no formatting: both would
+            // run the project's own toolchain).
+            lsp::rust_lsp_start,
+            lsp::rust_lsp_stop,
+            lsp::rust_lsp_status,
+            lsp::rust_lsp_request,
+            lsp::rust_lsp_notify,
+            // Integrated terminal: one real pty per session. Not exposed to
+            // the model as a tool. A model driven write still has to pass the
+            // `shell` gate in code/terminal.ts, and pty.rs refuses one that
+            // does not say it did.
+            pty::pty_spawn,
+            pty::pty_write,
+            pty::pty_resize,
+            pty::pty_kill,
+            pty::pty_list,
             knowledge::kb_search,
             knowledge::digest_search,
             preview_publish
@@ -4348,6 +4368,13 @@ pub fn run() {
                 // A workspace scan is a plain OS thread: tell it to stop before
                 // the window goes, or it outlives the app it was painting into.
                 search::cancel_all();
+                // An abandoned rust-analyzer keeps a whole crate index in RAM
+                // and nothing on screen says so.
+                lsp::shutdown_all();
+                // Every terminal is a shell with a process group under it: an
+                // abandoned `npm run dev` keeps holding its port long after
+                // the window is gone.
+                pty::kill_all();
                 if let Ok(mut s) = server_state().lock() {
                     if let Some(mut child) = s.child.take() {
                         let _ = child.kill();

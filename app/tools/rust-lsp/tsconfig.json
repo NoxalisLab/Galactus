@@ -1,0 +1,43 @@
+{
+  // Headless build of the .rs tier.
+  //
+  // The point of this file: everything in src/code/rust-lsp.ts that could be
+  // WRONG is pure, and pure code runs under node --test with no window, no
+  // Tauri and no rust-analyzer. The transport is an interface, so a fake one
+  // drives the whole lifecycle deterministically, including the failure modes
+  // that are impossible to stage against a real subprocess (a server that dies
+  // mid-request, a diagnostics publication that never comes).
+  //
+  //   cd app
+  //   npx tsc -p tools/rust-lsp/tsconfig.json
+  //   node --test "tools/rust-lsp/out/**/*.test.js"
+  //
+  // The framing codec and the JSON-RPC correlation are NOT here: they live in
+  // Rust, in src-tauri/src/lsp.rs, and they are proved by `cargo test` next to
+  // the code they belong to.
+  //
+  // NodeNext, not bundler, because the emitted JavaScript has to run under
+  // Node's ESM loader (app/package.json says "type": "module"). That is why
+  // relative imports carry an explicit .js extension.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "noUnusedLocals": false,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    // @types/node is deliberately NOT a dependency of this app, so the ambient
+    // Node globals are absent on purpose and the harness reaches node:test
+    // through a computed import specifier instead.
+    "types": [],
+    "rootDir": "../..",
+    "outDir": "./out",
+    "sourceMap": false,
+    "declaration": false
+  },
+  "include": ["./*.test.ts", "../../src/code/rust-lsp.ts"],
+  "exclude": ["./out/**"]
+}

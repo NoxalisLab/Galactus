@@ -1,5 +1,5 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { api, benchOnce, HwInfo, inlineCodeOnce, InstallVolumes, ModelEntry, onEvent, ServerStatus, SkillInfo, VolumeInfo } from "./api";
+import { api, benchOnce, chatOnce, fetchCtxSize, HwInfo, inlineCodeOnce, InstallVolumes, ModelEntry, onEvent, ServerStatus, SkillInfo, VolumeInfo } from "./api";
 import {
   Agent,
   AgentDirectory,
@@ -25,6 +25,13 @@ import * as store from "./store";
 import type { ChatItem, Conversation, ConvMeta, SubAgent, ThreadData } from "./store";
 import { hasVerifiedDownload, modelAvailability, modelCertification } from "./model-policy";
 import { configurePanePreferences, wirePaneResizer } from "./layout/pane-resize";
+import {
+  applyMention,
+  rankCandidates,
+  resolveMentions,
+  scanMentions,
+  type MentionCandidate,
+} from "./mentions";
 
 const app = document.getElementById("app")!;
 const LOGO = "/galactus-mark.svg";
@@ -1189,6 +1196,106 @@ function threadPaneEl(): HTMLElement {
   sendBtn.addEventListener("click", submitChat);
 
   // ---- slash-command autocomplete (/skill) ----
+  // ---- @file and @symbol mentions ----
+  //
+  // Candidates come from the open code workspace ONLY. With no workspace there
+  // is nothing a mention could name, so the picker never opens: an empty list
+  // that steals the Enter key is worse than no feature at all.
+  const mentionBox = el(`<div class="slash-menu mention-menu" id="mentionmenu" style="display:none"></div>`);
+  wrap.querySelector<HTMLElement>(".comp-box")!.prepend(mentionBox);
+  let mentionRows: MentionCandidate[] = [];
+  let mentionSel = 0;
+  let mentionFiles: MentionCandidate[] = [];
+  let mentionSymbols: MentionCandidate[] = [];
+  /** Guards against an out of order symbol answer overwriting a newer one. */
+  let symbolQueryGen = 0;
+  let symbolTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const loadMentionFiles = async (): Promise<void> => {
+    const r = codeview.codeRoot();
+    if (!r) { mentionFiles = []; return; }
+    // `false`: the cached list. Forcing a rescan on every composer mount would
+    // walk the whole workspace for a picker the user may never open.
+    const files = await api.searchFiles(r, false).catch(() => [] as string[]);
+    mentionFiles = files.map((path) => ({ kind: "file", path }) as MentionCandidate);
+  };
+
+  /**
+   * Symbols are asked for lazily and debounced. The file list is one cached
+   * array; the symbol index is a query per keystroke against the Rust side, so
+   * it waits for the typing to settle and for a query worth answering.
+   */
+  const loadMentionSymbols = (query: string): void => {
+    const r = codeview.codeRoot();
+    if (symbolTimer) clearTimeout(symbolTimer);
+    if (!r || query.length < 2) { mentionSymbols = []; return; }
+    const gen = ++symbolQueryGen;
+    symbolTimer = setTimeout(() => {
+      void api
+        .symbolsQuery(r, query, 60)
+        .then((hits) => {
+          if (gen !== symbolQueryGen) return; // a newer keystroke already won
+          mentionSymbols = hits.map((h) => ({
+            kind: "symbol",
+            path: h.path,
+            symbol: h.name,
+            detail: h.kind,
+            line: h.line,
+          }) as MentionCandidate);
+          paintMentions();
+        })
+        .catch(() => {
+          if (gen === symbolQueryGen) mentionSymbols = [];
+        });
+    }, 120);
+  };
+
+  const paintMentions = () => {
+    const active = scanMentions(input.value, input.selectionStart ?? input.value.length);
+    if (!active) {
+      mentionBox.style.display = "none";
+      mentionRows = [];
+      mentionSymbols = [];
+      return;
+    }
+    loadMentionSymbols(active.query);
+    const pool = mentionFiles.concat(mentionSymbols);
+    if (!pool.length) { mentionBox.style.display = "none"; mentionRows = []; return; }
+    const ranked = rankCandidates(pool, active.query, 40);
+    mentionRows = ranked.map((r) => r.candidate);
+    if (!ranked.length) { mentionBox.style.display = "none"; return; }
+    mentionSel = Math.min(mentionSel, ranked.length - 1);
+    mentionBox.style.display = "block";
+    mentionBox.innerHTML = ranked
+      .map((r, i) => {
+        const set = new Set(r.positions);
+        const marked = [...r.text]
+          .map((ch, k) => (set.has(k) ? `<i>${esc(ch)}</i>` : esc(ch)))
+          .join("");
+        const badge = r.candidate.detail ? `<em>${esc(r.candidate.detail)}</em>` : "";
+        return `<div class="mention-item ${i === mentionSel ? "on" : ""}" data-mention="${i}"><b>${marked}</b>${badge}</div>`;
+      })
+      .join("");
+  };
+
+  const pickMention = (i: number) => {
+    const active = scanMentions(input.value, input.selectionStart ?? input.value.length);
+    if (!active || !mentionRows[i]) return;
+    const out = applyMention(input.value, active, mentionRows[i]);
+    input.value = out.text;
+    input.setSelectionRange(out.caret, out.caret);
+    mentionBox.style.display = "none";
+    mentionRows = [];
+    input.focus();
+  };
+
+  mentionBox.addEventListener("mousedown", (e) => {
+    e.preventDefault(); // keep the textarea focused
+    const it = (e.target as HTMLElement).closest("[data-mention]") as HTMLElement | null;
+    if (it) pickMention(Number(it.dataset.mention));
+  });
+  void loadMentionFiles();
+
   const slashBox = el(`<div class="slash-menu" id="slashmenu" style="display:none"></div>`);
   wrap.querySelector<HTMLElement>(".comp-box")!.prepend(slashBox);
   let slashSel = 0;
@@ -1222,6 +1329,12 @@ function threadPaneEl(): HTMLElement {
   });
 
   input.addEventListener("keydown", (e) => {
+    if (mentionRows.length && mentionBox.style.display !== "none") {
+      if (e.key === "ArrowDown") { e.preventDefault(); mentionSel = (mentionSel + 1) % mentionRows.length; paintMentions(); return; }
+      if (e.key === "ArrowUp") { e.preventDefault(); mentionSel = (mentionSel - 1 + mentionRows.length) % mentionRows.length; paintMentions(); return; }
+      if (e.key === "Tab" || e.key === "Enter") { e.preventDefault(); pickMention(mentionSel); return; }
+      if (e.key === "Escape") { e.preventDefault(); mentionBox.style.display = "none"; mentionRows = []; return; }
+    }
     const list = slashMatches();
     if (list.length && slashBox.style.display !== "none") {
       if (e.key === "ArrowDown") { e.preventDefault(); slashSel = (slashSel + 1) % list.length; paintSlash(); return; }
@@ -1246,6 +1359,8 @@ function threadPaneEl(): HTMLElement {
     input.style.height = Math.min(input.scrollHeight, 200) + "px";
     slashSel = 0;
     paintSlash();
+    mentionSel = 0;
+    paintMentions();
     // During generation the button follows the composer: text = send (queued
     // for the next turn), empty = stop.
     if (active().generating) {
@@ -1255,6 +1370,15 @@ function threadPaneEl(): HTMLElement {
         b.innerHTML = hasText ? I.up : STOP_ICON;
         b.classList.toggle("stop", !hasText);
       }
+    }
+  });
+  // A caret moved with the mouse or the arrow keys changes which token is
+  // active without firing `input`, and the picker has to follow it.
+  input.addEventListener("click", () => { mentionSel = 0; paintMentions(); });
+  input.addEventListener("keyup", (e) => {
+    if (e.key.startsWith("Arrow") || e.key === "Home" || e.key === "End") {
+      mentionSel = 0;
+      paintMentions();
     }
   });
   // In the Code view the editor is what the user came for: the composer must
@@ -1817,7 +1941,46 @@ async function submitChat(): Promise<void> {
     return;
   }
   // The thread may have changed while the swap was awaited.
-  await dispatchTurn(active(), text, { show: true });
+  //
+  // Mentions are resolved HERE, not inside the Agent: what the user sees in
+  // the log is the sentence they wrote, and the attached bodies ride with the
+  // turn. The budget is a third of the live window, the same share agent.ts
+  // gives one tool result, so a mention can never crowd out the conversation.
+  await dispatchTurn(active(), await withMentions(text), { show: true });
+}
+
+/**
+ * Attach the files and symbols the user pointed at with "@".
+ *
+ * Confinement, budgeting and the wording of every omission live in mentions.ts,
+ * which is pure and unit tested; this wrapper only supplies the live window
+ * size and a reader bound to the open workspace. With no workspace open there
+ * is nothing a mention could name, so the text goes through untouched rather
+ * than being parsed against a root that does not exist.
+ */
+async function withMentions(text: string): Promise<string> {
+  const root = codeview.codeRoot();
+  if (!root) return text;
+  let ctx = 32768;
+  try {
+    ctx = await fetchCtxSize(server.port);
+  } catch {
+    // The default is a deliberate floor, not a guess gone wrong: a mention
+    // budget computed from a context size nobody could read would be worse.
+  }
+  const budget = Math.max(512, Math.floor(ctx * 0.3));
+  try {
+    const out = await resolveMentions(
+      text,
+      { read: (rel) => api.codeRead(root, rel).catch(() => null) },
+      budget
+    );
+    return out.text;
+  } catch {
+    // A failed attachment must never eat the turn: the model still gets the
+    // question, and the mention tokens in it tell it what to read_file.
+    return text;
+  }
 }
 
 interface TurnOptions {
@@ -3355,6 +3518,25 @@ const codeDeps: codeview.CodeDeps = {
   autoTabReady: () => autoTabOn && server.running && server.phase === "ready",
   inlineComplete: (rel, prefix, suffix, signal) =>
     inlineCodeOnce(server.port, rel, prefix, suffix, signal).catch(() => null),
+  // Deliberately NOT gated on autoTabOn. Cmd+K is an explicit gesture, and
+  // switching ghost text off is not a request to lose the editor's only way to
+  // ask for a rewrite.
+  inlineEditReady: () => server.running && server.phase === "ready",
+  inlineEdit: (prompt, signal) =>
+    chatOnce(
+      server.port,
+      [
+        {
+          role: "system",
+          content:
+            "You are a code editing engine. Reply with the replacement code only: " +
+            "no explanation, no markdown fence, no line numbers, no commentary.",
+        },
+        { role: "user", content: prompt },
+      ],
+      0.1,
+      signal
+    ).catch(() => null),
 };
 
 async function boot() {

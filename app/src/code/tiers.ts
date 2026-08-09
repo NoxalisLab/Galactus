@@ -34,17 +34,22 @@ const TIER_A_LANGS: ReadonlySet<LangId> = new Set<LangId>(["javascript", "typesc
  * capability: while it is starting, or after it failed, a .ts file honestly
  * falls back to B rather than promising a hover that will never come.
  */
-export function tierFor(rel: string, tsIntelActive: boolean): Tier {
+export function tierFor(rel: string, tsIntelActive: boolean, rustActive = false): Tier {
   const lang = langIdFor(rel);
   if (!lang) return "none";
   if (tsIntelActive && TIER_A_LANGS.has(lang)) return "A";
+  // Rust reaches tier A only while the bundled rust-analyzer is ANSWERING.
+  // Not while it indexes and not when the bundle carries no server: in both
+  // of those a .rs file honestly falls back to the grammar tier, which is
+  // exactly what it had before the language server existed.
+  if (rustActive && lang === "rust") return "A";
   return "B";
 }
 
 /** True when this path could reach tier A once the service is up. */
 export function tierCouldBeA(rel: string): boolean {
   const lang = langIdFor(rel);
-  return lang !== null && TIER_A_LANGS.has(lang);
+  return lang !== null && (TIER_A_LANGS.has(lang) || lang === "rust");
 }
 
 // ---------------------------------------------------------------- copy
@@ -69,7 +74,7 @@ const FALLBACK: Record<string, string> = {
   "tier.b.label": "Syntax",
   "tier.none.label": "Plain",
   "tier.a.hint":
-    "Types, hover, go to definition, references and rename, from the TypeScript service running inside the app.",
+    "Types, hover, go to definition, references and rename, from a language service running inside the app.",
   "tier.b.hint":
     "Outline, breadcrumb and syntax errors, from the bundled grammar. No types, no cross-file resolution, no go to definition.",
   "tier.none.hint":

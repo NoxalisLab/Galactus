@@ -1,0 +1,31 @@
+{
+  // Headless build of the inline edit module (Cmd+K).
+  //
+  //   npx tsc -p tools/inline-edit/tsconfig.json
+  //   node --test "tools/inline-edit/out/**/*.test.js"
+  //
+  // NodeNext, not bundler, because the emitted JavaScript has to run under
+  // Node's ESM loader (app/package.json says "type": "module").
+  //
+  // src/code/inline-edit.ts imports @codemirror/state and @codemirror/view.
+  // Both load in plain Node: view's browser sniffing is guarded by
+  // `typeof document != "undefined"`, so importing the module has no DOM
+  // requirement. Only building an EditorView would, and nothing here does.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022", "DOM"],
+    "strict": true,
+    "skipLibCheck": true,
+    // @types/node is deliberately not a dependency of this app, so the Node
+    // built-ins are reached through a computed import specifier instead.
+    "types": [],
+    "rootDir": "../..",
+    "outDir": "./out",
+    "sourceMap": false,
+    "declaration": false
+  },
+  "include": ["./*.test.ts", "../../src/code/inline-edit.ts"],
+  "exclude": ["./out/**"]
+}

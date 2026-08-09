@@ -1,0 +1,29 @@
+{
+  "//": "Compiles the mentions module and its tests to plain ESM, so they can be run by `node --test` with no bundler, no test framework and no new dependency. Run from app/: ./node_modules/.bin/tsc -p tools/mentions/tsconfig.json && node --test \"tools/mentions/out/**/*.test.js\"",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "types": [],
+    "sourceMap": false,
+    "removeComments": true,
+    "declaration": false,
+    "rootDir": "../..",
+    "outDir": "out"
+  },
+  "//files": "An explicit list, never a glob. src/mentions.ts pulls in exactly two dependency-free modules (the fuzzy matcher it reuses instead of duplicating, and the UTF-8 length helper the budget counts with); compiling anything else here would only hide an accidental import behind a passing build.",
+  "files": [
+    "../../src/mentions.ts",
+    "../../src/code/fuzzy.ts",
+    "../../src/code/workspace-api.ts",
+    "fake.ts",
+    "scan.test.ts",
+    "rank.test.ts",
+    "resolve.test.ts",
+    "regress.test.ts"
+  ]
+}

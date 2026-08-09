@@ -1,6 +1,9 @@
 // Bridge to the Rust side (Tauri commands) and to the local llama-server.
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
+// Type only, so this adds no runtime edge from api.ts into the Code view. It
+// stops the wire shape from drifting away from the module that consumes it.
+import type { RustLspStatus } from "./code/rust-lsp";
 
 export interface HwInfo {
   chip: string;
@@ -326,6 +329,23 @@ export const api = {
   gitCheckout: (root: string, branch: string, create: boolean) =>
     invoke<string>("git_checkout", { root, branch, create }),
 
+  // Integrated terminal. `origin` and `gated` are not decoration: pty.rs
+  // refuses a model write that does not state it passed the shell gate, so a
+  // caller that forgets gets an error instead of a silent execution.
+  ptySpawn: (cwd: string, cols: number, rows: number, owner: "user" | "model") =>
+    invoke<{ id: string; cols: number; rows: number; shell: string; cwd: string }>("pty_spawn", {
+      cwd,
+      cols,
+      rows,
+      owner,
+    }),
+  ptyWrite: (id: string, data: string, origin: "user" | "model", gated: boolean) =>
+    invoke<void>("pty_write", { id, data, origin, gated }),
+  ptyResize: (id: string, cols: number, rows: number) =>
+    invoke<[number, number]>("pty_resize", { id, cols, rows }),
+  ptyKill: (id: string) => invoke<void>("pty_kill", { id }),
+  ptyList: () => invoke<string[]>("pty_list"),
+
   // Workspace engine. Read-only and confined to `root` in Rust, exactly like
   // the code_* commands: the model reaches two of these as well.
   searchStart: (root: string, query: string, opts: SearchOptsWire) =>
@@ -340,6 +360,16 @@ export const api = {
   /** Bulk read for the language service. Tauri maps capBytes -> cap_bytes. */
   codeSnapshot: (root: string, exts: string[], capBytes: number, capFiles: number) =>
     invoke<SnapshotPayload>("code_snapshot", { root, exts, capBytes, capFiles }),
+
+  // The bundled rust-analyzer. These five are the transport and nothing else:
+  // code/rust-lsp.ts owns the protocol, the document state and the fallbacks.
+  rustLspStart: (root: string) => invoke<RustLspStatus>("rust_lsp_start", { root }),
+  rustLspStop: () => invoke<void>("rust_lsp_stop"),
+  rustLspStatus: () => invoke<RustLspStatus>("rust_lsp_status"),
+  rustLspRequest: (method: string, params: unknown, timeoutMs?: number) =>
+    invoke<unknown>("rust_lsp_request", { method, params, timeoutMs }),
+  rustLspNotify: (method: string, params: unknown) =>
+    invoke<void>("rust_lsp_notify", { method, params }),
   // `py_analyze` is deliberately absent. code/pylang.ts owns that call: it
   // types the payload (this binding returned `unknown`), it debounces it, and
   // it routes it through an injectable invoker so the tests can drive Python

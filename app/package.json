@@ -18,7 +18,11 @@
     "test:lang": "tsc -p tools/universal-lang/tsconfig.json && node --test \"tools/universal-lang/out/**/*.test.js\"",
     "test:policy": "tsc -p tools/model-policy/tsconfig.json && node --test \"tools/model-policy/out/**/*.test.js\"",
     "test:layout": "tsc -p tools/layout/tsconfig.json && node --test \"tools/layout/out/**/*.test.js\"",
-    "test": "npm run test:editor && npm run test:nav && npm run test:tsintel && npm run test:lang && npm run test:policy && npm run test:layout"
+    "test:inline-edit": "tsc -p tools/inline-edit/tsconfig.json && node --test \"tools/inline-edit/out/**/*.test.js\"",
+    "test:mentions": "tsc -p tools/mentions/tsconfig.json && node --test \"tools/mentions/out/**/*.test.js\"",
+    "test:rust-lsp": "tsc -p tools/rust-lsp/tsconfig.json && node --test \"tools/rust-lsp/out/**/*.test.js\"",
+    "test:terminal": "tsc -p tools/terminal/tsconfig.json && node --test \"tools/terminal/out/**/*.test.js\"",
+    "test": "npm run test:editor && npm run test:nav && npm run test:tsintel && npm run test:lang && npm run test:policy && npm run test:layout && npm run test:inline-edit && npm run test:mentions && npm run test:rust-lsp && npm run test:terminal"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",

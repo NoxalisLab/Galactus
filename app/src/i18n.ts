@@ -429,6 +429,18 @@ const dict: Record<string, { en: string; fr: string }> = {
     fr: "Le prochain message lance une recherche multi-agents sourcée.",
   },
 
+  // @file and @symbol mentions (src/mentions.ts)
+  "mention.hint": { en: "@ to attach a file or a symbol", fr: "@ pour joindre un fichier ou un symbole" },
+  "mention.none": { en: "No file or symbol matches", fr: "Aucun fichier ni symbole ne correspond" },
+  "mention.attached": {
+    en: "%n item(s) attached, about %t tokens",
+    fr: "%n élément(s) joint(s), environ %t tokens",
+  },
+  "mention.dropped": {
+    en: "%n mention(s) could not be attached, see the end of the message",
+    fr: "%n mention(s) n'ont pas pu être jointes, voir la fin du message",
+  },
+
   // drag & drop
   "chat.dropHint": {
     en: "Path added. Ask Galactus to read the file.",
@@ -731,12 +743,12 @@ const dict: Record<string, { en: string; fr: string }> = {
   "tier.b.label": { en: "Syntax", fr: "Syntaxe" },
   "tier.none.label": { en: "Plain", fr: "Brut" },
   "tier.a.hint": {
-    en: "Types, hover, go to definition, references and rename, from the TypeScript service running inside the app. It reads a snapshot taken at the last open, pull or checkout: a file changed outside Galactus is stale to it until one of those happens.",
-    fr: "Types, survol, aller à la définition, références et renommage, via le service TypeScript exécuté dans l'app. Il lit un instantané pris à la dernière ouverture, au dernier pull ou au dernier changement de branche : un fichier modifié hors de Galactus lui reste invisible jusque-là.",
+    en: "Types, hover, go to definition, references and rename, from a language service running inside the app: TypeScript from its own snapshot, Rust from the bundled rust-analyzer. The TypeScript snapshot is taken at the last open, pull or checkout, so a file changed outside Galactus is stale to it until one of those happens.",
+    fr: "Types, survol, aller à la définition, références et renommage, via un service de langage exécuté dans l'app : TypeScript depuis son propre instantané, Rust via le rust-analyzer embarqué. L'instantané TypeScript est pris à la dernière ouverture, au dernier pull ou au dernier changement de branche : un fichier modifié hors de Galactus lui reste invisible jusque-là.",
   },
   "tier.b.hint": {
-    en: "Outline, breadcrumb and syntax errors, from the bundled grammar. No types, no cross-file resolution, no go to definition. Rust and C get this tier only.",
-    fr: "Plan, fil d'Ariane et erreurs de syntaxe, via la grammaire embarquée. Pas de types, pas de résolution inter-fichiers, pas d'aller à la définition. Rust et C n'ont que ce niveau.",
+    en: "Outline, breadcrumb and syntax errors, from the bundled grammar. No types, no cross-file resolution, no go to definition. C gets this tier only, and so does Rust while the language server is starting or absent.",
+    fr: "Plan, fil d'Ariane et erreurs de syntaxe, via la grammaire embarquée. Pas de types, pas de résolution inter-fichiers, pas d'aller à la définition. C n'a que ce niveau, et Rust aussi tant que le serveur de langage démarre ou est absent.",
   },
   "tier.none.hint": {
     en: "No bundled grammar for this file type: line numbers, search and undo only. Nothing is analysed.",
@@ -766,6 +778,22 @@ const dict: Record<string, { en: string; fr: string }> = {
     fr: "Le renommage a besoin du service TypeScript, qui ne tourne pas pour ce fichier.",
   },
 
+  // ---- the Rust language server (code/rust-lsp.ts, src-tauri/src/lsp.rs) ----
+  "rustlsp.starting": {
+    en: "Starting the Rust language server",
+    fr: "Démarrage du serveur de langage Rust",
+  },
+  "rustlsp.indexing": {
+    en: "Indexing the crate graph: answers are incomplete until this finishes",
+    fr: "Indexation du graphe de crates : les réponses sont incomplètes jusqu'à la fin",
+  },
+  "rustlsp.failed": { en: "Rust intelligence is off: %s", fr: "Intelligence Rust désactivée : %s" },
+  "rustlsp.partial": { en: "Rust intelligence is limited: %s", fr: "Intelligence Rust limitée : %s" },
+  "rustlsp.needsReady": {
+    en: "Rename needs the Rust language server to have finished indexing",
+    fr: "Le renommage attend la fin de l'indexation du serveur de langage Rust",
+  },
+
   // ---- workspace tools the model may call ----
   "tool.searchWorkspace": { en: "Search the workspace", fr: "Chercher dans l'espace de travail" },
   "tool.findFiles": { en: "Find files", fr: "Trouver des fichiers" },
@@ -788,6 +816,36 @@ const dict: Record<string, { en: string; fr: string }> = {
   "settings.openConnectors": { en: "Connectors", fr: "Connecteurs" },
   "settings.openSkills": { en: "Skills", fr: "Skills" },
   "code.autoTabReady": { en: "Auto Tab ready", fr: "Auto Tab prêt" },
+
+  // ---- inline edit at the cursor, Cmd+K (code/inline-edit.ts) ----
+  "code.inlineEdit.lines": { en: "lines %a to %b", fr: "lignes %a à %b" },
+  "code.inlineEdit.placeholder": { en: "Describe the change...", fr: "Décris la modification..." },
+  "code.inlineEdit.submit": { en: "Edit", fr: "Modifier" },
+  "code.inlineEdit.hint": {
+    en: "Enter to send, Esc to cancel. The result arrives as a diff.",
+    fr: "Entrée pour envoyer, Échap pour annuler. Le résultat arrive en diff.",
+  },
+  "code.inlineEdit.working": { en: "Thinking...", fr: "Réflexion..." },
+  "code.inlineEdit.tooBig": {
+    en: "Selection too large for one inline edit",
+    fr: "Sélection trop grande pour une modification en ligne",
+  },
+  "code.inlineEdit.badAnswer": {
+    en: "The model did not return usable code",
+    fr: "Le modèle n'a pas renvoyé de code exploitable",
+  },
+  "code.inlineEdit.noChange": {
+    en: "The model returned the same code",
+    fr: "Le modèle a renvoyé le même code",
+  },
+  "code.inlineEdit.stale": {
+    en: "The file changed while the model was thinking",
+    fr: "Le fichier a changé pendant la réflexion du modèle",
+  },
+  "code.inlineEdit.failed": {
+    en: "Inline edit failed",
+    fr: "Échec de la modification en ligne",
+  },
   "sect.memory": { en: "Memory", fr: "Mémoire" },
   "sect.memoryHint": { en: "What Galactus remembers about you between conversations", fr: "Ce que Galactus retient de toi d'une conversation à l'autre" },
   "sect.knowledge": { en: "Knowledge", fr: "Connaissances" },
@@ -820,6 +878,23 @@ const dict: Record<string, { en: string; fr: string }> = {
     fr: "SVG invalide. Voici la source.",
   },
   "preview.empty": { en: "Nothing to preview.", fr: "Rien à prévisualiser." },
+
+  // ---- the integrated terminal (code/terminal.ts, src-tauri/src/pty.rs) ----
+  "term.title": { en: "Terminal", fr: "Terminal" },
+  "term.new": { en: "New terminal", fr: "Nouveau terminal" },
+  "term.close": { en: "Close this terminal", fr: "Fermer ce terminal" },
+  "term.clear": { en: "Clear the screen and the history", fr: "Effacer l'écran et l'historique" },
+  "term.toggle": { en: "Terminal", fr: "Terminal" },
+  "term.empty": {
+    en: "No terminal open. Press + to start one in the workspace folder.",
+    fr: "Aucun terminal ouvert. Appuie sur + pour en lancer un dans le dossier du projet.",
+  },
+  "term.noWorkspace": {
+    en: "Open a folder before starting a terminal.",
+    fr: "Ouvre un dossier avant de lancer un terminal.",
+  },
+  "term.exited": { en: "exited (%s)", fr: "terminé (%s)" },
+  "term.killed": { en: "killed", fr: "arrêté" },
 };
 
 // localStorage can throw in restricted webviews, this module runs at import

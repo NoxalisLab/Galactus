@@ -635,6 +635,29 @@ html.pane-dragging .pvw-frame { pointer-events: none; }
 .cm-autotab-key { margin-left: 8px; padding: 1px 5px; border: 1px solid var(--bd3);
        border-radius: 5px; color: var(--dim2); background: var(--card); font: 9px/1.45 var(--mono); }
 .fbadge.autotab { color: var(--good); border-color: color-mix(in srgb, var(--good) 35%, transparent); }
+/* The Rust language server's own state. Amber, not red: "starting" and
+   "indexing" are normal, and only the wording tells them from "failed". */
+.fbadge.rustlsp { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 35%, transparent);
+  max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Inline edit at the cursor, Cmd+K (code/inline-edit.ts). The .cm-tooltip
+   shell already draws the card, its border and its shadow, so this only fills
+   it in. */
+.cm-inline-edit { width: min(520px, 62vw); padding: 8px; font: 11.5px/1.5 var(--sans); }
+.cm-inline-edit-head { font: 10px/1.4 var(--mono); color: var(--dim3); margin-bottom: 6px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cm-inline-edit-row { display: flex; gap: 6px; align-items: center; }
+.cm-inline-edit-input { flex: 1; min-width: 0; height: 28px; padding: 0 8px;
+  border: 1px solid var(--bd2); border-radius: 7px; background: var(--inset);
+  color: var(--tx); font: 12px/1.4 var(--sans); outline: none; }
+.cm-inline-edit-input:focus { border-color: var(--acc); }
+.cm-inline-edit-input:disabled { opacity: 0.55; }
+.cm-inline-edit-go { height: 28px; padding: 0 12px; border: 1px solid transparent;
+  border-radius: 7px; background: var(--grad); color: #fff;
+  font: 600 11.5px/1 var(--sans); cursor: pointer; }
+.cm-inline-edit-go:disabled { opacity: 0.5; cursor: default; }
+.cm-inline-edit-status { margin-top: 6px; font-size: 10.5px; color: var(--dim3); }
+.cm-inline-edit.bad .cm-inline-edit-status { color: var(--bad); }
 .pvw-head { height: 44px; flex: none; display: flex; align-items: center;
        gap: 8px; padding: 0 12px 0 16px; border-bottom: 1px solid var(--bd);
        background: var(--side); }
@@ -733,6 +756,16 @@ html.pane-dragging .pvw-frame { pointer-events: none; }
 .slash-item span { font-size: 11.5px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .slash-item.on, .slash-item:hover { background: rgba(138, 124, 255, 0.1); }
 .slash-item.on span { color: var(--dim2); }
+
+/* The @mention picker reuses the slash menu shell so the composer has ONE
+   overlay geometry rather than two that drift apart. Only the row differs: a
+   mention row carries a matched-character highlight and a kind badge. */
+.mention-menu { max-height: 280px; overflow-y: auto; }
+.mention-item { display: flex; align-items: baseline; gap: 10px; padding: 8px 14px; cursor: default; }
+.mention-item b { font-size: 12.5px; font-weight: 500; color: var(--tx); font-family: var(--mono); white-space: nowrap; }
+.mention-item b i { font-style: normal; font-weight: 700; color: var(--acc-tx); }
+.mention-item em { margin-left: auto; font-style: normal; font-size: 10.5px; color: var(--dim2); text-transform: lowercase; }
+.mention-item.on, .mention-item:hover { background: rgba(138, 124, 255, 0.1); }
 
 /* Obsidian constellation */
 .cosmos { position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column; background: radial-gradient(1400px 900px at 50% 30%, #14101f 0%, #08080b 65%); animation: gx-fade 0.2s ease both; }
@@ -1261,3 +1294,50 @@ html.pane-dragging .pvw-frame { pointer-events: none; }
 .cpanel .ctree .trow[data-outline] .tw { width: 12px; text-align: center; color: var(--dim3);
   font-size: 10px; }
 .cpanel .ctree .trow[data-outline].on .tw { color: var(--acc-tx); }
+
+
+/* ---------------- integrated terminal (code/terminal.ts) ---------------- */
+/* Every cell class is prefixed "t-": the stylesheet already owns `.trow`,
+   `.ts` and `.tx` for the outline and the git panel, and a bare two-letter
+   class inside the terminal would inherit their padding. */
+:root { --term-bg: #07070a; --term-fg: #c8c8d6; }
+/* The middle column becomes a vertical split: editor on top, terminal under.
+   `.codemid` keeps its own rule; only the two properties a column parent
+   changes are set here. */
+.codemidwrap { flex: 1; min-width: 320px; display: flex; flex-direction: column; }
+.codemidwrap > .codemid { flex: 1; min-height: 0; min-width: 0; }
+.codeterm { flex: none; height: min(38vh, 340px); min-height: 0; display: none;
+  flex-direction: column; border-top: 1px solid var(--bd); background: var(--term-bg); }
+.codemidwrap.showterm > .codeterm { display: flex; }
+
+.term { flex: 1; min-height: 0; display: flex; flex-direction: column; outline: none; }
+.term:focus-visible { box-shadow: inset 0 0 0 1px rgba(138, 124, 255, 0.5); }
+.term-tabs { flex: none; height: 30px; display: flex; align-items: stretch; gap: 2px;
+  padding: 0 6px; border-bottom: 1px solid var(--bd); background: var(--side); }
+.term-tab { display: flex; align-items: center; gap: 6px; padding: 0 8px; border: none;
+  background: transparent; color: var(--dim3); font-size: 11.5px; font-family: var(--sans);
+  cursor: pointer; border-bottom: 1px solid transparent; }
+.term-tab:hover { color: var(--tx2); }
+.term-tab.on { color: var(--acc-tx); border-bottom-color: var(--acc); }
+.term-tab.dead { color: var(--dim4); font-style: italic; }
+.term-tab .t-x { color: var(--dim4); font-size: 13px; line-height: 1; padding: 0 2px; }
+.term-tab .t-x:hover { color: var(--bad); }
+.term-act { border: none; background: transparent; color: var(--dim3); font-size: 14px;
+  line-height: 1; padding: 0 8px; cursor: pointer; }
+.term-act:hover { color: var(--acc-tx); }
+.term-screen { flex: 1; min-height: 0; overflow: hidden; padding: 6px 10px;
+  font-family: var(--mono); font-size: 12px; line-height: 1.35; color: var(--term-fg);
+  white-space: pre; -webkit-user-select: text; user-select: text; }
+/* Fixed line boxes: a row whose height depends on its content desynchronises
+   the pixel grid from the cell grid, and the child was sized against the cell
+   grid. */
+.t-line { height: 1.35em; white-space: pre; }
+.t-b { font-weight: 600; }
+.t-d { opacity: 0.62; }
+.t-i { font-style: italic; }
+.t-u { text-decoration: underline; }
+.t-s { text-decoration: line-through; }
+.t-h { visibility: hidden; }
+.t-cur { background: var(--acc); color: #0b0b10; }
+.term-empty { color: var(--dim3); font-family: var(--sans); font-size: 11.5px;
+  padding: 14px 4px; white-space: normal; }
