@@ -22,7 +22,12 @@ const GRID = 16; // sprite 16x16
 // conteneur : le personnage traverse la fenetre au lieu d'etre confine aux 30
 // premiers pixels logiques, et les decors s'etalent avec elle.
 const STAGE_MIN = 30;
-const CANVAS_H = GRID * SCALE; // 48px
+// Hauteur MINIMALE de scene : la scene reelle prend toute la hauteur du
+// conteneur, le personnage se promene donc dans les deux dimensions au lieu
+// de longer une bande de 48 pixels.
+const CANVAS_H = GRID * SCALE; // plancher, 48px
+/** Lenteur de la derive verticale : une traversee complete dure ~40 s. */
+const DRIFT_SPEED = 0.0042;
 const STEP_MS = 1000 / 12; // ~12 fps assumes
 // Duree minimale d'une scene d'action (~2 s a 12 fps) : les outils locaux
 // finissent en millisecondes, sans plancher la scene serait invisible.
@@ -76,11 +81,14 @@ export class PixelViz {
     this.container = container;
 
     const canvas = document.createElement("canvas");
-    canvas.height = CANVAS_H;
+    // Le canvas couvre tout le conteneur. Fixer style.height a CANVAS_H
+    // ecraserait le rendu : la scene serait dessinee sur toute la hauteur puis
+    // compressee dans 48 pixels a l'affichage.
+    canvas.height = Math.max(container.clientHeight, CANVAS_H);
     canvas.width = Math.max(container.clientWidth, STAGE_MIN * SCALE + 8);
     canvas.style.display = "block";
     canvas.style.width = "100%";
-    canvas.style.height = `${CANVAS_H}px`;
+    canvas.style.height = "100%";
     canvas.style.imageRendering = "pixelated";
     this.canvas = canvas;
 
@@ -252,11 +260,39 @@ export class PixelViz {
 
   private syncSize(): void {
     const w = Math.max(this.container.clientWidth, STAGE_MIN * SCALE + 8);
-    if (w !== this.canvas.width) {
+    const h = Math.max(this.container.clientHeight, CANVAS_H);
+    if (w !== this.canvas.width || h !== this.canvas.height) {
       this.canvas.width = w;
+      this.canvas.height = h;
       this.ctx.imageSmoothingEnabled = false;
       this.render();
     }
+  }
+
+  /** Hauteur de scene en pixels logiques. */
+  private stageH(): number {
+    return Math.max(GRID, Math.floor(this.canvas.height / SCALE));
+  }
+
+  /**
+   * Ou la scene se pose verticalement, en pixels logiques.
+   *
+   * Le decor est dessine sur une bande de GRID lignes; plutot que de reecrire
+   * chaque scene en deux dimensions, la bande entiere derive lentement de haut
+   * en bas. Le personnage parcourt donc toute la fenetre, et les scenes
+   * gardent exactement la composition qui a ete reglee a la main.
+   *
+   * La derive est desynchronisee de la marche horizontale (frequences non
+   * multiples) pour que le trajet ne soit jamais une diagonale repetee.
+   */
+  private driftY(f: number): number {
+    // Une marge en haut et en bas, sinon le personnage rase le bord du
+    // panneau et se retrouve coupe par le defilement du fil.
+    const margin = 3;
+    const span = Math.max(0, this.stageH() - GRID - 2 * margin);
+    if (span === 0) return Math.min(margin, Math.max(0, this.stageH() - GRID));
+    const u = 0.5 - 0.5 * Math.cos(f * DRIFT_SPEED * 2 * Math.PI);
+    return margin + Math.round(u * span);
   }
 
   /** Dessine un pixel logique (aligne sur la grille x3). */
@@ -275,6 +311,10 @@ export class PixelViz {
     const mf = this.modeFrame;
     const mode = this.mode;
     c.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    // Toute la scene est posee a la hauteur courante de la derive. Le reste du
+    // rendu continue de raisonner sur une bande de GRID lignes.
+    c.save();
+    c.translate(0, this.driftY(f) * SCALE);
 
     // ---- fond "running" : terminal / courbe qui defile derriere le robot
     if (mode === "running") {
@@ -441,6 +481,10 @@ export class PixelViz {
         c.fillText(this.ellipsize(this.label, maxW), labelX, CANVAS_H / 2 + 1);
       }
     }
+
+    // Le label derive avec la scene, donc il reste a hauteur du personnage
+    // plutot que de flotter seul en bas de la fenetre.
+    c.restore();
   }
 
   private ellipsize(text: string, maxW: number): string {

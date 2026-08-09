@@ -258,8 +258,13 @@ html.pane-dragging iframe { pointer-events: none !important; }
 .empty-block span { font-size: 12px; color: var(--dim); max-width: 380px; line-height: 1.5; }
 
 /* agent activity bar (PixelViz host) */
-.actbar { flex: none; padding: 0 26px 14px; animation: gx-fade 0.18s ease both; }
-.actbar .pxhost { max-width: var(--col); margin: 0 auto; height: 38px; border: 1px solid rgba(138, 124, 255, 0.22); border-radius: 11px; background: linear-gradient(180deg, rgba(138, 124, 255, 0.07), rgba(138, 124, 255, 0.02)); overflow: hidden; display: flex; align-items: center; padding: 0 12px; }
+/* La scene pixel n'est plus un bandeau au-dessus du composeur : c'est un
+   calque transparent qui couvre le fil, sans cadre ni fond, et le personnage
+   s'y promene dans les deux dimensions. Aucun evenement de pointeur ne
+   l'atteint, on continue de selectionner et de cliquer le texte au travers. */
+.actbar { position: absolute; inset: 0; pointer-events: none; z-index: 3; animation: gx-fade 0.18s ease both; }
+.actbar .pxhost { width: 100%; height: 100%; overflow: hidden; }
+.actbar canvas { display: block; }
 
 /* model loading card */
 @keyframes gx-spin { to { transform: rotate(360deg); } }
@@ -851,7 +856,7 @@ html.pane-dragging .pvw-frame { pointer-events: none; }
    Three columns: the files, the file, and the thread. Same surfaces, same
    accent, same borders as everywhere else. The editor is a panel of the app,
    not an IDE bolted to its side. */
-.threadpane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.threadpane { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; }
 .codebody { flex: 1; min-height: 0; display: flex; }
 /* 228 (nav) + 274 + 400 was 902 px of fixed chrome inside a window whose
    minimum is 960: the editor, the column the view is named after, used to get
@@ -877,7 +882,7 @@ html.pane-dragging .pvw-frame { pointer-events: none; }
 .codeside .comp-box { max-width: none; }
 .codeside .chat-scroll { padding: 18px 14px 8px; }
 .codeside .thread { max-width: none; gap: 22px; }
-.codeside .actbar { padding: 0 14px 10px; }
+/* Rien a rembourrer : le calque couvre deja tout le panneau. */
 /* The composer has 400 px here instead of 720: the two chips that are about
    research and connectors go, the three that drive this turn stay. */
 .codeside .comp-bar { gap: 6px; padding: 6px 8px 9px 10px; }
