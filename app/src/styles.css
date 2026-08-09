@@ -227,12 +227,7 @@ html.pane-dragging iframe { pointer-events: none !important; }
 .perm-inline .txt span { font-size: 11.5px; color: var(--dim2); }
 
 /* composer */
-/* La saisie et l'atelier, cote a cote. L'atelier est volontairement etroit :
-   assez pour le bureau et le personnage, assez peu pour que le champ ne perde
-   que quelques dizaines de pixels. Une premiere version le posait en absolu
-   dans la marge, mais a 1280 de large cette marge fait 56 pixels et l'atelier
-   debordait sur la barre laterale. */
-.composer { flex: none; padding: 14px 26px 20px; display: flex; align-items: flex-end; gap: 10px; }
+.composer { flex: none; padding: 14px 26px 20px; }
 .comp-box { max-width: var(--col); margin: 0 auto; border: 1px solid rgba(255, 255, 255, 0.09); border-radius: 14px; background: var(--card); box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35); transition: border-color 0.18s; }
 .comp-box:focus-within { border-color: rgba(138, 124, 255, 0.35); }
 .comp-box textarea { width: 100%; resize: none; border: none; outline: none; background: transparent; color: var(--tx); font-size: 14px; line-height: 1.55; padding: 14px 16px 6px; max-height: 200px; }
@@ -268,18 +263,24 @@ html.pane-dragging iframe { pointer-events: none !important; }
    traverse la fenetre et surgit par le bas, de derriere le fil.
    Il ne recouvre pas les messages : un robot qui marche sur le texte se lit
    comme un defaut d'affichage, pas comme une animation. */
-/* L'atelier : cale sur le bord gauche de la saisie, dans la marge. Pas de
-   cadre ni de fond, c'est un coin de fenetre qui lui appartient. */
+/* L'atelier vit AU-DESSUS de la saisie, jamais a cote.
+   Pose dans le flux horizontal il volait 132 pixels de largeur au champ. Sans
+   consequence dans une fenetre large, fatal dans le panneau agent de la vue
+   Code qui ne fait que 320 a 400 pixels : le champ y devenait inatteignable
+   sur sa droite. Une requete media ne pouvait rien y faire, elle mesure la
+   fenetre alors que le probleme est la largeur du conteneur.
+   Cale sur la meme colonne que la saisie, le personnage reste visuellement a
+   gauche du champ sans lui coûter un seul pixel, a n'importe quelle largeur. */
 .actbar {
-  flex: 0 0 132px; height: 84px; overflow: hidden; pointer-events: none;
-  animation: gx-fade 0.18s ease both;
+  flex: none; max-width: var(--col); margin: 0 auto; height: 84px;
+  overflow: hidden; pointer-events: none; animation: gx-fade 0.18s ease both;
 }
 .pxden-void { display: none; }
 .actbar .pxhost { width: 100%; height: 100%; }
 .actbar canvas { display: block; }
-/* Marge trop etroite pour l'accueillir : il s'efface plutot que de chevaucher
-   la saisie ou la barre laterale. */
-@media (max-width: 1024px) { .actbar { display: none; } }
+/* Panneau agent etroit : la scene garde toute la largeur du panneau et se
+   tasse en hauteur, plutot que de rogner la saisie. */
+.codeside .actbar { max-width: none; height: 64px; }
 
 /* model loading card */
 @keyframes gx-spin { to { transform: rotate(360deg); } }

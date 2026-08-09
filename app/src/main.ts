@@ -1117,8 +1117,8 @@ function threadPaneEl(): HTMLElement {
   const wrap = el(`<div class="threadpane">
     <div class="chat-scroll" id="scroller"><div class="thread"><div id="plan"></div><div id="log"></div></div></div>
     ${taskOffer ? `<div class="task-switch-hint" id="taskhint"><span class="tx">${esc(t("task.better").replace("%m", taskOffer.modelName))}</span><button class="bs" id="taskswap">${esc(t("task.switch"))}</button><span class="x" id="taskdismiss">×</span></div>` : ""}
+    <div class="actbar" id="actbar"><div class="pxhost" id="pixelhost"></div></div>
     <div class="composer">
-      <div class="actbar" id="actbar"><div class="pxhost" id="pixelhost"></div></div>
       <div class="comp-box">
       <textarea id="ci" rows="2" placeholder="${esc(sub ? t("team.placeholder").replace("%s", sub.name) : t("chat.placeholder"))}"></textarea>
       <div class="comp-bar">
@@ -1135,7 +1135,6 @@ function threadPaneEl(): HTMLElement {
         <div class="send ${generating ? "stop" : ""} ${!ready && !generating ? "off" : ""}" id="send">${generating ? STOP_ICON : I.up}</div>
       </div>
       </div>
-      <div class="pxden-void" aria-hidden="true"></div>
     </div>
   </div>`);
 
