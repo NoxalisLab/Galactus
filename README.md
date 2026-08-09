@@ -131,6 +131,10 @@ galactus status | stop
 
 `serve` accepts `--ram eco|balanced|perf`, `--cpu-moe`, `--slots N` and `--port N`, and prints the chosen regime and the pack layout before the endpoint comes up.
 
+[![The Galactus CLI](docs/media/demos/galactus-cli.gif)](docs/media/demos/galactus-cli.mp4)
+
+*The binary inside the app bundle, run from a shell: help, the certified catalog with install status read from the real pack store, and server state. Unedited, no model loaded. Click for MP4.*
+
 ---
 
 ## The engine
