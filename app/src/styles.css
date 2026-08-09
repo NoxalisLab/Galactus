@@ -278,9 +278,11 @@ html.pane-dragging iframe { pointer-events: none !important; }
 .pxden-void { display: none; }
 .actbar .pxhost { width: 100%; height: 100%; }
 .actbar canvas { display: block; }
-/* Panneau agent etroit : la scene garde toute la largeur du panneau et se
-   tasse en hauteur, plutot que de rogner la saisie. */
-.codeside .actbar { max-width: none; height: 64px; }
+/* Panneau agent etroit : la scene garde toute la largeur du panneau. Sa
+   hauteur ne se tasse PAS : le canvas fait 81 pixels (11 lignes de bulle plus
+   16 de sprite, echelle 3) et le conteneur masque le debordement, donc le
+   rogner coupait le personnage aux jambes. */
+.codeside .actbar { max-width: none; height: 84px; margin-bottom: 2px; }
 
 /* model loading card */
 @keyframes gx-spin { to { transform: rotate(360deg); } }
