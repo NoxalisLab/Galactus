@@ -15,6 +15,7 @@ import {
 } from "./api";
 import type { SearchEvent, SearchOptsWire } from "./api";
 import { getLang, t } from "./i18n";
+import { isElevatedWrite, isElevatedRead } from "./sensitive";
 
 /**
  * Bytes per token, measured rather than assumed, and identical to the figure
@@ -117,22 +118,6 @@ const ELEVATED_PATTERNS = [
   /\bgit\s+checkout\s+--\s/,
 ];
 
-const SENSITIVE_WRITE_PREFIXES = ["/System", "/Library", "/usr", "/bin", "/sbin", "/etc", "/private"];
-
-// Persistence / credential paths under $HOME are just as system-modifying as
-// /System: writing them silently would allow login hooks or key injection.
-// The bin directories are the ones the backend prepends to PATH when it
-// resolves MCP connector commands: a file dropped there is executed by the
-// app itself on the next connector reload.
-const SENSITIVE_WRITE_PATTERNS = [
-  /\/Library\/(LaunchAgents|LaunchDaemons)\//,
-  /\/\.ssh\//,
-  /\/\.(zshrc|zshenv|zprofile|bashrc|bash_profile|profile)$/,
-  /\/\.gitconfig$/,
-  /^\/opt\/homebrew\/s?bin\//,
-  /\/\.(local|bun|cargo|volta)\/bin\//,
-];
-
 export function isElevatedCommand(cmd: string): boolean {
   if (ELEVATED_PATTERNS.some((re) => re.test(cmd))) return true;
   // Destructive rm in ANY flag layout: `rm -rf`, `rm -r -f`, `rm --recursive`,
@@ -162,12 +147,6 @@ export function isElevatedCommand(cmd: string): boolean {
   return false;
 }
 
-export function isElevatedWrite(path: string): boolean {
-  return (
-    SENSITIVE_WRITE_PREFIXES.some((p) => path.startsWith(p)) ||
-    SENSITIVE_WRITE_PATTERNS.some((re) => re.test(path))
-  );
-}
 
 /**
  * Lexical cleanup only: "." segments and duplicate slashes collapse so a
@@ -231,6 +210,8 @@ function isStanding(kind: PermissionKind, detail: string): boolean {
       kind === "obsidian" ||
       kind === "memory" ||
       kind === "fs_write" ||
+      kind === "fs_read" ||
+      kind === "fs_list" ||
       kind === "conversations" ||
       kind === "code"
     )
@@ -1700,10 +1681,7 @@ export class Agent {
     if (decision !== "once" && decision !== "always") return false;
     if (decision === "always" && !req.elevated && !req.noAlways) {
       let prefix = req.detail;
-      if (req.kind === "fs_read" || req.kind === "fs_list") {
-        const i = req.detail.lastIndexOf("/");
-        prefix = i > 0 ? req.detail.slice(0, i + 1) : req.detail;
-      } else if (req.kind === "web") {
+      if (req.kind === "web") {
         // "Always" on a URL grants its ORIGIN (scheme + host + "/"), not the
         // whole web: one rule per site the user trusts.
         try {
@@ -1772,7 +1750,7 @@ export class Agent {
       let result: string;
       if (name === "read_file") {
         const p = String(args.path ?? "");
-        const ok = await this.gate({ kind: "fs_read", detail: p, elevated: false });
+        const ok = await this.gate({ kind: "fs_read", detail: p, elevated: isElevatedRead(p) });
         const off = Number(args.offset) > 0 ? Math.floor(Number(args.offset)) : undefined;
         const cap = Math.min(Math.max(Math.floor(Number(args.max_bytes)) || 200_000, 1_000), 200_000);
         result = ok ? await api.fsRead(p, cap, off) : "denied by user";
@@ -1829,7 +1807,7 @@ export class Agent {
         }
       } else if (name === "read_document") {
         const p = String(args.path ?? "");
-        const ok = await this.gate({ kind: "fs_read", detail: p, elevated: false });
+        const ok = await this.gate({ kind: "fs_read", detail: p, elevated: isElevatedRead(p) });
         result = ok ? await api.docRead(p, args.mode ? String(args.mode) : undefined) : "denied by user";
       } else if (name === "spawn_agent") {
         result = await this.spawnAgent(
@@ -1892,7 +1870,7 @@ export class Agent {
         const wsRoot = workspaceRoot();
         if (!wsRoot) {
           result = "error: no code workspace is open";
-        } else if (!(await this.gate({ kind: "fs_read", detail: `${wsRoot}/`, elevated: false }))) {
+        } else if (!(await this.gate({ kind: "fs_read", detail: `${wsRoot}/`, elevated: isElevatedRead(wsRoot) }))) {
           result = "denied by user";
         } else {
           const q = String(args.query ?? "");

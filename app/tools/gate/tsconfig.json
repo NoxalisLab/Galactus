@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": [
+      "ES2022",
+      "DOM"
+    ],
+    "strict": true,
+    "skipLibCheck": true,
+    "types": [],
+    "rootDir": "../..",
+    "outDir": "./out",
+    "sourceMap": false,
+    "declaration": false
+  },
+  "include": [
+    "./*.test.ts",
+    "../../src/layout/pane-resize.ts"
+  ],
+  "exclude": [
+    "./out/**"
+  ],
+  "files": [
+    "../../src/sensitive.ts",
+    "sensitive.test.ts"
+  ]
+}
