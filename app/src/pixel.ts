@@ -22,12 +22,21 @@ const GRID = 16; // sprite 16x16
 // conteneur : le personnage traverse la fenetre au lieu d'etre confine aux 30
 // premiers pixels logiques, et les decors s'etalent avec elle.
 const STAGE_MIN = 30;
-// Hauteur MINIMALE de scene : la scene reelle prend toute la hauteur du
-// conteneur, le personnage se promene donc dans les deux dimensions au lieu
-// de longer une bande de 48 pixels.
-const CANVAS_H = GRID * SCALE; // plancher, 48px
-/** Lenteur de la derive verticale : une traversee complete dure ~40 s. */
-const DRIFT_SPEED = 0.0042;
+/**
+ * Lignes reservees au-dessus de la scene pour la bulle du personnage.
+ *
+ * C'est lui qui annonce ce qu'il fait, dans sa propre bulle, plutot qu'un
+ * libelle pose a l'autre bout de la fenetre : le regard n'a plus a faire
+ * l'aller-retour entre le personnage et le texte qui le decrit.
+ */
+const BUBBLE_ROWS = 11;
+/** Hauteur totale de la scene, en lignes : bulle + sprite. */
+const SCENE_ROWS = BUBBLE_ROWS + GRID;
+const CANVAS_H = SCENE_ROWS * SCALE;
+/** Frames de l'entree : il monte de derriere le fil jusqu'a sa hauteur. */
+const ENTER_FRAMES = 10;
+/** Frames pendant lesquelles une bulle se gonfle apres un changement. */
+const POP_FRAMES = 5;
 const STEP_MS = 1000 / 12; // ~12 fps assumes
 // Duree minimale d'une scene d'action (~2 s a 12 fps) : les outils locaux
 // finissent en millisecondes, sans plancher la scene serait invisible.
@@ -84,11 +93,11 @@ export class PixelViz {
     // Le canvas couvre tout le conteneur. Fixer style.height a CANVAS_H
     // ecraserait le rendu : la scene serait dessinee sur toute la hauteur puis
     // compressee dans 48 pixels a l'affichage.
-    canvas.height = Math.max(container.clientHeight, CANVAS_H);
+    canvas.height = CANVAS_H;
     canvas.width = Math.max(container.clientWidth, STAGE_MIN * SCALE + 8);
     canvas.style.display = "block";
     canvas.style.width = "100%";
-    canvas.style.height = "100%";
+    canvas.style.height = `${CANVAS_H}px`;
     canvas.style.imageRendering = "pixelated";
     this.canvas = canvas;
 
@@ -260,39 +269,27 @@ export class PixelViz {
 
   private syncSize(): void {
     const w = Math.max(this.container.clientWidth, STAGE_MIN * SCALE + 8);
-    const h = Math.max(this.container.clientHeight, CANVAS_H);
-    if (w !== this.canvas.width || h !== this.canvas.height) {
+    if (w !== this.canvas.width) {
       this.canvas.width = w;
-      this.canvas.height = h;
       this.ctx.imageSmoothingEnabled = false;
       this.render();
     }
   }
 
-  /** Hauteur de scene en pixels logiques. */
-  private stageH(): number {
-    return Math.max(GRID, Math.floor(this.canvas.height / SCALE));
-  }
-
   /**
-   * Ou la scene se pose verticalement, en pixels logiques.
+   * De combien de lignes la scene est encore enfoncee sous sa hauteur finale.
    *
-   * Le decor est dessine sur une bande de GRID lignes; plutot que de reecrire
-   * chaque scene en deux dimensions, la bande entiere derive lentement de haut
-   * en bas. Le personnage parcourt donc toute la fenetre, et les scenes
-   * gardent exactement la composition qui a ete reglee a la main.
-   *
-   * La derive est desynchronisee de la marche horizontale (frequences non
-   * multiples) pour que le trajet ne soit jamais une diagonale repetee.
+   * A chaque nouvelle scene le personnage remonte de derriere le fil, avec un
+   * leger depassement en fin de course. C'est ce qui le fait exister comme
+   * quelqu'un qui arrive, plutot que comme une image qui change.
    */
-  private driftY(f: number): number {
-    // Une marge en haut et en bas, sinon le personnage rase le bord du
-    // panneau et se retrouve coupe par le defilement du fil.
-    const margin = 3;
-    const span = Math.max(0, this.stageH() - GRID - 2 * margin);
-    if (span === 0) return Math.min(margin, Math.max(0, this.stageH() - GRID));
-    const u = 0.5 - 0.5 * Math.cos(f * DRIFT_SPEED * 2 * Math.PI);
-    return margin + Math.round(u * span);
+  private riseOffset(): number {
+    const k = this.modeFrame;
+    if (k >= ENTER_FRAMES) return 0;
+    const u = k / ENTER_FRAMES;
+    const eased = 1 - Math.pow(1 - u, 3);
+    const overshoot = Math.sin(u * Math.PI) * 1.2;
+    return Math.round((1 - eased) * (GRID + BUBBLE_ROWS) - overshoot);
   }
 
   /** Dessine un pixel logique (aligne sur la grille x3). */
@@ -311,10 +308,12 @@ export class PixelViz {
     const mf = this.modeFrame;
     const mode = this.mode;
     c.clearRect(0, 0, this.canvas.width, this.canvas.height);
-    // Toute la scene est posee a la hauteur courante de la derive. Le reste du
-    // rendu continue de raisonner sur une bande de GRID lignes.
+    // La scene occupe la bande du bas; la zone du dessus appartient a la
+    // bulle. Le reste du rendu continue de raisonner sur GRID lignes, comme
+    // avant, sans savoir qu'il a ete descendu.
+    const rise = this.riseOffset();
     c.save();
-    c.translate(0, this.driftY(f) * SCALE);
+    c.translate(0, (BUBBLE_ROWS + rise) * SCALE);
 
     // ---- fond "running" : terminal / courbe qui defile derriere le robot
     if (mode === "running") {
@@ -467,23 +466,76 @@ export class PixelViz {
     for (const p of this.confetti) this.px(p.x, p.y, p.color, Math.min(1, p.life / 4));
     for (const s of this.sparks) this.px(s.x, s.y, s.color, s.life / 3);
 
-    // ---- label a droite de la scene
-    if (this.label) {
-      // Le personnage traverse desormais toute la scene, donc le label ne peut
-      // plus vivre a sa droite : il est cale au bord droit du canvas.
-      const labelX = Math.max(GRID * SCALE + 10, this.canvas.width - 260);
-      c.font = '11px "IBM Plex Mono", ui-monospace, monospace';
-      c.fillStyle = LABEL_COLOR;
-      c.textBaseline = "middle";
-      c.textAlign = "left";
-      const maxW = this.canvas.width - labelX - 4;
-      if (maxW > 12) {
-        c.fillText(this.ellipsize(this.label, maxW), labelX, CANVAS_H / 2 + 1);
-      }
-    }
+    c.restore();
 
-    // Le label derive avec la scene, donc il reste a hauteur du personnage
-    // plutot que de flotter seul en bas de la fenetre.
+    // ---- ce qu'il annonce, dans sa bulle, au-dessus de sa tete
+    if (this.label) this.drawSpeech(ox, rise);
+  }
+
+  /**
+   * La bulle que le personnage porte au-dessus de la tete.
+   *
+   * Elle le suit, donc le texte est toujours a cote de celui qui l'annonce.
+   * Le cadre est en pixels logiques pour rester dans le meme langage
+   * graphique que le sprite, le texte est rendu en pixels ecran pour rester
+   * lisible: un texte dessine a la grille x3 serait illisible a cette taille.
+   *
+   * A chaque changement d'annonce la bulle se regonfle depuis la queue, ce qui
+   * donne le sentiment qu'il vient de la poser plutot qu'elle n'a ete
+   * remplacee en silence.
+   */
+  private drawSpeech(ox: number, rise: number): void {
+    const c = this.ctx;
+    const pop = Math.min(1, this.modeFrame / POP_FRAMES);
+    if (pop <= 0) return;
+
+    c.font = '11px "IBM Plex Mono", ui-monospace, monospace';
+    const padX = 3; // en lignes logiques
+    const headX = ox + 8; // milieu de la tete du robot
+    const maxTextW = Math.max(40, this.canvas.width - 24);
+    const text = this.ellipsize(this.label, maxTextW);
+    const textW = c.measureText(text).width;
+    const wRows = Math.ceil(textW / SCALE) + padX * 2;
+
+    // Ancrage: centree sur la tete, mais jamais hors champ.
+    const stage = this.stageW();
+    let x0 = Math.round(headX - wRows / 2);
+    x0 = Math.max(1, Math.min(x0, stage - wRows - 1));
+    const bottom = BUBBLE_ROWS - 3 + rise; // laisse deux lignes pour la queue
+    const hRows = 7;
+    const y0 = bottom - hRows;
+    if (y0 < -hRows) return; // encore derriere le fil, rien a montrer
+
+    // Gonflement: la bulle grandit depuis la queue.
+    const gx = x0 + wRows / 2;
+    const gy = bottom;
+    c.save();
+    c.translate(gx * SCALE, gy * SCALE);
+    c.scale(pop, pop);
+    c.translate(-gx * SCALE, -gy * SCALE);
+
+    // Cadre, coins evides pour un arrondi pixel.
+    for (let x = x0; x < x0 + wRows; x++) {
+      this.px(x, y0, ACC, 0.34);
+      this.px(x, y0 + hRows - 1, ACC, 0.34);
+    }
+    for (let y = y0; y < y0 + hRows; y++) {
+      this.px(x0, y, ACC, 0.34);
+      this.px(x0 + wRows - 1, y, ACC, 0.34);
+    }
+    for (const [cx, cy] of [[x0, y0], [x0 + wRows - 1, y0], [x0, y0 + hRows - 1], [x0 + wRows - 1, y0 + hRows - 1]] as const) {
+      c.clearRect(cx * SCALE, cy * SCALE, SCALE, SCALE);
+    }
+    // Queue vers la tete.
+    this.px(Math.round(headX), y0 + hRows, ACC, 0.34);
+    this.px(Math.round(headX), y0 + hRows + 1, ACC, 0.22);
+
+    // Texte, centre dans la bulle.
+    c.globalAlpha = 1;
+    c.fillStyle = LABEL_COLOR;
+    c.textBaseline = "middle";
+    c.textAlign = "center";
+    c.fillText(text, (x0 + wRows / 2) * SCALE, (y0 + hRows / 2) * SCALE + 1);
     c.restore();
   }
 

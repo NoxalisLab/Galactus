@@ -311,7 +311,9 @@ let doneHideTimer: number | null = null;
 
 function hideActivity() {
   const bar = document.getElementById("actbar");
-  if (bar) bar.style.display = "none";
+  // Masque sans retirer la place : la saisie ne doit pas sauter quand il
+  // sort de scene.
+  if (bar) bar.style.visibility = "hidden";
   pixel?.destroy();
   pixel = null;
   pixelHost = null;
@@ -357,7 +359,7 @@ function onThreadActivity(sess: Thread, mode: PixelMode, label?: string) {
   if (!bar || !host) return;
   if (pixel && pixelHost !== host) { pixel.destroy(); pixel = null; pixelHost = null; }
   if (!pixel) { pixel = new PixelViz(host); pixelHost = host; }
-  bar.style.display = "block";
+  bar.style.visibility = "visible";
   pixel.setMode(mode, label ? prettyTool(label) : undefined);
 }
 
@@ -1089,9 +1091,10 @@ function threadPaneEl(): HTMLElement {
 
   const wrap = el(`<div class="threadpane">
     <div class="chat-scroll" id="scroller"><div class="thread"><div id="plan"></div><div id="log"></div></div></div>
-    <div class="actbar" id="actbar" style="display:none"><div class="pxhost" id="pixelhost"></div></div>
     ${taskOffer ? `<div class="task-switch-hint" id="taskhint"><span class="tx">${esc(t("task.better").replace("%m", taskOffer.modelName))}</span><button class="bs" id="taskswap">${esc(t("task.switch"))}</button><span class="x" id="taskdismiss">×</span></div>` : ""}
-    <div class="composer"><div class="comp-box">
+    <div class="composer">
+      <div class="actbar" id="actbar" style="visibility:hidden"><div class="pxhost" id="pixelhost"></div></div>
+      <div class="comp-box">
       <textarea id="ci" rows="2" placeholder="${esc(sub ? t("team.placeholder").replace("%s", sub.name) : t("chat.placeholder"))}"></textarea>
       <div class="comp-bar">
         <div class="tool-btn" id="gotoconn">${I.conn}<span>${mcpCount}</span></div>
@@ -1106,7 +1109,9 @@ function threadPaneEl(): HTMLElement {
         <span class="hint" id="drophint">${esc(t("chat.localHint"))}</span>
         <div class="send ${generating ? "stop" : ""} ${!ready && !generating ? "off" : ""}" id="send">${generating ? STOP_ICON : I.up}</div>
       </div>
-    </div></div>
+      </div>
+      <div class="pxden-void" aria-hidden="true"></div>
+    </div>
   </div>`);
 
   const input = wrap.querySelector<HTMLTextAreaElement>("#ci")!;

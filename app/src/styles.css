@@ -227,8 +227,11 @@ html.pane-dragging iframe { pointer-events: none !important; }
 .perm-inline .txt span { font-size: 11.5px; color: var(--dim2); }
 
 /* composer */
-.composer { flex: none; padding: 14px 26px 20px; }
-.comp-box { max-width: var(--col); margin: 0 auto; border: 1px solid rgba(255, 255, 255, 0.09); border-radius: 14px; background: var(--card); box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35); transition: border-color 0.18s; }
+/* Le composeur aligne trois blocs : l'espace du personnage, la saisie, et un
+   vide de meme largeur a droite. Sans ce vide la saisie ne serait plus
+   centree dans la fenetre, ce qui se voit immediatement. */
+.composer { flex: none; padding: 14px 26px 20px; display: flex; align-items: flex-end; justify-content: center; gap: 12px; }
+.comp-box { flex: 0 1 var(--col); max-width: var(--col); margin: 0; border: 1px solid rgba(255, 255, 255, 0.09); border-radius: 14px; background: var(--card); box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35); transition: border-color 0.18s; }
 .comp-box:focus-within { border-color: rgba(138, 124, 255, 0.35); }
 .comp-box textarea { width: 100%; resize: none; border: none; outline: none; background: transparent; color: var(--tx); font-size: 14px; line-height: 1.55; padding: 14px 16px 6px; max-height: 200px; }
 .comp-bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px 10px 12px; }
@@ -258,13 +261,21 @@ html.pane-dragging iframe { pointer-events: none !important; }
 .empty-block span { font-size: 12px; color: var(--dim); max-width: 380px; line-height: 1.5; }
 
 /* agent activity bar (PixelViz host) */
-/* La scene pixel n'est plus un bandeau au-dessus du composeur : c'est un
-   calque transparent qui couvre le fil, sans cadre ni fond, et le personnage
-   s'y promene dans les deux dimensions. Aucun evenement de pointeur ne
-   l'atteint, on continue de selectionner et de cliquer le texte au travers. */
-.actbar { position: absolute; inset: 0; pointer-events: none; z-index: 3; animation: gx-fade 0.18s ease both; }
-.actbar .pxhost { width: 100%; height: 100%; overflow: hidden; }
+/* La scene pixel n'a plus de cadre ni de fond : c'est un calque transparent
+   pose juste au-dessus du composeur, sur toute la largeur. Le personnage y
+   traverse la fenetre et surgit par le bas, de derriere le fil.
+   Il ne recouvre pas les messages : un robot qui marche sur le texte se lit
+   comme un defaut d'affichage, pas comme une animation. */
+/* L'espace de vie du personnage, a gauche de la saisie. Pas de cadre ni de
+   fond : c'est un coin de fenetre qui lui appartient, pas un widget. Le vide
+   de droite a exactement la meme largeur pour garder la saisie centree. */
+.actbar, .pxden-void { flex: 0 0 186px; height: 84px; }
+.actbar { overflow: hidden; pointer-events: none; animation: gx-fade 0.18s ease both; }
+.pxden-void { pointer-events: none; }
+.actbar .pxhost { width: 100%; height: 100%; }
 .actbar canvas { display: block; }
+/* Fenetre etroite : le personnage cede la place a la saisie. */
+@media (max-width: 1080px) { .actbar, .pxden-void { display: none; } }
 
 /* model loading card */
 @keyframes gx-spin { to { transform: rotate(360deg); } }
@@ -856,7 +867,7 @@ html.pane-dragging .pvw-frame { pointer-events: none; }
    Three columns: the files, the file, and the thread. Same surfaces, same
    accent, same borders as everywhere else. The editor is a panel of the app,
    not an IDE bolted to its side. */
-.threadpane { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; }
+.threadpane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .codebody { flex: 1; min-height: 0; display: flex; }
 /* 228 (nav) + 274 + 400 was 902 px of fixed chrome inside a window whose
    minimum is 960: the editor, the column the view is named after, used to get
