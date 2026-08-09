@@ -2,7 +2,7 @@
 
 # Galactus, your RAM stops being the limit
 
-![app](https://img.shields.io/badge/app-macOS%20Apple%20Silicon-1a7f37) ![dmg](https://img.shields.io/badge/download-51%20MB%20dmg-4a90d9) ![models](https://img.shields.io/badge/catalog-8%20certified%20MoE%20models-7c60e6) ![exact](https://img.shields.io/badge/output-bit--exact-2ea44f) ![offline](https://img.shields.io/badge/network-never-38b2ac)
+![app](https://img.shields.io/badge/app-macOS%20Apple%20Silicon-1a7f37) ![dmg](https://img.shields.io/badge/download-51%20MB%20dmg-4a90d9) ![models](https://img.shields.io/badge/catalog-8%20certified%20MoE%20models-7c60e6) ![exact](https://img.shields.io/badge/output-bit--exact-2ea44f) ![offline](https://img.shields.io/badge/network-only%20when%20you%20ask-38b2ac)
 
 A local AI app for macOS that runs Mixture-of-Experts models **several times larger than your Mac's memory**, at usable speed, with output identical bit for bit to stock llama.cpp.
 
@@ -47,7 +47,9 @@ Read the second and third columns together: a 142 GB model is usable on a 24 GB 
 
 ## The app
 
-A native macOS app for Apple Silicon, fully self-contained and fully offline. The patched engine and its libraries, a private Python 3.12 runtime, the on-device dictation and document helpers, the model registry, 30 skills and a 50-note starter vault all ship inside the bundle. No Homebrew, no Python install, no account, no telemetry, nothing ever leaves your Mac.
+A native macOS app for Apple Silicon, self-contained. The patched engine and its libraries, a private Python 3.12 runtime, the on-device dictation and document helpers, the model registry, 30 skills and a 50-note starter vault all ship inside the bundle. No Homebrew, no Python install, no account.
+
+**What reaches the network, precisely.** The app never opens a connection on its own: no telemetry, no analytics, no account, no update check, no phone-home of any kind. Inference is always local, and the answer to your question is computed on your Mac and nowhere else. Three things do reach the internet, and each one only because you asked for it: downloading a model from Hugging Face when you install it; the agent fetching a page, running deep research, or executing a shell command that you allowed, each shown as a tool card with the exact URL or command before it runs; and any MCP connector you enable, which fetches its own server package. Turn none of them on and the app is fully offline. That is a weaker claim than "nothing ever leaves your Mac", and it is the true one.
 
 Grab `Galactus_x.y.z_aarch64.dmg` from the Releases page, drag it to Applications, launch it.
 
@@ -83,7 +85,7 @@ Code intelligence ships in tiers, and the file header says which one you are get
 | **Syntax** | outline, breadcrumb, syntax errors, project search, symbol palette | Python, Rust, JSON, Markdown, HTML, CSS, from the bundled Lezer grammars. Python additionally gets exact `SyntaxError` and an exact outline from the bundled CPython 3.12 |
 | **Plain** | line numbers, search, undo | anything with no bundled grammar |
 
-**Rust gets Syntax only today.** rust-analyzer and the standard library sources ship inside the bundle, but the Code view does not drive them yet, so a `.rs` file gets the Lezer grammar and nothing more. C is not supported at all, there is no bundled C grammar, so a `.c` or `.h` file opens as plain text. Nothing is ever downloaded behind your back: a plug-and-play, fully offline app ships what it ships, and the badge states the limit instead of hiding it.
+**Rust gets Syntax only today.** rust-analyzer and the standard library sources ship inside the bundle, but the Code view does not drive them yet, so a `.rs` file gets the Lezer grammar and nothing more. C is not supported at all, there is no bundled C grammar, so a `.c` or `.h` file opens as plain text. No language server is ever downloaded behind your back: the app ships what it ships, and the badge states the limit instead of hiding it.
 
 Project search, the file palette (`Cmd+P`), the symbol palette (`Shift+Cmd+O`) and project-wide search (`Shift+Cmd+F`) are native Rust, no index daemon, no crate added.
 
