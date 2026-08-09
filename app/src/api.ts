@@ -60,6 +60,15 @@ export interface InstallVolumes {
   external_dir?: string;
 }
 
+export interface RelayStatus {
+  running: boolean;
+  /** The address actually bound, "127.0.0.1" or "0.0.0.0". */
+  bind: string;
+  port: number;
+  /** Whether a key is set. The key itself never crosses this boundary twice. */
+  keyed: boolean;
+}
+
 export interface ServerStatus {
   running: boolean;
   model_id?: string;
@@ -296,6 +305,19 @@ export const api = {
   kbSetFolders: (folders: string[]) => invoke<void>("kb_set_folders", { folders }),
   kbReindex: () =>
     invoke<{ files: number; chunks: number; folders: string[]; indexed_at: number }>("kb_reindex"),
+  // ---- network relay (relay.rs) ----
+  //
+  // The engine itself always stays on 127.0.0.1. Everything below drives the
+  // authenticating relay that fronts it; see relay.rs for why the engine is
+  // never bound to an outside interface directly.
+  relayStatus: () => invoke<RelayStatus>("relay_status"),
+  /** Mint a key. Returned once; the app shows it once and does not store it. */
+  relayNewKey: () => invoke<string>("relay_new_key"),
+  relayStart: (bind: string, port: number, key: string) =>
+    invoke<RelayStatus>("relay_start", { bind, port, key }),
+  relayStop: () => invoke<RelayStatus>("relay_stop"),
+  relayAddresses: () => invoke<string[]>("relay_addresses"),
+
   kbStats: () =>
     invoke<{ files: number; chunks: number; folders: string[]; indexed_at: number } | null>("kb_stats"),
   // budgetTokens is what makes this useful: without it the search returns a

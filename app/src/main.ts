@@ -1,5 +1,5 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { api, benchOnce, chatOnce, fetchCtxSize, HwInfo, inlineCodeOnce, InstallVolumes, ModelEntry, onEvent, ServerStatus, SkillInfo, VolumeInfo } from "./api";
+import { api, benchOnce, chatOnce, fetchCtxSize, HwInfo, inlineCodeOnce, InstallVolumes, ModelEntry, onEvent, RelayStatus, ServerStatus, SkillInfo, VolumeInfo } from "./api";
 import {
   Agent,
   AgentDirectory,
@@ -62,6 +62,37 @@ let serverFail: { kind: "failed" | "timeout"; code?: number; log: string } | nul
  */
 function toolsBlocked(): boolean {
   return server.running && server.phase === "ready" && server.tools_ok === false;
+}
+
+/**
+ * Assistant or server.
+ *
+ * Server mode is not a different app, it is the same one with the assistant
+ * surfaces taken away: the model, the settings, the measurements and the API
+ * stay; the chat, the workspace, the memory and the agent go. Someone running
+ * Galactus to serve a model to their editor has no use for a conversation
+ * pane, and every surface that reads files is one more thing to reason about
+ * on a machine that is now listening on the network.
+ */
+type AppMode = "app" | "server";
+let appMode: AppMode = "app";
+/** The only views that survive server mode. */
+const SERVER_MODE_VIEWS: View[] = ["models", "connectors", "settings"];
+
+/** Port the relay listens on. Distinct from the engine's, which stays local. */
+const RELAY_PORT = 8788;
+let relay: RelayStatus = { running: false, bind: "", port: 0, keyed: false };
+let relayBind: "127.0.0.1" | "0.0.0.0" = "127.0.0.1";
+/**
+ * The freshly minted key, held in memory for exactly as long as the settings
+ * screen shows it. The app never writes it to disk: a key at rest in a plain
+ * settings file is a key in every backup and every sync folder.
+ */
+let relayKey = "";
+let relayLanAddress = "";
+/** Which address to print in the connection line. */
+function relayHost(): string {
+  return relay.bind === "0.0.0.0" ? relayLanAddress || "0.0.0.0" : "127.0.0.1";
 }
 
 const installProgress = new Map<string, { pct: number; label: string }>();
@@ -3046,6 +3077,19 @@ function settingsView(): HTMLElement {
       <div class="set-row"><div class="grow"><b>${esc(t("settings.api"))}</b><span>${esc(t("settings.apiHint"))}</span><span class="mono api-url">${server.running && server.phase === "ready" ? esc(`http://127.0.0.1:${server.port}/v1`) : esc(t("settings.apiOff"))}</span></div>
         ${server.running && server.phase === "ready" ? `<button class="bs" id="apicopy">${esc(t("settings.apiCopy"))}</button>` : ""}
       </div>
+      <div class="sect"><b>${esc(t("sect.network"))}</b><span>${esc(t("sect.networkHint"))}</span></div>
+      <div class="set-row"><div class="grow"><b>${esc(t("net.mode"))}</b><span>${esc(t("net.modeHint"))}</span></div>
+        <div class="seg" id="appmodeseg"><button data-m="app" class="${appMode === "app" ? "on" : ""}">${esc(t("net.modeApp"))}</button><button data-m="server" class="${appMode === "server" ? "on" : ""}">${esc(t("net.modeServer"))}</button></div>
+      </div>
+      <div class="set-row"><div class="grow"><b>${esc(t("net.expose"))}</b><span>${esc(t("net.exposeHint"))}</span></div>
+        <div class="seg" id="bindseg"><button data-b="127.0.0.1" class="${relayBind === "127.0.0.1" ? "on" : ""}">${esc(t("net.localOnly"))}</button><button data-b="0.0.0.0" class="${relayBind === "0.0.0.0" ? "on" : ""}">${esc(t("net.network"))}</button></div>
+      </div>
+      <div class="set-row"><div class="grow"><b>${esc(t("net.key"))}</b><span>${esc(t("net.keyHint"))}</span><span class="mono api-url" id="relaykey">${relayKey ? esc(relayKey) : ""}</span></div>
+        <button class="bs" id="newkey">${esc(t("net.newKey"))}</button>
+      </div>
+      <div class="set-row"><div class="grow"><b>${esc(t("net.snippets"))}</b><span>${esc(t("net.snippetsHint"))}</span><span class="mono api-url">${relay.running ? esc(`${t("net.open")} http://${relayHost()}:${relay.port}/v1`) : esc(t("net.closed"))}</span></div>
+        <button class="bs" id="relaytoggle">${relay.running ? esc(t("net.stop")) : esc(t("net.start"))}</button>
+      </div>
       <div class="set-row"><div class="grow"><b>${esc(t("settings.permissions"))}</b><span>${esc(t("settings.permissionsHint"))}</span></div><button class="bs" id="pclear">${esc(t("settings.permissionsClear"))}</button></div>
     </div></div></div>`);
   wrap.querySelector("#lang")!.addEventListener("click", async (e) => { const b = (e.target as HTMLElement).closest("[data-l]") as HTMLElement | null; if (!b) return; setLang(b.dataset.l as Lang); await loadTaskDefs(); render(); });
@@ -3116,6 +3160,55 @@ function settingsView(): HTMLElement {
       b.textContent = t("settings.apiCopied");
       setTimeout(() => { b.textContent = prev; }, 1400);
     } catch {}
+  });
+  wrap.querySelectorAll<HTMLButtonElement>("#appmodeseg button").forEach((b) =>
+    b.addEventListener("click", async () => {
+      appMode = b.dataset.m === "server" ? "server" : "app";
+      await api.settingsSet("app_mode", appMode);
+      // Server mode hides the assistant surfaces, so a view that no longer has
+      // a nav entry must not stay on screen.
+      if (appMode === "server" && !SERVER_MODE_VIEWS.includes(view)) view = "models";
+      render();
+    })
+  );
+  wrap.querySelectorAll<HTMLButtonElement>("#bindseg button").forEach((b) =>
+    b.addEventListener("click", async () => {
+      relayBind = b.dataset.b === "0.0.0.0" ? "0.0.0.0" : "127.0.0.1";
+      await api.settingsSet("relay_bind", relayBind);
+      // Moving where it listens while it listens would leave the old socket
+      // bound: it closes, and the user reopens deliberately.
+      if (relay.running) relay = await api.relayStop();
+      render();
+    })
+  );
+  wrap.querySelector<HTMLButtonElement>("#newkey")!.addEventListener("click", async () => {
+    relayKey = await api.relayNewKey();
+    try {
+      await navigator.clipboard.writeText(relayKey);
+    } catch {}
+    render();
+  });
+  wrap.querySelector<HTMLButtonElement>("#relaytoggle")!.addEventListener("click", async () => {
+    if (relay.running) {
+      relay = await api.relayStop();
+      render();
+      return;
+    }
+    if (!(server.running && server.phase === "ready")) {
+      toast(t("net.needModel"));
+      return;
+    }
+    if (!relayKey) {
+      toast(t("net.needKey"));
+      return;
+    }
+    try {
+      relay = await api.relayStart(relayBind, RELAY_PORT, relayKey);
+    } catch (e) {
+      toast(String(e));
+      return;
+    }
+    render();
   });
   {
     const b = wrap.querySelector<HTMLButtonElement>("#pclear")!;
@@ -3260,12 +3353,12 @@ function render() {
       <div class="side-head" data-tauri-drag-region></div>
       <div class="brand2"><img class="mark" src="${LOGO}" alt="Galactus"/><div class="txt"><b>Galactus</b><span>${esc(t("brand.by"))}</span></div></div>
       <div class="nav">
-        ${nav("chat", I.chat, t("nav.chat"))}
-        ${nav("code", I.code, t("nav.code"), codeview.pendingCount())}
+        ${appMode === "server" ? "" : nav("chat", I.chat, t("nav.chat"))}
+        ${appMode === "server" ? "" : nav("code", I.code, t("nav.code"), codeview.pendingCount())}
         ${nav("models", I.models, t("nav.models"))}
         ${nav("connectors", I.conn, t("nav.connectors"))}
-        ${nav("memory", I.mem, t("nav.memory"))}
-        ${nav("agent", I.agent, t("nav.agent"))}
+        ${appMode === "server" ? "" : nav("memory", I.mem, t("nav.memory"))}
+        ${appMode === "server" ? "" : nav("agent", I.agent, t("nav.agent"))}
         ${nav("settings", I.set, t("nav.settings"))}
       </div>
       <div class="convslot"></div>
@@ -3583,6 +3676,13 @@ async function boot() {
   // The Code workspace comes back where it was left.
   await codeview.initCodeRoot(s["code_root"]).catch(() => {});
   if (s["ram_mode"] === "eco" || s["ram_mode"] === "perf") ramMode = s["ram_mode"];
+  if (s["app_mode"] === "server") appMode = "server";
+  if (s["relay_bind"] === "0.0.0.0") relayBind = "0.0.0.0";
+  // The relay never survives a restart: the key lived in memory only, so there
+  // is nothing to reopen with. Its status is read anyway, since a previous
+  // window of the same process could have left it listening.
+  api.relayStatus().then((r) => { relay = r; }).catch(() => {});
+  api.relayAddresses().then((a) => { relayLanAddress = a[1] ?? ""; }).catch(() => {});
   try { skillsOff = new Set(JSON.parse(s["skills_off"] ?? "[]")); } catch {}
   for (const [k, val] of Object.entries(s)) {
     if (!k.startsWith("bench_")) continue;

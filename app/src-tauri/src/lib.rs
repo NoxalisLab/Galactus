@@ -9,6 +9,7 @@ mod code;
 mod knowledge;
 mod lsp;
 mod pty;
+mod relay;
 mod pylang;
 mod search;
 mod snapshot;
@@ -4352,6 +4353,67 @@ fn preview_publish(html: String) -> String {
 
 // ---------------------------------------------------------------- entry
 
+
+// ---------------------------------------------------------------- relay
+//
+// The engine is never exposed directly. See relay.rs for why: the bundled
+// llama-server has no authentication option at all and its CORS default is
+// `*`, so binding it outside 127.0.0.1 would publish an open endpoint.
+
+#[tauri::command]
+fn relay_status() -> relay::RelayStatus {
+    relay::status()
+}
+
+/// Mint a new key. Returned ONCE, to be shown once and then stored by the user.
+#[tauri::command]
+fn relay_new_key() -> Result<String, String> {
+    relay::generate_key()
+}
+
+/// Start the relay. `bind` is "127.0.0.1" or "0.0.0.0"; anything else is
+/// refused in relay.rs rather than attempted.
+#[tauri::command]
+fn relay_start(bind: String, port: u16, key: String) -> Result<relay::RelayStatus, String> {
+    let engine_port = {
+        let s = server_state().lock().unwrap_or_else(|e| e.into_inner());
+        if s.child.is_none() {
+            return Err("start a model before opening the relay".into());
+        }
+        if s.port == 0 { SERVER_PORT_BASE } else { s.port }
+    };
+    relay::start(&bind, port, engine_port, &key)?;
+    Ok(relay::status())
+}
+
+#[tauri::command]
+fn relay_stop() -> relay::RelayStatus {
+    relay::stop();
+    relay::status()
+}
+
+/// Addresses this Mac can be reached on, for the connection snippets.
+///
+/// Reads the interfaces rather than guessing: telling the user to try
+/// "your local IP" is how an integration guide becomes useless.
+#[tauri::command]
+fn relay_addresses() -> Vec<String> {
+    let mut out = vec!["127.0.0.1".to_string()];
+    if let Ok(o) = Command::new("/usr/sbin/ipconfig").args(["getifaddr", "en0"]).output() {
+        let ip = String::from_utf8_lossy(&o.stdout).trim().to_string();
+        if !ip.is_empty() {
+            out.push(ip);
+        }
+    }
+    if let Ok(o) = Command::new("/usr/sbin/ipconfig").args(["getifaddr", "en1"]).output() {
+        let ip = String::from_utf8_lossy(&o.stdout).trim().to_string();
+        if !ip.is_empty() && !out.contains(&ip) {
+            out.push(ip);
+        }
+    }
+    out
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -4524,6 +4586,11 @@ pub fn run() {
             pty::pty_list,
             knowledge::kb_search,
             knowledge::digest_search,
+            relay_status,
+            relay_new_key,
+            relay_start,
+            relay_stop,
+            relay_addresses,
             preview_publish
         ])
         .build(tauri::generate_context!())
@@ -4551,6 +4618,8 @@ pub fn run() {
                 // abandoned `npm run dev` keeps holding its port long after
                 // the window is gone.
                 pty::kill_all();
+                // The relay listens on a socket that must not outlive the window.
+                relay::stop();
                 if let Ok(mut s) = server_state().lock() {
                     if let Some(mut child) = s.child.take() {
                         let _ = child.kill();
