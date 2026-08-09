@@ -47,6 +47,8 @@ fn print_models(root: &Path) -> Result<(), String> {
 
 fn serve(root: &Path, model_id: &str, args: &[String]) -> Result<(), String> {
     let entry = registry_entry(root, model_id)?;
+    require_certified_model(&entry)?;
+    require_compatible_hardware(&entry, hw_info_impl().ram_gb)?;
     let (model_dir, _pack, profile) = model_paths(root, model_id);
     let gguf = find_gguf(&model_dir).ok_or("GGUF introuvable : lance `galactus install` d'abord")?;
     // Double pack : deux chemins distincts font lire les deux SSD en
@@ -286,6 +288,8 @@ pub fn cli_main() {
 /// Pipeline d'installation avec progression console (meme logique que l'app).
 fn install_cli(root: &Path, id: &str) -> Result<(), String> {
     let entry = registry_entry(root, id)?;
+    require_certified_model(&entry)?;
+    require_compatible_hardware(&entry, hw_info_impl().ram_gb)?;
     let base = entry["download"]["base"].as_str().ok_or("pas d'URL de telechargement pour ce modele")?.to_string();
     let files: Vec<String> = entry["download"]["files"]
         .as_array()
@@ -300,6 +304,7 @@ fn install_cli(root: &Path, id: &str) -> Result<(), String> {
         }
     }
     let total = entry["gguf_bytes"].as_u64().unwrap_or(0);
+    require_download_space(root, id, &files, total)?;
     let cancel = std::sync::atomic::AtomicBool::new(false);
     install_pipeline_with(root, id, &base, &files, total, None, &cancel, &|_phase, pct, label| {
         print!("\r  {pct:5.1}%  {label:<48}");

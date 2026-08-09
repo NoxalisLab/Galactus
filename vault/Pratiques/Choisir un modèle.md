@@ -22,7 +22,7 @@ valeur.
 | Llama-4 Scout 17B-16E | 65 Go | 24 Go | | 3,7 | 10,1 | 10,7 | 14,4 |
 | GLM-4.5-Air 106B-A12B | 73 Go | 32 Go | | 2,7 | 4,8 | 6,6 | 8,2 à 96 Go |
 | Qwen3-235B-A22B | 142 Go | 24 Go | | 1,1 | 2,2 | 3,5 | 7,0 |
-| GLM-5.2 744B (UD-IQ1_S) | 202 Go | 64 Go | | | | | ~6 sur M5 Max 128 Go |
+| GLM-5.2 744B (UD-IQ1_S) | 202 Go | 128 Go | | | | | ~6 sur M5 Max 128 Go |
 
 La RAM minimale est un plancher de fonctionnement, pas un confort : en dessous
 de 24 Go, les gros modèles tournent en streaming depuis le SSD et le débit

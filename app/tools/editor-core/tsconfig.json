@@ -18,14 +18,22 @@
   "//include": "Explicit file list, not a glob: other modules are adding their own files to src/code right now and this proof must not compile, or be broken by, code it does not own.",
   "include": [
     "./docs.test.ts",
+    "./auto-tab.test.ts",
     "./tabs.test.ts",
     "./extensions.test.ts",
     "./phrases.test.ts",
+    "./restored-root.test.ts",
+    "./review-gate.test.ts",
+    "./workspace-services.test.ts",
     "./dump.ts",
     "../../src/code/extensions.ts",
+    "../../src/code/auto-tab.ts",
     "../../src/code/docs.ts",
     "../../src/code/tabs.ts",
     "../../src/code/phrases.ts",
+    "../../src/code/restored-root.ts",
+    "../../src/code/review-gate.ts",
+    "../../src/tsintel/eligibility.ts",
     "../../src/code/diagnostics.ts"
   ]
 }

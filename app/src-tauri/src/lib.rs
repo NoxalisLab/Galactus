@@ -35,6 +35,34 @@ fn settings_path() -> PathBuf {
     PathBuf::from(home).join("Library/Application Support/Galactus/settings.json")
 }
 
+#[cfg(unix)]
+fn set_private_mode(path: &Path, mode: u32) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut permissions = std::fs::metadata(path).map_err(|e| e.to_string())?.permissions();
+    permissions.set_mode(mode);
+    std::fs::set_permissions(path, permissions).map_err(|e| e.to_string())
+}
+
+#[cfg(not(unix))]
+fn set_private_mode(_path: &Path, _mode: u32) -> Result<(), String> {
+    Ok(())
+}
+
+/// settings.json contains connector credentials and standing permissions.
+/// Protect the existing installation too, not only files created by this build.
+fn harden_settings_permissions() -> Result<(), String> {
+    let file = settings_path();
+    if let Some(dir) = file.parent() {
+        if dir.exists() {
+            set_private_mode(dir, 0o700)?;
+        }
+    }
+    if file.exists() {
+        set_private_mode(&file, 0o600)?;
+    }
+    Ok(())
+}
+
 fn settings_load() -> HashMap<String, String> {
     std::fs::read_to_string(settings_path())
         .ok()
@@ -46,13 +74,31 @@ fn settings_store(map: &HashMap<String, String>) -> Result<(), String> {
     let p = settings_path();
     if let Some(dir) = p.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        set_private_mode(dir, 0o700)?;
     }
     // Write-then-rename (atomic on APFS): a plain overwrite has a truncate
     // window during which a concurrent settings_load reads an empty map, and
     // the next store would then wipe every key.
     let tmp = p.with_extension(format!("tmp.{}", std::process::id()));
-    std::fs::write(&tmp, serde_json::to_string_pretty(map).unwrap()).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &p).map_err(|e| e.to_string())
+    let payload = serde_json::to_string_pretty(map).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .mode(0o600)
+            .open(&tmp)
+            .map_err(|e| e.to_string())?;
+        set_private_mode(&tmp, 0o600)?;
+        file.write_all(payload.as_bytes()).map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(unix))]
+    std::fs::write(&tmp, payload).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &p).map_err(|e| e.to_string())?;
+    set_private_mode(&p, 0o600)
 }
 
 /// Serialized load-modify-store on the settings map. Several threads update
@@ -77,6 +123,35 @@ fn settings_set(key: String, value: String) -> Result<(), String> {
     settings_update(|map| {
         map.insert(key, value);
     })
+}
+
+#[cfg(all(test, unix))]
+mod settings_permission_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn private_modes_remove_group_and_world_access() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "galactus-settings-mode-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("settings.json");
+        std::fs::write(&file, "{}").unwrap();
+
+        set_private_mode(&dir, 0o700).unwrap();
+        set_private_mode(&file, 0o600).unwrap();
+
+        assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
 
 fn galactus_root() -> Result<PathBuf, String> {
@@ -198,18 +273,22 @@ fn provision_default_root() -> Result<PathBuf, String> {
     std::fs::create_dir_all(&scripts).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(root.join("models")).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(root.join("artifacts/h4/packs")).map_err(|e| e.to_string())?;
-    if !scripts.join("models-registry.json").exists() {
-        let res = resource_dir()
-            .ok_or("Galactus folder is not set and the app bundle carries no packaged data")?;
-        let src = res.join("packaged/scripts");
-        for f in [
-            "models-registry.json",
-            "moe-profile.py",
-            "galactus-pack-plan.py",
-            "galactus-pack-write.py",
-        ] {
-            std::fs::copy(src.join(f), scripts.join(f)).map_err(|e| format!("seed {f}: {e}"))?;
-        }
+    let res = resource_dir()
+        .ok_or("Galactus folder is not set and the app bundle carries no packaged data")?;
+    let src = res.join("packaged/scripts");
+    // These files are application policy and implementation, not user data.
+    // Refresh them on every launch so an upgraded app cannot keep executing an
+    // obsolete hardware floor or installer from its first installation.
+    for f in [
+        "models-registry.json",
+        "moe-profile.py",
+        "galactus-pack-plan.py",
+        "galactus-pack-write.py",
+    ] {
+        let destination = scripts.join(f);
+        let temporary = scripts.join(format!(".{f}.new"));
+        std::fs::copy(src.join(f), &temporary).map_err(|e| format!("refresh {f}: {e}"))?;
+        std::fs::rename(&temporary, &destination).map_err(|e| format!("activate {f}: {e}"))?;
     }
     Ok(root)
 }
@@ -326,6 +405,77 @@ fn registry_entry(root: &Path, id: &str) -> Result<Value, String> {
         .as_array()
         .and_then(|a| a.iter().find(|m| m["id"] == id).cloned())
         .ok_or_else(|| format!("unknown model {id}"))
+}
+
+/// The registry is the execution policy, not a catalogue label.  A model may
+/// be listed while its Galactus path is still being validated, but it must not
+/// be downloaded or served until one of the accepted certification regimes is
+/// recorded.  Keep this gate in the backend so the CLI and a modified webview
+/// cannot bypass it.
+fn require_certified_model(entry: &Value) -> Result<(), String> {
+    let id = entry["id"].as_str().unwrap_or("unknown");
+    match entry["status"].as_str() {
+        Some("certified" | "certified_bit_transparent" | "certified_by_composition") => Ok(()),
+        Some("pending_certification") => Err(format!(
+            "model {id} is awaiting Galactus certification and cannot be installed or started"
+        )),
+        Some(status) => Err(format!(
+            "model {id} has unsupported certification status '{status}'"
+        )),
+        None => Err(format!("model {id} has no certification status")),
+    }
+}
+
+/// Unified memory is the limiting hardware dimension exposed by the registry.
+/// This backend gate mirrors the catalogue filtering and protects direct IPC
+/// and CLI calls from downloading hundreds of gigabytes for an unusable model.
+fn require_compatible_hardware(entry: &Value, ram_gb: u64) -> Result<(), String> {
+    let id = entry["id"].as_str().unwrap_or("unknown");
+    let minimum = entry["min_ram_gb"].as_u64().ok_or_else(|| {
+        format!("model {id} has no minimum unified-memory requirement in the registry")
+    })?;
+    if ram_gb < minimum {
+        return Err(format!(
+            "model {id} requires at least {minimum} GB of unified memory; this Mac has {ram_gb} GB"
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod registry_policy_tests {
+    use super::*;
+
+    #[test]
+    fn execution_accepts_only_the_three_certified_regimes() {
+        for status in [
+            "certified",
+            "certified_bit_transparent",
+            "certified_by_composition",
+        ] {
+            assert!(require_certified_model(&json!({"id": "m", "status": status})).is_ok());
+        }
+    }
+
+    #[test]
+    fn pending_unknown_and_missing_statuses_are_rejected() {
+        for entry in [
+            json!({"id": "pending", "status": "pending_certification"}),
+            json!({"id": "draft", "status": "draft"}),
+            json!({"id": "missing"}),
+        ] {
+            assert!(require_certified_model(&entry).is_err());
+        }
+    }
+
+    #[test]
+    fn hardware_gate_uses_the_registry_minimum_and_fails_closed() {
+        let model = json!({"id": "large", "min_ram_gb": 128});
+        assert!(require_compatible_hardware(&model, 16).is_err());
+        assert!(require_compatible_hardware(&model, 127).is_err());
+        assert!(require_compatible_hardware(&model, 128).is_ok());
+        assert!(require_compatible_hardware(&json!({"id": "unspecified"}), 128).is_err());
+    }
 }
 
 // ---------------------------------------------------------------- pack resolution
@@ -528,6 +678,50 @@ fn df_line(path: &str) -> Option<(String, u64, u64, String)> {
     // The mount point may contain spaces: everything from column 8 on.
     let mount = cols[8..].join(" ");
     Some((device, total, free, mount))
+}
+
+const INSTALL_DOWNLOAD_RESERVE_GIB: u64 = 2;
+
+fn required_download_gib(total_bytes: u64, already_downloaded: u64) -> u64 {
+    const GIB: u64 = 1024 * 1024 * 1024;
+    total_bytes
+        .saturating_sub(already_downloaded)
+        .div_ceil(GIB)
+        .saturating_add(INSTALL_DOWNLOAD_RESERVE_GIB)
+}
+
+/// Refuse before curl starts. The GGUF is always downloaded under the
+/// Galactus root even when the expert pack is sent to another SSD.
+fn require_download_space(root: &Path, id: &str, files: &[String], total_bytes: u64) -> Result<(), String> {
+    let model_dir = root.join("models").join(id);
+    let already_downloaded = files
+        .iter()
+        .map(|name| std::fs::metadata(model_dir.join(name)).map(|m| m.len()).unwrap_or(0))
+        .sum();
+    let required = required_download_gib(total_bytes, already_downloaded);
+    let probe = root.to_string_lossy();
+    let (_, _, free, mount) = df_line(&probe)
+        .ok_or_else(|| format!("cannot measure free space for {}", root.display()))?;
+    if free < required {
+        return Err(format!(
+            "not enough space for the model download on {mount}: {required} GiB required, {free} GiB free"
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod install_space_tests {
+    use super::*;
+
+    #[test]
+    fn download_preflight_counts_only_remaining_bytes_and_keeps_a_reserve() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        assert_eq!(required_download_gib(202 * GIB, 0), 204);
+        assert_eq!(required_download_gib(202 * GIB, 200 * GIB), 4);
+        assert_eq!(required_download_gib(202 * GIB, 202 * GIB), 2);
+        assert_eq!(required_download_gib(GIB + 1, 0), 4);
+    }
 }
 
 /// Mounted volumes that can host a pack: the system data volume (via $HOME),
@@ -885,6 +1079,30 @@ fn measured_geometry(entry: &Value) -> Option<(u64, u64, u64, u64, u64, u64)> {
     Some((non_expert, expert_total, layers, record, used, experts))
 }
 
+/// RAM that Galactus never assigns to weights or the expert cache.
+///
+/// Two decimal GB is enough on 16/24/32 GB machines where every cache byte
+/// matters. Above that, Macs also tend to run a larger working set (IDE,
+/// browser, build tools), so the reserve scales to 6.25% of unified memory:
+/// 4 GB on a 64 GB Mac and 8 GB on a 128 GB Mac. The independent 70% cache
+/// ceiling still applies after this subtraction.
+fn system_reserve_bytes(ram: u64) -> u64 {
+    2_000_000_000u64.max(ram / 16)
+}
+
+#[cfg(test)]
+mod system_reserve_tests {
+    use super::system_reserve_bytes;
+
+    #[test]
+    fn reserve_keeps_small_macs_viable_and_scales_on_large_macs() {
+        assert_eq!(system_reserve_bytes(16_000_000_000), 2_000_000_000);
+        assert_eq!(system_reserve_bytes(32_000_000_000), 2_000_000_000);
+        assert_eq!(system_reserve_bytes(64_000_000_000), 4_000_000_000);
+        assert_eq!(system_reserve_bytes(128_000_000_000), 8_000_000_000);
+    }
+}
+
 fn plan_cache(
     entry: &Value,
     ram_gb: u64,
@@ -938,10 +1156,10 @@ fn plan_cache(
     // is doing. Without that reserve the planner filled the machine to the
     // brim: GLM-4.5-Air on a 24 GB Mac reached 23.5 GB resident and generated
     // at 1.5 tok/s, Llama-4 Scout on the same Mac exceeded it outright.
-    const SYSTEM_RESERVE: u64 = 2_000_000_000;
     let runtime_overhead = 2_500_000_000 + non_expert * 45 / 100;
+    let system_reserve = system_reserve_bytes(ram);
     let max_cache = ram
-        .saturating_sub(non_expert + runtime_overhead + SYSTEM_RESERVE)
+        .saturating_sub(non_expert + runtime_overhead + system_reserve)
         .min(ram * 7 / 10)
         .min(expert_total);
 
@@ -1165,11 +1383,10 @@ fn engine_is_wired(bin: &Path) -> Result<(), String> {
 // must not run on the main thread.
 #[tauri::command]
 async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -> Result<(), String> {
-    server_stop_impl()?;
     let root = galactus_root()?;
-    reap_orphan_servers(&root);
-    let port = pick_free_port()?;
     let entry = registry_entry(&root, &model_id)?;
+    require_certified_model(&entry)?;
+    require_compatible_hardware(&entry, hw_info_impl().ram_gb)?;
     let (model_dir, _pack, profile) = model_paths(&root, &model_id);
     let gguf = find_gguf(&model_dir).ok_or("model GGUF not found")?;
     // Dual-pack resolution: two distinct paths make the engine split every
@@ -1215,6 +1432,23 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
     // it would serve the model natively while the app reported the engine
     // regime. Prove the wiring is linked in before spawning anything.
     engine_is_wired(&server_bin)?;
+
+    // A sidecar generated by the installer is mandatory whenever profile.json
+    // exists. Check it before replacing a healthy server.
+    let has_engine_profile = profile.is_file();
+    if !has_engine_profile && model_dir.join("profile.json").is_file() {
+        return Err(format!(
+            "engine profile missing: {} (regenerate it with scripts/moe-profile.py, \
+             or reinstall the model)",
+            profile.display()
+        ));
+    }
+
+    // Every deterministic preflight has succeeded. Only now may this request
+    // replace the active server.
+    server_stop_impl()?;
+    reap_orphan_servers(&root);
+    let port = pick_free_port()?;
 
     // Keep the server's output so failures are visible instead of hanging.
     // The PREVIOUS run is kept alongside: a failed start is usually reported
@@ -1269,14 +1503,8 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
     // sidecar is mandatory as soon as the install produced a profile: a
     // renamed or deleted profile.engine.txt would otherwise read experts at
     // the wrong offsets instead of failing.
-    if profile.is_file() {
+    if has_engine_profile {
         cmd.env("GALACTUS_PROFILE", &profile);
-    } else if model_dir.join("profile.json").is_file() {
-        return Err(format!(
-            "engine profile missing: {} (regenerate it with scripts/moe-profile.py, \
-             or reinstall the model)",
-            profile.display()
-        ));
     }
     if cpu_moe {
         cmd.env("GALACTUS_H4_CPU_MOE", "1");
@@ -1630,6 +1858,8 @@ struct InstallVolumes {
 async fn install_model(app: AppHandle, model_id: String, volumes: Option<Value>) -> Result<(), String> {
     let root = galactus_root()?;
     let entry = registry_entry(&root, &model_id)?;
+    require_certified_model(&entry)?;
+    require_compatible_hardware(&entry, hw_info_impl().ram_gb)?;
     let vols: Option<InstallVolumes> = volumes.and_then(|v| {
         let internal = v["internal_dir"].as_str().unwrap_or("").trim().to_string();
         if internal.is_empty() {
@@ -1669,6 +1899,7 @@ async fn install_model(app: AppHandle, model_id: String, volumes: Option<Value>)
             return Err(format!("invalid file name in registry: {f}"));
         }
     }
+    require_download_space(&root, &model_id, &files, total_bytes)?;
 
     let cancel = Arc::new(AtomicBool::new(false));
     {
@@ -2714,9 +2945,6 @@ struct SkillInfo {
     scope: String, // "global" | "workspace"
 }
 
-/// Copy the skills shipped in the bundle into the global skills folder, so a
-/// fresh install starts with a curated set. User-modified or user-deleted
-/// skills are left alone (copy only when the skill folder does not exist).
 /// Coffre par defaut livre avec l'app : une base de connaissances par metier,
 /// semee au premier lancement pour que les outils obsidian_* et la
 /// Constellation aient de la matiere reelle des l'installation.
@@ -2726,38 +2954,45 @@ struct SkillInfo {
 /// ressuscite), un test d'existence sur la racine de destination, et un test
 /// par fichier pendant la copie. Le reglage n'est ecrit que si l'utilisateur
 /// n'a pas deja choisi un coffre.
-fn seed_bundled_vault() {
-    let Some(res) = resource_dir() else { return };
+fn seed_bundled_vault() -> Result<(), String> {
+    let Some(res) = resource_dir() else { return Ok(()) };
     let src = res.join("packaged/vault");
     if !src.is_dir() {
-        return;
+        return Ok(());
     }
     let marker = app_support().join("vault-seeded");
     if marker.exists() {
-        return;
+        return Ok(());
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
     let dest = PathBuf::from(home).join("Documents/Galactus/Coffre");
+    let ownership = dest.join(".galactus-bundled-vault");
     // Un coffre deja present a cet endroit appartient a l'utilisateur : on n'y
-    // touche pas, et on pose le marqueur pour ne plus jamais y revenir.
-    if dest.exists() {
-        let _ = std::fs::write(&marker, b"existant");
-        return;
+    // touche pas. L'unique exception est une copie Galactus interrompue,
+    // reconnaissable a son marqueur local : elle reprend sans ecraser.
+    if dest.exists() && !ownership.is_file() {
+        std::fs::create_dir_all(app_support()).map_err(|e| e.to_string())?;
+        std::fs::write(&marker, b"existant").map_err(|e| e.to_string())?;
+        return Ok(());
     }
-    if copy_tree_no_clobber(&src, &dest).is_err() {
-        return;
-    }
+    std::fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
+    std::fs::write(&ownership, b"Galactus bundled vault v1\n").map_err(|e| e.to_string())?;
+    copy_tree_no_clobber(&src, &dest).map_err(|e| e.to_string())?;
     // Obsidian reconnait un dossier comme coffre a ce repertoire, exactement
     // comme le fait obsidian_create_vault.
-    let _ = std::fs::create_dir_all(dest.join(".obsidian"));
-    let _ = std::fs::write(&marker, dest.to_string_lossy().as_bytes());
+    std::fs::create_dir_all(dest.join(".obsidian")).map_err(|e| e.to_string())?;
     // Pointer l'app dessus UNIQUEMENT si aucun coffre n'est configure.
-    let _ = settings_update(|map| {
+    settings_update(|map| {
         let unset = map.get("obsidian_vault").map(|v| v.is_empty()).unwrap_or(true);
         if unset {
             map.insert("obsidian_vault".into(), dest.display().to_string());
         }
-    });
+    })?;
+    // Ce marqueur global est le commit de la transaction : avant lui, un
+    // lancement suivant reprend la copie ; apres lui, un coffre modifie ou
+    // volontairement vide n'est jamais regenere.
+    std::fs::write(&marker, dest.to_string_lossy().as_bytes()).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Copie recursive qui n'ecrase jamais : un fichier existant est saute, un
@@ -2767,21 +3002,81 @@ fn copy_tree_no_clobber(src: &Path, dest: &Path) -> std::io::Result<()> {
     let mut stack = vec![(src.to_path_buf(), dest.to_path_buf(), 0u32)];
     while let Some((from, to, depth)) = stack.pop() {
         if depth > 8 {
-            continue;
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "bundled vault exceeds the supported depth",
+            ));
         }
         std::fs::create_dir_all(&to)?;
-        for e in std::fs::read_dir(&from)?.flatten() {
+        for e in std::fs::read_dir(&from)? {
+            let e = e?;
             let p = e.path();
             let target = to.join(e.file_name());
-            if p.is_dir() {
+            let kind = e.file_type()?;
+            if kind.is_symlink() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("symlink not allowed in bundled vault: {}", p.display()),
+                ));
+            }
+            if kind.is_dir() {
                 stack.push((p, target, depth + 1));
             } else if !target.exists() {
-                let _ = std::fs::copy(&p, &target);
+                std::fs::copy(&p, &target)?;
             }
         }
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod bundled_vault_tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_pair(name: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("galactus-{name}-{}-{unique}", std::process::id()));
+        let src = base.join("src");
+        let dest = base.join("dest");
+        std::fs::create_dir_all(&src).unwrap();
+        (base, src, dest)
+    }
+
+    #[test]
+    fn vault_copy_is_recursive_and_never_clobbers_existing_notes() {
+        let (base, src, dest) = temp_pair("vault-copy");
+        std::fs::create_dir_all(src.join("nested")).unwrap();
+        std::fs::write(src.join("nested/note.md"), "bundled").unwrap();
+        std::fs::create_dir_all(dest.join("nested")).unwrap();
+        std::fs::write(dest.join("nested/note.md"), "user").unwrap();
+        std::fs::write(src.join("new.md"), "new").unwrap();
+
+        copy_tree_no_clobber(&src, &dest).unwrap();
+
+        assert_eq!(std::fs::read_to_string(dest.join("nested/note.md")).unwrap(), "user");
+        assert_eq!(std::fs::read_to_string(dest.join("new.md")).unwrap(), "new");
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn vault_copy_rejects_symlinks_instead_of_marking_a_partial_copy_done() {
+        use std::os::unix::fs::symlink;
+        let (base, src, dest) = temp_pair("vault-symlink");
+        symlink(src.join("missing.md"), src.join("broken.md")).unwrap();
+
+        assert!(copy_tree_no_clobber(&src, &dest).is_err());
+        let _ = std::fs::remove_dir_all(base);
+    }
+}
+
+/// Copy the skills shipped in the bundle into the global skills folder, so a
+/// fresh install starts with a curated set. User-modified or user-deleted
+/// skills are left alone (copy only when the skill folder does not exist).
 
 fn seed_bundled_skills() {
     let Some(res) = resource_dir() else { return };
@@ -3927,8 +4222,13 @@ pub fn run() {
         })
         .setup(|app| {
             let _ = app.get_webview_window("main");
+            if let Err(e) = harden_settings_permissions() {
+                eprintln!("Galactus settings permission hardening failed: {e}");
+            }
             seed_bundled_skills();
-            seed_bundled_vault();
+            if let Err(e) = seed_bundled_vault() {
+                eprintln!("Galactus vault seeding failed: {e}");
+            }
             Ok(())
         })
         .on_window_event(|window, event| {

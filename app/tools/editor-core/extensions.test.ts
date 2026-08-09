@@ -102,6 +102,10 @@ test("there is exactly one keymap in the state, and Mod-s comes first in it", ()
   // completionKeymap is in there once, not twice: no second autocompletion
   // dragged its own bindings in.
   assert.equal(bindings.filter((b) => b.key === "Ctrl-Space").length, 1);
+  // Tab first accepts a local ghost suggestion, then falls through to normal
+  // indentation when no suggestion is visible. Shift-Tab always outdents.
+  assert.equal(bindings.filter((b) => b.key === "Tab").length, 2);
+  assert.equal(bindings.filter((b) => b.key === "Shift-Tab").length, 1);
   // searchKeymap and lintKeymap made it too.
   assert.ok(bindings.some((b) => b.key === "Mod-f"));
   assert.ok(bindings.some((b) => b.key === "Mod-Shift-m"));

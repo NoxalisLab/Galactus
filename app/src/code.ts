@@ -40,6 +40,9 @@ import { Docs, type Doc } from "./code/docs";
 import { editorExtensions, intelComp } from "./code/extensions";
 import { tabsHtml, onTabsClick } from "./code/tabs";
 import { cmPhrases } from "./code/phrases";
+import { resolveRestoredRoot } from "./code/restored-root";
+import { ReviewGate, reviewInstruction } from "./code/review-gate";
+import { autoTabExtension } from "./code/auto-tab";
 import { diagnosticsExtension, registerDiagnosticSource } from "./code/diagnostics";
 import type { Diagnostic } from "./code/diagnostics";
 import {
@@ -75,6 +78,8 @@ import type {
 } from "./code/workspace-api";
 import type * as TsIntel from "./tsintel/client";
 import type * as TsBindings from "./tsintel/bindings";
+import { shouldLoadTsIntel } from "./tsintel/eligibility";
+import { wirePaneResizer } from "./layout/pane-resize";
 
 // ---------------------------------------------------------------- helpers
 
@@ -113,6 +118,10 @@ export interface CodeDeps {
   paintNav(): void;
   /** Persist a setting (the workspace path comes back at launch). */
   saveSetting(key: string, value: string): Promise<void>;
+  /** Whether the local model is ready and Auto Tab is enabled. */
+  autoTabReady(): boolean;
+  /** Request one local, insertion-only completion around the caret. */
+  inlineComplete(rel: string, prefix: string, suffix: string, signal: AbortSignal): Promise<string | null>;
 }
 
 let deps: CodeDeps | null = null;
@@ -142,6 +151,7 @@ const GIT_TABS: LeftTab[] = ["changes", "history", "branches"];
 let root: string | null = null;
 
 const proposals = new Map<string, Proposal>();
+const reviewGate = new ReviewGate();
 const expanded = new Set<string>();
 const treeCache = new Map<string, CodeEntry[]>();
 
@@ -288,6 +298,13 @@ const docs: Docs = new Docs((rel, text, extra): EditorState =>
       }),
       oneDark,
       syntaxHighlighting(galactusHighlight),
+      autoTabExtension({
+        file: () => docs.activeRel(),
+        enabled: () => deps?.autoTabReady() ?? false,
+        reviewing: () => docs.active()?.mergeBase !== null,
+        complete: (file, prefix, suffix, signal) =>
+          deps?.inlineComplete(file, prefix, suffix, signal) ?? Promise.resolve(null),
+      }),
       mergeComp.of([]),
       EditorView.updateListener.of(onEditorUpdate),
       extra,
@@ -305,9 +322,24 @@ export function pendingCount(): number {
 
 /** Restore the workspace chosen in a previous session. */
 export async function initCodeRoot(saved: string | undefined): Promise<void> {
-  if (!saved) return;
-  root = saved.replace(/\/+$/, "");
+  const restored = await resolveRestoredRoot(saved, async (candidate) => {
+    try {
+      await api.codeTree(candidate, "");
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  if (!restored) {
+    // A temporary demo folder or disconnected volume must never hold the
+    // entire application on its splash screen. Forget only the workspace
+    // pointer; no project data is touched.
+    if (saved?.trim()) await deps?.saveSetting("code_root", "").catch(() => {});
+    return;
+  }
+  root = restored;
   await refreshGit().catch(() => {});
+  await loadDir("");
   await startWorkspaceServices();
 }
 
@@ -317,8 +349,16 @@ export async function initCodeRoot(saved: string | undefined): Promise<void> {
  * Called by the Agent when it writes a file inside the workspace. Nothing is
  * written here: the change is filed, and the user answers it in the editor.
  */
-export async function fileProposal(path: string, rel: string, content: string): Promise<string> {
+export async function fileProposal(
+  path: string,
+  rel: string,
+  content: string,
+  waitForReview = false
+): Promise<string> {
   if (!root) return "error: no code workspace is open";
+  if (proposals.has(rel)) {
+    return `error: ${rel} already has a pending diff; wait for the user to accept or reject it`;
+  }
   let before = "";
   let existed = true;
   try {
@@ -344,11 +384,13 @@ export async function fileProposal(path: string, rel: string, content: string): 
   paintTabs();
   deps?.paintNav();
   deps?.toast(t("code.proposalToast").replace("%s", rel), "ok");
-  return (
+  const filed =
     `proposed: ${rel} is now a PENDING diff in the user's editor. Nothing was written to disk. ` +
     "They will accept or reject it hunk by hunk; do not assume the file changed, and do not " +
-    "propose it again unless they ask."
-  );
+    "propose it again unless they ask.";
+  if (!waitForReview) return filed;
+  const outcome = await reviewGate.wait(rel);
+  return `${filed}\n\n${reviewInstruction(outcome)}`;
 }
 
 /** Every file with a pending proposal, in the order they arrived. */
@@ -403,6 +445,7 @@ async function setWorkspace(p: string): Promise<void> {
   editor?.destroy();
   editor = null;
   proposals.clear();
+  reviewGate.resolveAll("discarded");
   // Keyed on the relative path like `proposals`, so it has to go with them:
   // "src/main.rs" left behind here would mark the NEW workspace's file as a
   // creation and re-enumerate the index for a file that already existed.
@@ -440,6 +483,10 @@ async function startWorkspaceServices(): Promise<void> {
     offSearch = workspaceApi.onSearch(makeSearchSink(searchState, searchDeps()));
   }
   const top = treeCache.get("")?.map((e) => e.name) ?? [];
+  if (!shouldLoadTsIntel(top)) {
+    tsintel?.disable();
+    return;
+  }
   await loadTsIntel();
   if (!tsintel) return;
   applyTsBindings();
@@ -689,11 +736,21 @@ function writeAccepted(rel: string, content: string): void {
 
 /** All hunks answered: drop the proposal and go back to a plain editor. */
 async function finishReview(rel: string): Promise<void> {
+  const proposal = proposals.get(rel);
   proposals.delete(rel);
   setReview(rel, null);
   await docs.settle(rel);
   const d = docs.get(rel);
-  if (d) docs.setSaved(rel, d.state.doc.toString());
+  const finalContent = d?.state.doc.toString() ?? proposal?.before ?? "";
+  if (d) docs.setSaved(rel, finalContent);
+  if (proposal) {
+    const decision = finalContent === proposal.after
+      ? "accepted"
+      : finalContent === proposal.before
+        ? "rejected"
+        : "partial";
+    reviewGate.resolve(rel, decision);
+  }
   if (docs.activeRel() === rel) paintMid();
   paintPending();
   paintTabs();
@@ -891,6 +948,8 @@ async function rejectAll(): Promise<void> {
 /** Drop a pending proposal for a file that may or may not be open. */
 async function discardProposal(rel: string): Promise<void> {
   proposals.delete(rel);
+  creations.delete(rel);
+  reviewGate.resolve(rel, "rejected");
   const d = docs.get(rel);
   if (d && d.mergeBase !== null) {
     const base = d.mergeBase;
@@ -1783,6 +1842,7 @@ function fileHeadHtml(): string {
   return (
     `<span class="fp mono" title="${esc(d.rel)}">${LRM}${esc(d.rel)}</span>` +
     tierBadgeHtml(tierFor(d.rel, tsActive())) +
+    (deps?.autoTabReady() && !pending ? `<span class="fbadge autotab">${esc(t("code.autoTabReady"))}</span>` : "") +
     (pending ? `<span class="fbadge">${esc(t("code.reviewing"))}</span>` : "") +
     (dirty ? `<span class="fbadge dirty">${esc(t("code.unsaved"))}</span>` : "") +
     `<span class="grow"></span>` +
@@ -1877,7 +1937,9 @@ export function codeView(): HTMLElement {
     </div>
     <div class="codebody">
       <div class="codeleft" id="codeleft"></div>
+      <div class="pane-splitter code-left-splitter" id="codeleftsplit"></div>
       <div class="codemid" id="codemid"></div>
+      <div class="pane-splitter code-agent-splitter" id="codeagentsplit"></div>
       <div class="codeside" id="codeside"></div>
     </div>
   </div>`);
@@ -2081,7 +2143,35 @@ export function codeView(): HTMLElement {
   });
 
   // Right column: the SAME agent thread as the Chat view.
-  deps?.mountAgent(wrap.querySelector<HTMLElement>("#codeside")!);
+  const body = wrap.querySelector<HTMLElement>(".codebody")!;
+  const side = wrap.querySelector<HTMLElement>("#codeside")!;
+  deps?.mountAgent(side);
+  wirePaneResizer({
+    handle: wrap.querySelector<HTMLElement>("#codeleftsplit")!,
+    container: body,
+    pane: left,
+    edge: "before",
+    setting: "ui_code_left_width",
+    label: t("layout.resizeFiles"),
+    hint: t("layout.resizeHint"),
+    min: 180,
+    max: 420,
+    defaultSize: 250,
+    reserved: () => 340 + (side.offsetParent ? side.offsetWidth : 0),
+  });
+  wirePaneResizer({
+    handle: wrap.querySelector<HTMLElement>("#codeagentsplit")!,
+    container: body,
+    pane: side,
+    edge: "after",
+    setting: "ui_code_agent_width",
+    label: t("layout.resizeAgent"),
+    hint: t("layout.resizeHint"),
+    min: 280,
+    max: 560,
+    defaultSize: 380,
+    reserved: () => 340 + left.offsetWidth,
+  });
 
   // Painted on the next microtask: render() has not attached this element
   // yet, and every paint below finds its host by id.

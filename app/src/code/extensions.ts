@@ -36,7 +36,7 @@ import {
   lineNumbers,
   rectangularSelection,
 } from "@codemirror/view";
-import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
+import { defaultKeymap, history, historyKeymap, indentLess, indentMore } from "@codemirror/commands";
 import {
   bracketMatching,
   defaultHighlightStyle,
@@ -53,6 +53,7 @@ import {
   completionKeymap,
 } from "@codemirror/autocomplete";
 import { lintGutter, lintKeymap } from "@codemirror/lint";
+import { acceptAutoTab, clearAutoTab } from "./auto-tab.js";
 
 /** Language support for the open file. Swapped when the active tab changes. */
 export const languageComp = new Compartment();
@@ -148,6 +149,10 @@ function parts(opts: EditorOpts): Part[] {
             return true;
           },
         },
+        { key: "Tab", run: acceptAutoTab },
+        { key: "Tab", run: indentMore },
+        { key: "Shift-Tab", run: indentLess },
+        { key: "Escape", run: clearAutoTab },
         ...closeBracketsKeymap,
         ...defaultKeymap,
         ...searchKeymap,

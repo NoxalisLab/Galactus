@@ -373,7 +373,11 @@ pub fn analyze_with(
                 false
             }
             Some(_) => true,
-            None => false,
+            // A call owns its slot until this block removes it. If the slot is
+            // already gone, a newer call replaced us and completed before our
+            // killed child reached this check; its empty stdout is not a parse
+            // failure, it is the normal superseded outcome.
+            None => true,
         }
     };
     if superseded {

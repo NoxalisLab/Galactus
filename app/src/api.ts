@@ -35,6 +35,10 @@ export interface ModelEntry {
   pack_present?: boolean;
   pack_internal?: string;
   pack_external?: string;
+  download?: {
+    base?: string;
+    files?: string[];
+  };
 }
 
 export interface VolumeInfo {
@@ -397,6 +401,47 @@ export async function chatOnce(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ model: "galactus-local", messages, temperature, stream: false }),
+    signal: abort,
+  });
+  if (!r.ok) throw new Error(`server ${r.status}`);
+  const j: any = await r.json();
+  return String(j.choices?.[0]?.message?.content ?? "");
+}
+
+/**
+ * One insertion-only completion for the Code view. The request stays local,
+ * carries only a bounded window around the caret and is independently
+ * cancellable as soon as the user keeps typing.
+ */
+export async function inlineCodeOnce(
+  port: number,
+  file: string,
+  prefix: string,
+  suffix: string,
+  abort: AbortSignal
+): Promise<string> {
+  const r = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "galactus-local",
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are an inline code completion engine. Return only the exact text to insert at <CURSOR>. " +
+            "Never use Markdown fences, explanations, XML tags, or repeat text already present. " +
+            "Preserve the file's language and indentation. Return an empty string when uncertain.",
+        },
+        {
+          role: "user",
+          content: `FILE: ${file}\n\n<BEFORE>\n${prefix}\n<CURSOR>\n<AFTER>\n${suffix}`,
+        },
+      ],
+      temperature: 0.05,
+      max_tokens: 192,
+      stream: false,
+    }),
     signal: abort,
   });
   if (!r.ok) throw new Error(`server ${r.status}`);

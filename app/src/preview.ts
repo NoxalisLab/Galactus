@@ -70,6 +70,7 @@
 import { renderMarkdown, wireCodeCopy } from "./markdown";
 import { t } from "./i18n";
 import { api } from "./api";
+import { wirePaneResizer } from "./layout/pane-resize";
 
 /** Publish through the app scheme; rejects outside Tauri so srcdoc takes over. */
 async function publishPreview(html: string): Promise<string> {
@@ -230,8 +231,7 @@ export class PreviewPanel {
   private renderToken = 0;
   private blobUrl: string | null = null;
 
-  // resize state
-  private resizing = false;
+  private resizeCleanup: (() => void) | null = null;
 
   constructor(host: HTMLElement) {
     this.host = host;
@@ -242,7 +242,6 @@ export class PreviewPanel {
 
     this.grip = document.createElement("div");
     this.grip.className = "pvw-grip";
-    this.grip.setAttribute("aria-hidden", "true");
 
     this.head = document.createElement("div");
     this.head.className = "pvw-head";
@@ -267,9 +266,19 @@ export class PreviewPanel {
 
     // Listeners (bound arrow fields — removed in destroy()).
     this.head.addEventListener("click", this.onHeadClick);
-    this.grip.addEventListener("pointerdown", this.onGripDown);
-    window.addEventListener("pointermove", this.onPointerMove);
-    window.addEventListener("pointerup", this.onPointerUp);
+    this.resizeCleanup = wirePaneResizer({
+      handle: this.grip,
+      container: this.host,
+      pane: this.root,
+      edge: "after",
+      setting: "ui_preview_width",
+      label: t("layout.resizePreview"),
+      hint: t("layout.resizeHint"),
+      min: MIN_W,
+      max: 1200,
+      defaultSize: Math.max(MIN_W, Math.round(this.host.clientWidth * 0.46)),
+      reserved: () => Math.max(240, Math.round(this.host.clientWidth * 0.12)),
+    });
     document.addEventListener("keydown", this.onKeyDown);
   }
 
@@ -314,9 +323,8 @@ export class PreviewPanel {
     this.open = false;
     this.renderToken++;
     this.head.removeEventListener("click", this.onHeadClick);
-    this.grip.removeEventListener("pointerdown", this.onGripDown);
-    window.removeEventListener("pointermove", this.onPointerMove);
-    window.removeEventListener("pointerup", this.onPointerUp);
+    this.resizeCleanup?.();
+    this.resizeCleanup = null;
     document.removeEventListener("keydown", this.onKeyDown);
     if (this.blobUrl) {
       URL.revokeObjectURL(this.blobUrl);
@@ -516,38 +524,11 @@ export class PreviewPanel {
   }
 
   private onKeyDown = (e: KeyboardEvent): void => {
-    if (e.key === "Escape" && this.open && !this.resizing) {
+    if (e.key === "Escape" && this.open) {
       // Don't steal Escape from modals: only close when nothing above us.
       const modal = document.querySelector(".modal-bd, dialog[open]");
       if (!modal) this.hide();
     }
   };
 
-  // ------------------------------------------------------------ resizing
-
-  private onGripDown = (e: PointerEvent): void => {
-    if (!this.open) return;
-    e.preventDefault();
-    this.resizing = true;
-    this.root.classList.add("resizing");
-    try {
-      this.grip.setPointerCapture(e.pointerId);
-    } catch {
-      /* pointer capture unavailable */
-    }
-  };
-
-  private onPointerMove = (e: PointerEvent): void => {
-    if (!this.resizing || this.destroyed) return;
-    const hostRight = this.host.getBoundingClientRect().right;
-    const max = Math.floor(this.host.clientWidth * 0.88);
-    const w = Math.min(Math.max(Math.round(hostRight - e.clientX), MIN_W), Math.max(max, MIN_W));
-    this.root.style.width = w + "px";
-  };
-
-  private onPointerUp = (): void => {
-    if (!this.resizing) return;
-    this.resizing = false;
-    this.root.classList.remove("resizing");
-  };
 }

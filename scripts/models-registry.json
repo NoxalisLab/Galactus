@@ -130,7 +130,7 @@
         "max"
       ],
       "metal_experts": true,
-      "min_ram_gb": 64,
+      "min_ram_gb": 128,
       "record_bytes": 13172736,
       "non_expert_bytes": 12000000000,
       "min_cache_bytes": 92000000000

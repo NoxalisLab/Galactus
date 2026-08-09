@@ -1,5 +1,5 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { api, benchOnce, HwInfo, InstallVolumes, ModelEntry, onEvent, ServerStatus, SkillInfo, VolumeInfo } from "./api";
+import { api, benchOnce, HwInfo, inlineCodeOnce, InstallVolumes, ModelEntry, onEvent, ServerStatus, SkillInfo, VolumeInfo } from "./api";
 import {
   Agent,
   AgentDirectory,
@@ -23,6 +23,8 @@ import { detectTask, getAutoMode, mayAutoSwap, planSwap, setAutoMode, type AutoM
 import { exportConversationMarkdown, formatStats, searchConversations, wireDropZone } from "./chatx";
 import * as store from "./store";
 import type { ChatItem, Conversation, ConvMeta, SubAgent, ThreadData } from "./store";
+import { hasVerifiedDownload, modelAvailability, modelCertification } from "./model-policy";
+import { configurePanePreferences, wirePaneResizer } from "./layout/pane-resize";
 
 const app = document.getElementById("app")!;
 const LOGO = "/galactus-mark.svg";
@@ -39,6 +41,7 @@ let enabled: EnabledConnector[] = [];
 let mcpCount = 0;
 let autonomy: Autonomy = "assisted";
 let ramMode: "eco" | "balanced" | "perf" = "balanced";
+let autoTabOn = true;
 let skillsOff: Set<string> = new Set();
 let serverFail: { kind: "failed" | "timeout"; code?: number; log: string } | null = null;
 const installProgress = new Map<string, { pct: number; label: string }>();
@@ -51,6 +54,7 @@ let tasks: TaskDef[] = [];
 let taskId: TaskId = currentTask();
 let taskOffer: { modelId: string; modelName: string } | null = null;
 let dropUnsub: (() => void) | null = null; // drag&drop unsubscribe, per chat view
+let shellResizeCleanup: (() => void) | null = null;
 let convQuery = "";
 /** Skills cache for the slash-command autocomplete. */
 let slashSkills: SkillInfo[] = [];
@@ -422,7 +426,10 @@ function expectedTps(m: ModelEntry): number | null {
   // stand for the middle term and understated it, so the shown estimate
   // assumed a cache the engine would never get.
   const nonExpert = (m.non_expert_bytes ?? 5e9) / 1e9;
-  const overhead = nonExpert + (2.5 + nonExpert * 0.45) + 2;
+  // Keep the UI estimate identical to Rust: 2 GB through 32 GB, then 6.25%
+  // of unified memory on larger Macs.
+  const systemReserve = Math.max(2, hw.ram_gb / 16);
+  const overhead = nonExpert + (2.5 + nonExpert * 0.45) + systemReserve;
   const maxCache = Math.min(hw.ram_gb - overhead, hw.ram_gb * 0.7, (m.expert_bytes_total ?? Infinity) / 1e9);
   const pts = [...m.measured].sort((a, b) => a.cache_gb - b.cache_gb);
   // Mirror the backend's memory-footprint policy so the shown estimate
@@ -452,8 +459,17 @@ function expectedTps(m: ModelEntry): number | null {
   return last.gen_tps;
 }
 function verdict(m: ModelEntry): { ok: boolean; note: string } {
-  if (!hw) return { ok: true, note: "" };
-  if (m.min_ram_gb && hw.ram_gb < m.min_ram_gb) return { ok: false, note: t("models.tooSmall") };
+  const availability = modelAvailability(m.status, m.min_ram_gb, hw?.ram_gb);
+  if (!availability.canExecute) {
+    return {
+      ok: false,
+      note:
+        availability.reason === "hardware"
+          ? t("models.tooSmall")
+          : t(availability.badge === "pending" ? "models.certPendingNote" : "models.certBlockedNote"),
+    };
+  }
+  if (!hw) return { ok: false, note: t("models.tooSmall") };
   if (m.native_fit_ram_gb && hw.ram_gb >= m.native_fit_ram_gb && !m.runs_nowhere_natively)
     return { ok: true, note: t("models.nativeFit") };
   return { ok: true, note: "" };
@@ -2238,23 +2254,42 @@ function modelsView(): HTMLElement {
     grid.replaceWith(el(`<div class="empty-block"><span class="big">◇</span><b>${esc(t("models.empty"))}</b><span>${esc(t("models.emptyHint"))}</span></div>`));
     return wrap;
   }
+  // The primary catalogue is an actionable recommendation, not a dump of the
+  // registry. Models that fail certification or this Mac's unified-memory
+  // floor are explained separately and never receive install/start controls.
+  const available = registry.filter((m) => verdict(m).ok);
+  const unavailable = registry.filter((m) => !verdict(m).ok);
+  if (!available.length) {
+    grid.replaceWith(el(`<div class="empty-block"><span class="big">◇</span><b>${esc(t("models.noneCompatible"))}</b><span>${esc(t("models.noneCompatibleHint"))}</span></div>`));
+  }
   const maxTps = Math.max(
-    ...registry.map((m) => Math.max(expectedTps(m) ?? 0, benchResults[m.id] ?? 0)),
+    ...available.map((m) => Math.max(expectedTps(m) ?? 0, benchResults[m.id] ?? 0)),
     1
   );
-  for (const m of registry) {
+  for (const m of available) {
     const v = verdict(m);
+    const certification = modelCertification(m.status);
+    const certLabel = t(
+      certification.badge === "composition"
+        ? "models.certComposition"
+        : certification.badge === "pending"
+          ? "models.certPending"
+          : certification.badge === "blocked"
+            ? "models.certBlocked"
+            : "models.certified"
+    );
     const estimate = expectedTps(m);
     const measured = benchResults[m.id];
     const tps = measured ?? estimate; // a real measurement beats the interpolation
     const runningHere = server.running && server.model_id === m.id;
+    const downloadable = hasVerifiedDownload(m.download);
     const prog = installProgress.get(m.id);
     const bar = tps ? Math.min(100, Math.max(6, (tps / maxTps) * 100)) : 0;
     const speedColor = !v.ok ? "var(--dim)" : "var(--acc-tx)";
-    const card = el(`<div class="mcard">
+    const card = el(`<div class="mcard ${certification.canExecute ? "" : "uncertified"}">
       <div class="top">
         <div class="info">
-          <div class="nm"><b>${esc(m.name)}</b><span class="chip-cert">✓ ${esc(t("models.certified"))}</span></div>
+          <div class="nm"><b>${esc(m.name)}</b><span class="chip-cert ${certification.canExecute ? "" : "pending"}">${certification.canExecute ? "✓" : "◷"} ${esc(certLabel)}</span></div>
           <span class="meta">${esc(m.arch)} · ${fmtGb(m.gguf_bytes)} · ${m.experts_used ?? "?"}/${m.experts ?? "?"}</span>
         </div>
         <div class="spd"><b style="color:${speedColor}">${tps && v.ok ? (measured ? "" : "~") + tps.toFixed(0) : "—"}</b><small>${esc(v.ok ? t(measured ? "models.measured" : "models.onThisMac") : "—")}</small></div>
@@ -2266,12 +2301,14 @@ function modelsView(): HTMLElement {
     const slot = card.querySelector<HTMLElement>("[data-a]")!;
     if (!v.ok) { /* no action */ }
     else if (prog) { const b = el(`<button class="bs">✕</button>`); b.addEventListener("click", () => api.cancelInstall(m.id)); slot.replaceWith(b); }
-    else if (!m.installed) {
+    else if (!m.installed && downloadable) {
       const b = el(`<button class="bp">${esc(t("models.download"))}</button>`);
       b.addEventListener("click", () => {
         void showInstallModal(m);
       });
       slot.replaceWith(b);
+    } else if (!m.installed) {
+      slot.replaceWith(el(`<span class="model-manual">${esc(t("models.manualInstall"))}</span>`));
     } else if (runningHere) {
       const box = el(`<span style="display:flex;gap:8px"></span>`);
       const bench = el(`<button class="bs">${esc(t("models.bench"))}</button>`) as HTMLButtonElement;
@@ -2330,15 +2367,20 @@ function modelsView(): HTMLElement {
       });
       const b = el(`<button class="bp">${esc(t("models.start"))}</button>`);
       b.addEventListener("click", async () => {
-        // Same reset as Stop: starting another model while a turn streams
-        // must not strand `generating` on a dead agent.
-        stopAllThreads();
         try {
           serverFail = null;
           await api.serverStart(m.id, null);
+          // The backend has now replaced the engine. No live thread may keep
+          // a generation tied to the previous process.
+          stopAllThreads();
           await refreshServer();
           render();
         } catch (e: any) {
+          // A deterministic preflight leaves the previous server untouched.
+          // If a later spawn failed after replacement began, reconcile the
+          // UI with the real process state and release any stranded turns.
+          await refreshServer().catch(() => undefined);
+          if (!server.running) stopAllThreads();
           toast(String(e?.message ?? e));
         }
       });
@@ -2350,6 +2392,26 @@ function modelsView(): HTMLElement {
       slot.replaceWith(box);
     }
     grid.appendChild(card);
+  }
+  if (unavailable.length) {
+    const locked = el(`<details class="model-locked">
+      <summary>${esc(t("models.unavailable").replace("%n", String(unavailable.length)))}</summary>
+      <div class="locked-list"></div>
+    </details>`);
+    const list = locked.querySelector<HTMLElement>(".locked-list")!;
+    for (const m of unavailable) {
+      const c = modelCertification(m.status);
+      const label = c.badge === "pending"
+        ? t("models.certPending")
+        : c.badge === "blocked"
+          ? t("models.certBlocked")
+          : t("models.incompatible");
+      list.appendChild(el(`<div class="locked-model">
+        <span><b>${esc(m.name)}</b><small>${esc(verdict(m).note)}</small></span>
+        <span class="chip-cert pending">${c.canExecute ? "!" : "◷"} ${esc(label)}</span>
+      </div>`));
+    }
+    wrap.querySelector<HTMLElement>(".page")!.appendChild(locked);
   }
   return wrap;
 }
@@ -2769,6 +2831,14 @@ function settingsView(): HTMLElement {
           <button data-am="auto">${esc(t("auto.auto"))}</button>
         </div>
       </div>
+      <div class="sect"><b>${esc(t("sect.ide"))}</b><span>${esc(t("sect.ideHint"))}</span></div>
+      <div class="set-row"><div class="grow"><b>${esc(t("settings.autoTab"))}</b><span>${esc(t("settings.autoTabHint"))}</span></div>
+        <button class="tgl ${autoTabOn ? "on" : ""}" id="autotab" role="switch" aria-checked="${autoTabOn}"><span class="k"></span></button>
+      </div>
+      <div class="set-row"><div class="grow"><b>${esc(t("settings.syntax"))}</b><span>${esc(t("settings.syntaxHint"))}</span></div><span class="badge-auto">${esc(t("common.ready"))}</span></div>
+      <div class="set-row"><div class="grow"><b>${esc(t("settings.extensions"))}</b><span>${esc(t("settings.extensionsHint"))}</span></div>
+        <div class="set-actions"><button class="bs" id="openconnectors">${esc(t("settings.openConnectors"))}</button><button class="bs" id="openskills">${esc(t("settings.openSkills"))}</button></div>
+      </div>
       <div class="sect"><b>${esc(t("sect.access"))}</b><span>${esc(t("sect.accessHint"))}</span></div>
       <div class="set-row"><div class="grow"><b>${esc(t("settings.api"))}</b><span>${esc(t("settings.apiHint"))}</span><span class="mono api-url">${server.running && server.phase === "ready" ? esc(`http://127.0.0.1:${server.port}/v1`) : esc(t("settings.apiOff"))}</span></div>
         ${server.running && server.phase === "ready" ? `<button class="bs" id="apicopy">${esc(t("settings.apiCopy"))}</button>` : ""}
@@ -2777,6 +2847,15 @@ function settingsView(): HTMLElement {
     </div></div></div>`);
   wrap.querySelector("#lang")!.addEventListener("click", async (e) => { const b = (e.target as HTMLElement).closest("[data-l]") as HTMLElement | null; if (!b) return; setLang(b.dataset.l as Lang); await loadTaskDefs(); render(); });
   wrap.querySelector("#rpick")!.addEventListener("click", async () => { const p = await api.pickFolder(); if (p) await setRoot(p); });
+  wrap.querySelector<HTMLButtonElement>("#autotab")!.addEventListener("click", async (e) => {
+    autoTabOn = !autoTabOn;
+    const b = e.currentTarget as HTMLButtonElement;
+    b.classList.toggle("on", autoTabOn);
+    b.setAttribute("aria-checked", String(autoTabOn));
+    await api.settingsSet("auto_tab", autoTabOn ? "1" : "0");
+  });
+  wrap.querySelector("#openconnectors")!.addEventListener("click", () => { view = "connectors"; render(); });
+  wrap.querySelector("#openskills")!.addEventListener("click", () => { view = "agent"; render(); });
   {
     const seg = wrap.querySelector<HTMLElement>("#autoseg");
     if (seg) {
@@ -2917,7 +2996,32 @@ function renderServerPill(): void {
   srv.innerHTML = `<span class="dot"></span><div class="t"><b>${esc(t("server.label"))}</b><span>${esc(text)}</span></div>`;
 }
 
+/** Add native keyboard semantics to the remaining custom controls. */
+function wireUiSemantics(scope: ParentNode): void {
+  scope.querySelectorAll<HTMLElement>(".tgl").forEach((control) => {
+    control.setAttribute("role", "switch");
+    control.tabIndex = control.getAttribute("aria-disabled") === "true" ? -1 : 0;
+    control.setAttribute("aria-checked", String(control.classList.contains("on")));
+    control.addEventListener("click", () => {
+      control.setAttribute("aria-checked", String(control.classList.contains("on")));
+    });
+  });
+  scope.querySelectorAll<HTMLElement>(".iconbtn, .dashed, .link, .auton, .conv").forEach((control) => {
+    if (control.matches("button, a, input, textarea, select, [role]")) return;
+    control.setAttribute("role", "button");
+    control.tabIndex = 0;
+  });
+  scope.querySelectorAll<HTMLElement>('[role="button"], [role="switch"]').forEach((control) => {
+    control.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      control.click();
+    });
+  });
+}
+
 function render() {
+  shellResizeCleanup?.(); shellResizeCleanup = null;
   pixel?.destroy(); pixel = null; pixelHost = null;
   // A rebuild must never eat a draft: whatever is typed in the composer
   // survives every render (server events, install progress, view switches).
@@ -2929,11 +3033,17 @@ function render() {
   previewPanel?.destroy(); previewPanel = null;
   dropUnsub?.(); dropUnsub = null;
   app.innerHTML = "";
-  if (!root) { const l = el(`<div class="layout"></div>`); l.appendChild(onboardView()); app.appendChild(l); return; }
+  if (!root) {
+    const l = el(`<div class="layout"></div>`);
+    l.appendChild(onboardView());
+    app.appendChild(l);
+    wireUiSemantics(l);
+    return;
+  }
 
   const { pill, text: srvText } = serverPillState();
   const nav = (v: View, ic: string, label: string, badge = 0) =>
-    `<div class="nav-item ${view === v ? "on" : ""}" data-v="${v}">${ic}<span>${esc(label)}</span>${badge > 0 ? `<span class="navbadge" title="${esc(t("code.pendingNav"))}">${badge}</span>` : ""}</div>`;
+    `<button type="button" class="nav-item ${view === v ? "on" : ""}" data-v="${v}" aria-current="${view === v ? "page" : "false"}">${ic}<span>${esc(label)}</span>${badge > 0 ? `<span class="navbadge" title="${esc(t("code.pendingNav"))}">${badge}</span>` : ""}</button>`;
 
   const layout = el(`<div class="layout">
     <div class="side">
@@ -2952,6 +3062,7 @@ function render() {
       <div class="spacer"></div>
       <div class="srv ${pill}"><span class="dot"></span><div class="t"><b>${esc(t("server.label"))}</b><span>${esc(srvText)}</span></div></div>
     </div>
+    <div class="pane-splitter shell-splitter" id="shellsplit"></div>
   </div>`);
   const slot = layout.querySelector(".convslot");
   if (slot) slot.replaceWith(convListEl());
@@ -2969,6 +3080,19 @@ function render() {
     : settingsView()
   );
   app.appendChild(layout);
+  shellResizeCleanup = wirePaneResizer({
+    handle: layout.querySelector<HTMLElement>("#shellsplit")!,
+    container: layout,
+    pane: layout.querySelector<HTMLElement>(".side")!,
+    edge: "before",
+    setting: "ui_sidebar_width",
+    label: t("layout.resizeSidebar"),
+    hint: t("layout.resizeHint"),
+    min: 184,
+    max: 340,
+    defaultSize: 228,
+    reserved: () => 680,
+  });
   // The Code view mounts the same thread pane as the Chat view, so both are
   // painted the same way: one thread, two places to read it from.
   if (view === "chat" || view === "code") {
@@ -2984,6 +3108,7 @@ function render() {
     // The rebuild destroyed the activity canvas: restore the current scene.
     restoreActivity();
   }
+  wireUiSemantics(layout);
   // A rebuild must never orphan an open permission dialog. It lives on the
   // body, not in the app root, so it survives on its own; this puts it back if
   // anything ever detaches it, and opens the next queued one if none is up.
@@ -3204,6 +3329,9 @@ const codeDeps: codeview.CodeDeps = {
     else item.appendChild(el(`<span class="navbadge" title="${esc(t("code.pendingNav"))}">${n}</span>`));
   },
   saveSetting: (key, value) => api.settingsSet(key, value),
+  autoTabReady: () => autoTabOn && server.running && server.phase === "ready",
+  inlineComplete: (rel, prefix, suffix, signal) =>
+    inlineCodeOnce(server.port, rel, prefix, suffix, signal).catch(() => null),
 };
 
 async function boot() {
@@ -3215,12 +3343,14 @@ async function boot() {
   // before any agent exists so no turn can ever run without it.
   setCodeWorkspace({
     root: () => codeview.codeRoot(),
-    propose: (path, rel, content) => codeview.fileProposal(path, rel, content),
+    propose: (path, rel, content) => codeview.fileProposal(path, rel, content, true),
   });
   await loadStandingPermissions().catch(() => {});
   const s = await api.settingsGet().catch(() => ({} as Record<string, string>));
+  configurePanePreferences(s, (key, value) => api.settingsSet(key, value));
   if (s["root"]) { root = s["root"]; try { registry = await api.registry(); if (!registry.length) root = null; } catch { root = null; } }
   if (s["autonomy"]) autonomy = s["autonomy"] as Autonomy;
+  autoTabOn = s["auto_tab"] !== "0";
   // The Code workspace comes back where it was left.
   await codeview.initCodeRoot(s["code_root"]).catch(() => {});
   if (s["ram_mode"] === "eco" || s["ram_mode"] === "perf") ramMode = s["ram_mode"];
@@ -3385,4 +3515,19 @@ async function boot() {
     }
   });
 }
-boot();
+boot().catch((error: unknown) => {
+  const message = String((error as any)?.message ?? error ?? "Erreur inconnue");
+  // Keep an already usable shell alive if a late event subscription fails.
+  if (app.querySelector(".layout")) {
+    toast(`Initialisation partielle : ${message}`);
+    return;
+  }
+  app.innerHTML = "";
+  const failure = el(`<div class="boot-shell boot-failed" role="alert">
+    <img src="${LOGO}" alt=""/>
+    <div><b>Galactus n’a pas pu démarrer</b><span>${esc(message)}</span></div>
+    <button class="bs" type="button">Réessayer</button>
+  </div>`);
+  failure.querySelector("button")!.addEventListener("click", () => window.location.reload());
+  app.appendChild(failure);
+});

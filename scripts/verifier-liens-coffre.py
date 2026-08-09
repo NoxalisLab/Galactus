@@ -10,7 +10,7 @@ Reproduit exactement la resolution de `obsidian_graph` (app/src-tauri/src/lib.rs
 Rapporte : liens non resolus, notes orphelines (degre 0 dans le graphe non
 oriente) et notes sans lien entrant. Sortie non nulle si un defaut est trouve.
 
-Usage : python3 vault/.verifier-liens.py [chemin_du_coffre]
+Usage : python3 scripts/verifier-liens-coffre.py [chemin_du_coffre]
 """
 from __future__ import annotations
 
@@ -32,7 +32,8 @@ def collect(root: str) -> list[str]:
 
 
 def main() -> int:
-    root = sys.argv[1] if len(sys.argv) > 1 else os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    root = sys.argv[1] if len(sys.argv) > 1 else os.path.join(repo_root, "vault")
     files = collect(root)
     if not files:
         print(f"aucune note trouvee dans {root}")

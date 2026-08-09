@@ -33,6 +33,7 @@ import type {
 } from "./protocol.js";
 import type { RenameEdit } from "./rename.js";
 import { applyRenameHits } from "./rename.js";
+import { shouldLoadTsIntel } from "./eligibility.js";
 
 export type Tier = "A" | "B";
 
@@ -123,7 +124,7 @@ export function tsIntelRoot(): string | null {
  * 2 MB parse to be told nothing, and the user can still turn it on by hand.
  */
 export function autoEnable(rootEntryNames: readonly string[]): boolean {
-  return rootEntryNames.includes("tsconfig.json") || rootEntryNames.includes("package.json");
+  return shouldLoadTsIntel(rootEntryNames);
 }
 
 function log(line: string): void {
