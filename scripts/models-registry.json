@@ -501,7 +501,7 @@
       "status": "certified_bit_transparent",
       "expert_bytes_total": 3900702720,
       "non_expert_bytes": 310000000,
-      "min_ram_gb": 8,
+      "min_ram_gb": 16,
       "download": {
         "base": "https://huggingface.co/bartowski/OLMoE-1B-7B-0924-Instruct-GGUF/resolve/main",
         "files": [
@@ -513,6 +513,31 @@
       ],
       "certified_date": "2026-08-09",
       "certified_ppl": 3.988
+    },
+    {
+      "id": "phi35-moe",
+      "name": "Phi-3.5-MoE instruct (Q4_K_M)",
+      "arch": "phimoe",
+      "gguf_bytes": 25300000000,
+      "layers_moe": 32,
+      "experts": 16,
+      "experts_used": 2,
+      "status": "certified_bit_transparent",
+      "expert_bytes_total": 24381489152,
+      "non_expert_bytes": 900000000,
+      "min_ram_gb": 16,
+      "download": {
+        "base": "https://huggingface.co/bartowski/Phi-3.5-MoE-instruct-GGUF/resolve/main",
+        "files": [
+          "Phi-3.5-MoE-instruct-Q4_K_M.gguf"
+        ]
+      },
+      "tasks": [
+        "general",
+        "writing"
+      ],
+      "certified_date": "2026-08-09",
+      "certified_ppl": 1.4584
     }
   ],
   "mac_lineup": {

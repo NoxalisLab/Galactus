@@ -2,7 +2,7 @@
 
 # Galactus, your RAM stops being the limit
 
-![app](https://img.shields.io/badge/app-macOS%20Apple%20Silicon-1a7f37) ![dmg](https://img.shields.io/badge/download-51%20MB%20dmg-4a90d9) ![models](https://img.shields.io/badge/catalog-9%20certified%20MoE%20models-7c60e6) ![exact](https://img.shields.io/badge/output-bit--exact-2ea44f) ![offline](https://img.shields.io/badge/network-only%20when%20you%20ask-38b2ac)
+![app](https://img.shields.io/badge/app-macOS%20Apple%20Silicon-1a7f37) ![dmg](https://img.shields.io/badge/download-51%20MB%20dmg-4a90d9) ![models](https://img.shields.io/badge/catalog-10%20certified%20MoE%20models-7c60e6) ![exact](https://img.shields.io/badge/output-bit--exact-2ea44f) ![offline](https://img.shields.io/badge/network-only%20when%20you%20ask-38b2ac)
 
 A local AI app for macOS that runs Mixture-of-Experts models **several times larger than your Mac's memory**, at usable speed, with output identical bit for bit to stock llama.cpp.
 
@@ -40,7 +40,8 @@ Every throughput below was measured on real hardware and lives in the model regi
 | Qwen3-Next-80B-A3B (Q4_K_M) | 48 GB | 16 GB | 3.8 tok/s at 1.8 GB, 18.4 at 16, 22.6 at 47 |
 | Qwen3-30B-A3B (Q8_0) | 32 GB | 16 GB | 11.7 tok/s at 9.8 GB, 25.0 at 17, 28.7 at 31 |
 | Qwen3-Coder-30B (Q8_0) | 32 GB | 16 GB | certified, curve not measured yet |
-| OLMoE 1B-7B 0924 (Q4_K_M) | 4 GB | 8 GB | certified, curve not measured yet |
+| Phi-3.5-MoE instruct (Q4_K_M) | 25 GB | 16 GB | certified, curve not measured yet |
+| OLMoE 1B-7B 0924 (Q4_K_M) | 4 GB | 16 GB | certified, curve not measured yet |
 
 Read the second and third columns together: a 142 GB model is usable on a 24 GB Mac, a 65 GB model on 16 GB. The app picks the regime for your machine on its own, every expert resident when the cache fits them all, streamed from SSD when it does not, or CPU experts for counter-verification. **All three regimes are bit-exact.** There is no fast-but-approximate mode, because a mode that changes the answer is not the same model.
 
@@ -250,9 +251,9 @@ One stride-aware read later: 13.74 became 2.6439, and the differential probe now
 
 This section used to be a work list of frozen constants and a fifteen-line
 branch to write in each architecture's own file. That stopped being true, and
-the claim was measured rather than argued: **OLMoE 1B-7B, architecture `olmoe`,
-which this project had never seen, went from a download to a certified model
-with no code change at all.** Profile, plan, pack, certify. The differential
+the claim was measured rather than argued: **two architectures this project had never
+seen, `olmoe` and `phimoe`, each went from a download to a certified model with
+no code change at all.** Profile, plan, pack, certify. The differential
 came back with 5140 tensors identical, zero divergence, and a perplexity of
 3.988 on both sides.
 

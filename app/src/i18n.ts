@@ -2,7 +2,7 @@
 export type Lang = "en" | "fr";
 
 const dict: Record<string, { en: string; fr: string }> = {
-  "brand.by": { en: "by Noxalis Lab · v0.1.6", fr: "par Noxalis Lab · v0.1.6" },
+  "brand.by": { en: "by Noxalis Lab · v0.1.7", fr: "par Noxalis Lab · v0.1.7" },
   "tools.blocked": {
     en: "This model does not emit tool calls, so the agent cannot read files or run commands. Start a model that does.",
     fr: "Ce modele n'emet pas d'appels d'outils : l'agent ne peut ni lire de fichier ni lancer de commande. Demarre un modele qui le fait.",
