@@ -309,10 +309,28 @@ let pixelHost: HTMLElement | null = null;
 /** Pending "done" confetti hide; a queued turn reuses the same PixelViz. */
 let doneHideTimer: number | null = null;
 
+/**
+ * Retour au repos : l'atelier reste, le personnage s'y remet a errer.
+ *
+ * Il vivait le temps d'une reponse puis disparaissait, et son atelier avec
+ * lui. Un lieu qui n'existe que pendant le travail n'est pas un lieu ; c'est
+ * un indicateur de chargement deguise. La scene est donc permanente et seul
+ * le mode change, ce qui rend aussi la reprise instantanee : plus de canvas a
+ * recreer au premier jeton.
+ */
+function idleActivity(): void {
+  const bar = document.getElementById("actbar");
+  const host = document.getElementById("pixelhost");
+  if (!bar || !host) return;
+  if (pixel && pixelHost !== host) { pixel.destroy(); pixel = null; pixelHost = null; }
+  if (!pixel) { pixel = new PixelViz(host); pixelHost = host; }
+  bar.style.visibility = "visible";
+  pixel.setMode("idle");
+}
+
+/** Retire vraiment la scene : changement de fil, ou vue demontee. */
 function hideActivity() {
   const bar = document.getElementById("actbar");
-  // Masque sans retirer la place : la saisie ne doit pas sauter quand il
-  // sort de scene.
   if (bar) bar.style.visibility = "hidden";
   pixel?.destroy();
   pixel = null;
@@ -336,17 +354,17 @@ function onThreadActivity(sess: Thread, mode: PixelMode, label?: string) {
       if (doneHideTimer !== null) clearTimeout(doneHideTimer);
       doneHideTimer = window.setTimeout(() => {
         doneHideTimer = null;
-        if (pixel === px) hideActivity();
+        if (pixel === px) idleActivity();
       }, 2600);
     } else {
-      hideActivity();
+      idleActivity();
     }
     return;
   }
   if (mode === "thinking" && !label) label = t("px.thinking");
   if (!sess.generating) {
     sess.activity = null;
-    if (visible) hideActivity();
+    if (visible) idleActivity();
     return;
   }
   sess.activity = { mode, label };
@@ -367,7 +385,7 @@ function onThreadActivity(sess: Thread, mode: PixelMode, label?: string) {
 function restoreActivity(): void {
   const sess = active();
   if (sess.generating && sess.activity) onThreadActivity(sess, sess.activity.mode, sess.activity.label);
-  else hideActivity();
+  else idleActivity();
 }
 
 // ---------- svg icons ----------
@@ -1093,7 +1111,7 @@ function threadPaneEl(): HTMLElement {
     <div class="chat-scroll" id="scroller"><div class="thread"><div id="plan"></div><div id="log"></div></div></div>
     ${taskOffer ? `<div class="task-switch-hint" id="taskhint"><span class="tx">${esc(t("task.better").replace("%m", taskOffer.modelName))}</span><button class="bs" id="taskswap">${esc(t("task.switch"))}</button><span class="x" id="taskdismiss">×</span></div>` : ""}
     <div class="composer">
-      <div class="actbar" id="actbar" style="visibility:hidden"><div class="pxhost" id="pixelhost"></div></div>
+      <div class="actbar" id="actbar"><div class="pxhost" id="pixelhost"></div></div>
       <div class="comp-box">
       <textarea id="ci" rows="2" placeholder="${esc(sub ? t("team.placeholder").replace("%s", sub.name) : t("chat.placeholder"))}"></textarea>
       <div class="comp-bar">

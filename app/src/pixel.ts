@@ -33,6 +33,8 @@ const BUBBLE_ROWS = 11;
 /** Hauteur totale de la scene, en lignes : bulle + sprite. */
 const SCENE_ROWS = BUBBLE_ROWS + GRID;
 const CANVAS_H = SCENE_ROWS * SCALE;
+/** Largeur de l'atelier, en pixels logiques : bureau + ecran + chaise. */
+const DESK_W = 14;
 /** Frames de l'entree : il monte de derriere le fil jusqu'a sa hauteur. */
 const ENTER_FRAMES = 10;
 /** Frames pendant lesquelles une bulle se gonfle apres un changement. */
@@ -84,6 +86,20 @@ export class PixelViz {
 
   private confetti: Particle[] = [];
   private sparks: Particle[] = [];
+
+  // --- deambulation : position reelle, intention, et temps d'arret.
+  // Un triangle a vitesse constante se lit comme une machine qui balaie. Ce
+  // qui donne l'impression du vivant, ce n'est pas la trajectoire, c'est
+  // l'intention : il choisit un endroit, il y va, il s'y arrete un moment,
+  // il regarde ailleurs, il repart. Les durees et les vitesses varient a
+  // chaque etape, sinon la boucle redevient lisible en trois secondes.
+  private wx = 0; // position courante, en pixels logiques
+  private wTarget = 0; // ou il veut aller
+  private wPause = 0; // frames restantes d'arret
+  private wSpeed = 1; // facteur de vitesse de l'etape en cours
+  private wLook = 0; // direction du regard pendant un arret
+  private wHop = 0; // frames restantes d'un petit saut
+  private wInit = false;
   private resizeObs: ResizeObserver | null = null;
 
   constructor(container: HTMLElement) {
@@ -134,24 +150,60 @@ export class PixelViz {
     return [4, Math.round((4 + right) / 2), right];
   }
 
-  /**
-   * Va-et-vient continu sur toute la largeur, en pixels logiques. Triangle
-   * plutot que sinus : la vitesse reste constante, ce qui lit mieux en
-   * pixel-art qu'une acceleration aux extremites.
-   */
-  private strollX(f: number, speed: number): number {
-    const span = Math.max(0, this.stageW() - GRID - 20);
-    if (span <= 0) return 0;
-    const period = (span * 2) / speed;
-    const t = (f * speed) % (span * 2);
-    void period;
-    return Math.round(t <= span ? t : span * 2 - t);
+  /** Bornes de deambulation : entre le bord et le bureau de l'atelier. */
+  private walkBounds(): [number, number] {
+    return [DESK_W + 1, Math.max(DESK_W + 2, this.stageW() - GRID - 1)];
   }
 
-  /** Sens du regard, aligne sur le sens de la marche. */
-  private strollForward(f: number, speed: number): number {
-    const span = Math.max(1, this.stageW() - GRID - 20);
-    return ((f * speed) % (span * 2)) <= span ? 1 : -1;
+  /**
+   * Fait avancer la deambulation d'une frame.
+   *
+   * Trois choses cassent la lecture mecanique : la destination est tiree au
+   * sort dans les bornes, la vitesse change a chaque etape, et l'arret dure
+   * un temps variable pendant lequel il regarde ailleurs. Un saut survient de
+   * loin en loin, jamais deux fois de suite au meme endroit.
+   */
+  private stepWander(base: number): void {
+    const [lo, hi] = this.walkBounds();
+    if (!this.wInit) {
+      this.wx = lo + (hi - lo) * 0.4;
+      this.wTarget = this.wx;
+      this.wInit = true;
+    }
+    if (this.wHop > 0) this.wHop--;
+    if (this.wPause > 0) {
+      this.wPause--;
+      // Coup d'oeil de temps en temps pendant la pause.
+      if (this.wPause % 14 === 0) this.wLook = Math.random() < 0.5 ? -1 : 1;
+      return;
+    }
+    const dx = this.wTarget - this.wx;
+    const step = base * this.wSpeed;
+    if (Math.abs(dx) <= step) {
+      // Arrive : il souffle, puis se donne une nouvelle intention.
+      this.wx = this.wTarget;
+      this.wPause = 8 + Math.floor(Math.random() * 44);
+      this.wSpeed = 0.65 + Math.random() * 0.9;
+      this.wLook = Math.random() < 0.5 ? -1 : 1;
+      // Une destination trop proche donne du sur-place : on impose un ecart.
+      const span = hi - lo;
+      let next = lo + Math.random() * span;
+      if (Math.abs(next - this.wx) < span * 0.25) {
+        next = this.wx + (this.wx - lo < span / 2 ? 1 : -1) * span * (0.3 + Math.random() * 0.5);
+      }
+      this.wTarget = Math.max(lo, Math.min(hi, next));
+      if (Math.random() < 0.22) this.wHop = 7;
+      return;
+    }
+    this.wx += Math.sign(dx) * step;
+    this.wLook = Math.sign(dx);
+  }
+
+  /** Hauteur du petit saut en cours, en pixels logiques. */
+  private hopLift(): number {
+    if (this.wHop <= 0) return 0;
+    const u = 1 - this.wHop / 7;
+    return -Math.round(3 * Math.sin(Math.PI * u));
   }
 
   setMode(mode: PixelMode, label?: string): void {
@@ -221,6 +273,20 @@ export class PixelViz {
   private step(): void {
     this.frame++;
     this.modeFrame++;
+    // Il erre quand il reflechit ou qu'il attend, il rejoint son poste des
+    // qu'il travaille. La transition vers le bureau passe par la meme marche,
+    // donc on le voit s'y rendre au lieu d'y apparaitre.
+    const atDesk = this.mode === "writing" || this.mode === "running" || this.mode === "responding";
+    if (atDesk) {
+      this.wTarget = DESK_W - 6;
+      this.wPause = 0;
+      const dx = this.wTarget - this.wx;
+      if (Math.abs(dx) <= 0.34) this.wx = this.wTarget;
+      else { this.wx += Math.sign(dx) * 0.34; this.wLook = Math.sign(dx); }
+      if (this.wx === this.wTarget) this.wLook = 1;
+    } else if (this.mode === "idle" || this.mode === "thinking") {
+      this.stepWander(this.mode === "thinking" ? 0.2 : 0.13);
+    }
 
     // La scene d'action a ete vue assez longtemps : le retour differe passe.
     if (this.pending && this.modeFrame >= MIN_SCENE_FRAMES) {
@@ -337,21 +403,30 @@ export class PixelViz {
     let arms: ArmPose = "down";
 
     switch (mode) {
-      case "idle":
-        oy = f % 16 < 8 ? 0 : 1;
-        blink = f % 46 < 2;
-        // Deambulation lente d'un bord a l'autre : la scene fait toute la
-        // largeur de la fenetre, autant l'habiter.
-        ox = this.strollX(f, 0.12);
-        eyeDx = this.strollForward(f, 0.12);
+      case "idle": {
+        const moving = this.wPause === 0;
+        // La respiration n'a pas le meme rythme selon qu'il marche ou souffle.
+        oy = (moving ? f % 12 < 6 : f % 26 < 13) ? 0 : 1;
+        oy += this.hopLift();
+        blink = f % 46 < 2 || (!moving && f % 71 < 3);
+        ox = Math.round(this.wx);
+        eyeDx = this.wLook;
+        // Un balancement de tete seulement a l'arret : en marche il regarde
+        // devant lui, et c'est ce contraste qui rend l'arret lisible.
+        headDx = moving ? 0 : f % 30 < 15 ? 0 : 1;
+        arms = this.wHop > 0 ? "up" : "down";
         break;
-      case "thinking":
-        oy = f % 16 < 8 ? 0 : 1;
-        headDx = f % 24 < 12 ? 0 : 1; // leger balancement
-        eyeDx = f % 24 < 12 ? -1 : 1; // regarde en l'air, pensif
-        // Il fait les cent pas pendant qu'il reflechit.
-        ox = this.strollX(f, 0.2);
+      }
+      case "thinking": {
+        const moving = this.wPause === 0;
+        oy = (moving ? f % 12 < 6 : f % 20 < 10) ? 0 : 1;
+        oy += this.hopLift();
+        headDx = f % 24 < 12 ? 0 : 1;
+        eyeDx = moving ? this.wLook : f % 24 < 12 ? -1 : 1;
+        ox = Math.round(this.wx);
+        arms = this.wHop > 0 ? "up" : "down";
         break;
+      }
       case "reading": {
         // Exploration : le robot saute de planete en planete.
         const seq = [0, 1, 2, 1];
@@ -382,16 +457,21 @@ export class PixelViz {
         break;
       }
       case "writing":
+        // Il tape a SON clavier : la position vient de la marche, donc on le
+        // voit rejoindre le bureau plutot que s'y teleporter.
+        ox = Math.round(this.wx);
         arms = f % 2 === 0 ? "typeL" : "typeR";
         oy = f % 4 < 2 ? 0 : 1; // frappe energique
         break;
       case "responding":
         // Redige la reponse : frappe soutenue, regard vers la bulle.
+        ox = Math.round(this.wx);
         arms = f % 2 === 0 ? "typeL" : "typeR";
         oy = f % 4 < 2 ? 0 : 1;
         eyeDx = f % 20 < 10 ? 1 : 0;
         break;
       case "running":
+        ox = Math.round(this.wx);
         oy = f % 6 < 3 ? 0 : 1;
         eyeDx = f % 12 < 6 ? 0 : 1; // suit le graphe
         break;
@@ -435,6 +515,9 @@ export class PixelViz {
         blink = mf % 12 < 3; // yeux plisses de bonheur
         break;
     }
+
+    // ---- son atelier, toujours la : c'est chez lui
+    this.drawWorkshop(f, mode);
 
     // ---- decors derriere le robot
     if (mode === "reading") this.drawPlanets(ox);
@@ -709,6 +792,62 @@ export class PixelViz {
       const head = i === done - 1;
       this.px(x0 + col, y0 + line * 2, head ? WHITE : ACC2, head ? 0.95 : 0.5);
     }
+  }
+
+  /**
+   * L'atelier : un bureau, un ecran, un clavier, une plante.
+   *
+   * Il ne sert pas qu'a decorer. Un personnage qui traverse un vide n'a pas
+   * d'histoire ; un personnage qui quitte son poste pour aller chercher
+   * quelque chose et qui y revient en a une. L'atelier donne un point de
+   * depart et un point de retour a tous les autres decors.
+   *
+   * L'ecran vit en permanence, meme quand il n'est pas devant : des lignes y
+   * defilent, et le curseur clignote. C'est ce detail qui empeche la scene de
+   * paraitre en pause quand le personnage est ailleurs.
+   */
+  private drawWorkshop(f: number, mode: PixelMode): void {
+    const g = 15; // ligne de sol
+    // Plateau du bureau
+    for (let x = 1; x <= DESK_W - 3; x++) this.px(x, 12, ACC, 0.42);
+    // Pieds
+    this.px(2, 13, ACC, 0.3); this.px(2, 14, ACC, 0.3); this.px(2, g, ACC, 0.3);
+    this.px(DESK_W - 4, 13, ACC, 0.3); this.px(DESK_W - 4, 14, ACC, 0.3); this.px(DESK_W - 4, g, ACC, 0.3);
+
+    // Ecran : cadre + dalle
+    const sx = 3, sy = 6, sw = 8, sh = 5;
+    for (let x = sx - 1; x <= sx + sw; x++) { this.px(x, sy - 1, ACC, 0.45); this.px(x, sy + sh, ACC, 0.45); }
+    for (let y = sy - 1; y <= sy + sh; y++) { this.px(sx - 1, y, ACC, 0.45); this.px(sx + sw, y, ACC, 0.45); }
+    // Pied de l'ecran
+    this.px(sx + 3, sy + sh + 1, ACC, 0.35); this.px(sx + 4, sy + sh + 1, ACC, 0.35);
+
+    // Contenu : des lignes de code qui defilent, longueurs pseudo-aleatoires
+    // mais stables (fonction du numero de ligne), sinon l'ecran scintille.
+    const scroll = Math.floor(f / 7);
+    for (let row = 0; row < sh; row++) {
+      const n = (row + scroll) * 2654435761 % 4294967296;
+      const len = 2 + (n >>> 28) % (sw - 2);
+      const indent = (n >>> 24) % 3;
+      for (let i = 0; i < len && indent + i < sw; i++) {
+        this.px(sx + indent + i, sy + row, i === 0 ? ACC2 : ACC, i === 0 ? 0.75 : 0.45);
+      }
+    }
+    // Curseur clignotant en bas de l'ecran
+    if (f % 12 < 7) this.px(sx + 1, sy + sh - 1, WHITE, 0.9);
+
+    // Clavier sur le plateau
+    for (let x = 4; x <= 9; x++) this.px(x, 11, ACC, 0.3);
+    // Une touche s'allume quand il travaille a son poste
+    if (mode === "writing" || mode === "running" || mode === "responding") {
+      this.px(4 + (f % 6), 11, WHITE, 0.85);
+    }
+
+    // Plante au bout du bureau : deux feuilles qui respirent
+    const sway = f % 40 < 20 ? 0 : 1;
+    this.px(DESK_W - 5, 11, ACC2, 0.55);
+    this.px(DESK_W - 6 + sway, 10, ACC2, 0.45);
+    this.px(DESK_W - 4 - sway, 10, ACC2, 0.45);
+    this.px(DESK_W - 5, 9, ACC2, 0.35);
   }
 
   /** Une etoile file de la tete du robot vers le coffre a souvenirs (memory). */
