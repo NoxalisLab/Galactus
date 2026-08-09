@@ -60,6 +60,42 @@ let serverFail: { kind: "failed" | "timeout"; code?: number; log: string } | nul
  * being wrong for one second is a single tool call that returns nothing,
  * against a view that flickers shut on every launch.
  */
+/**
+ * Ready-to-paste configuration for the clients people actually use.
+ *
+ * Showing a base URL and stopping there looks complete and is not: every one
+ * of these tools wants the same three values under a different key, in a
+ * different file, and getting one of them wrong fails silently with an empty
+ * completion. The snippets are generated from the live relay state, so the
+ * host and port are the ones that are actually listening rather than an
+ * example the reader has to adapt.
+ *
+ * The key is included verbatim. It is a secret, and it is on screen, which is
+ * the same trade the key line above already makes: a configuration the user
+ * has to reassemble by hand is a configuration they get wrong.
+ */
+function connectionSnippets(base: string, key: string, model: string): { name: string; body: string }[] {
+  const k = key || "YOUR_KEY";
+  return [
+    {
+      name: "curl",
+      body: `curl ${base}/chat/completions \\\n  -H "Authorization: Bearer ${k}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"${model}","messages":[{"role":"user","content":"hello"}]}'`,
+    },
+    {
+      name: "Cursor, Continue, any OpenAI client",
+      body: `Base URL   ${base}\nAPI key    ${k}\nModel      ${model}`,
+    },
+    {
+      name: "Zed (settings.json)",
+      body: `"language_models": {\n  "openai": {\n    "api_url": "${base}",\n    "available_models": [{ "name": "${model}", "max_tokens": 8192 }]\n  }\n}`,
+    },
+    {
+      name: "Obsidian, Python, Node (OpenAI SDK)",
+      body: `OPENAI_BASE_URL=${base}\nOPENAI_API_KEY=${k}`,
+    },
+  ];
+}
+
 function toolsBlocked(): boolean {
   return server.running && server.phase === "ready" && server.tools_ok === false;
 }
@@ -3090,6 +3126,10 @@ function settingsView(): HTMLElement {
       <div class="set-row"><div class="grow"><b>${esc(t("net.snippets"))}</b><span>${esc(t("net.snippetsHint"))}</span><span class="mono api-url">${relay.running ? esc(`${t("net.open")} http://${relayHost()}:${relay.port}/v1`) : esc(t("net.closed"))}</span></div>
         <button class="bs" id="relaytoggle">${relay.running ? esc(t("net.stop")) : esc(t("net.start"))}</button>
       </div>
+      ${relay.running ? connectionSnippets(`http://${relayHost()}:${relay.port}/v1`, relayKey, "galactus-local").map((s, i) => `
+      <div class="set-row snip"><div class="grow"><b>${esc(s.name)}</b><pre class="snipbody" id="snip${i}">${esc(s.body)}</pre></div>
+        <button class="bs" data-snip="${i}">${esc(t("net.copy"))}</button>
+      </div>`).join("") : `<div class="set-row"><div class="grow"><span>${esc(t("net.needOpen"))}</span></div></div>`}
       <div class="set-row"><div class="grow"><b>${esc(t("settings.permissions"))}</b><span>${esc(t("settings.permissionsHint"))}</span></div><button class="bs" id="pclear">${esc(t("settings.permissionsClear"))}</button></div>
     </div></div></div>`);
   wrap.querySelector("#lang")!.addEventListener("click", async (e) => { const b = (e.target as HTMLElement).closest("[data-l]") as HTMLElement | null; if (!b) return; setLang(b.dataset.l as Lang); await loadTaskDefs(); render(); });
@@ -3188,6 +3228,18 @@ function settingsView(): HTMLElement {
     } catch {}
     render();
   });
+  wrap.querySelectorAll<HTMLButtonElement>("[data-snip]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      const pre = wrap.querySelector<HTMLElement>(`#snip${b.dataset.snip}`);
+      if (!pre) return;
+      try {
+        await navigator.clipboard.writeText(pre.textContent ?? "");
+        const prev = b.textContent;
+        b.textContent = t("net.copied");
+        setTimeout(() => { b.textContent = prev; }, 1400);
+      } catch {}
+    })
+  );
   wrap.querySelector<HTMLButtonElement>("#relaytoggle")!.addEventListener("click", async () => {
     if (relay.running) {
       relay = await api.relayStop();

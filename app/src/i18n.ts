@@ -12,6 +12,12 @@ const dict: Record<string, { en: string; fr: string }> = {
     en: "Manual only: this model does not emit tool calls.",
     fr: "Manuel uniquement : ce modele n'emet pas d'appels d'outils.",
   },
+  "net.copy": { en: "Copy", fr: "Copier" },
+  "net.forClient": { en: "Ready to paste", fr: "Prêt à coller" },
+  "net.needOpen": {
+    en: "Open the relay to get the settings for your tools.",
+    fr: "Ouvre le relais pour obtenir les reglages de tes outils.",
+  },
   "nav.server": { en: "Server", fr: "Serveur" },
   "sect.network": { en: "Network", fr: "Reseau" },
   "sect.networkHint": {
