@@ -51,6 +51,19 @@ let ramMode: "eco" | "balanced" | "perf" = "balanced";
 let autoTabOn = true;
 let skillsOff: Set<string> = new Set();
 let serverFail: { kind: "failed" | "timeout"; code?: number; log: string } | null = null;
+/**
+ * True when the running model was MEASURED unable to emit tool calls.
+ *
+ * Deliberately false while the verdict is unknown: the probe runs just after
+ * the server announces ready, and blocking the Code view during that second
+ * would make every start look broken. The window is short, and the cost of
+ * being wrong for one second is a single tool call that returns nothing,
+ * against a view that flickers shut on every launch.
+ */
+function toolsBlocked(): boolean {
+  return server.running && server.phase === "ready" && server.tools_ok === false;
+}
+
 const installProgress = new Map<string, { pct: number; label: string }>();
 /** Real measured throughput per model id (persisted in settings as bench_<id>). */
 const benchResults: Record<string, number> = {};
@@ -515,7 +528,12 @@ function applyAutonomy() {
     // A teammate always works in agent mode: it was recruited to carry a task
     // to the end, not to chat. Only the conversation's own agent follows the
     // Manual / Assisted / Autonomous switch.
-    th.agent?.setMode(autonomy === "manual" && !th.sub ? "chat" : "agent");
+    // A model with no tool calls is forced to plain chat whatever the selector
+    // says: leaving it in agent mode would ship tool definitions the model
+    // ignores, burning context to no effect and producing an assistant that
+    // announces actions it never takes.
+    const chatOnly = autonomy === "manual" || toolsBlocked();
+    th.agent?.setMode(chatOnly && !th.sub ? "chat" : "agent");
     th.agent?.setAutoApprove(autonomy === "autonomous");
   }
 }
@@ -1124,7 +1142,7 @@ function threadPaneEl(): HTMLElement {
       <div class="comp-bar">
         <div class="tool-btn" id="gotoconn">${I.conn}<span>${mcpCount}</span></div>
         ${slashSkills.some((s) => s.name === "recherche-sourcee") ? `<div class="tool-btn deep ${deepResearch ? "on" : ""}" id="deepbtn" title="${esc(t("chat.deepHint"))}">${I.scope}<span>${esc(t("chat.deep"))}</span></div>` : ""}
-        <div class="seg-mode ${sub ? "off" : ""}" id="modeseg">
+        <div class="seg-mode ${sub || toolsBlocked() ? "off" : ""}" id="modeseg"${toolsBlocked() ? ` title="${esc(t("tools.forcedManual"))}"` : ""}>
           <button data-a="manual" class="${autonomy === "manual" ? "on" : ""}">${esc(t("mode.manual"))}</button>
           <button data-a="assisted" class="${autonomy === "assisted" ? "on" : ""}">${esc(t("mode.assisted"))}</button>
           <button data-a="autonomous" class="${autonomy === "autonomous" ? "on" : ""}">${esc(t("mode.autonomous"))}</button>
@@ -3227,8 +3245,15 @@ function render() {
   }
 
   const { pill, text: srvText } = serverPillState();
-  const nav = (v: View, ic: string, label: string, badge = 0) =>
-    `<button type="button" class="nav-item ${view === v ? "on" : ""}" data-v="${v}" aria-current="${view === v ? "page" : "false"}">${ic}<span>${esc(label)}</span>${badge > 0 ? `<span class="navbadge" title="${esc(t("code.pendingNav"))}">${badge}</span>` : ""}</button>`;
+  // A model that cannot call tools cannot drive anything agentic: the Code
+  // view would open on an assistant that reads no file and writes no patch,
+  // and the failure would be silent. The surfaces that need tools are
+  // disabled, carrying the reason, rather than left to disappoint.
+  const nav = (v: View, ic: string, label: string, badge = 0) => {
+    const off = v === "code" && toolsBlocked();
+    const why = off ? esc(t("tools.blocked")) : "";
+    return `<button type="button" class="nav-item ${view === v ? "on" : ""}${off ? " off" : ""}" data-v="${v}"${off ? ` disabled aria-disabled="true" title="${why}"` : ""} aria-current="${view === v ? "page" : "false"}">${ic}<span>${esc(label)}</span>${badge > 0 ? `<span class="navbadge" title="${esc(t("code.pendingNav"))}">${badge}</span>` : ""}</button>`;
+  };
 
   const layout = el(`<div class="layout">
     <div class="side">
@@ -3639,6 +3664,15 @@ async function boot() {
     // the sidebar pill, so repaint just that.
     // The Code view holds a live editor, and possibly a pending diff nobody
     // has answered yet: a rebuild on every load tick would throw both away.
+    // The tool probe can land while the Code view is already open, on a model
+    // that turns out to drive nothing. Leaving the user in a view whose whole
+    // point is an agent that cannot act is worse than moving them out of it,
+    // so this fallback takes precedence over the partial repaint below.
+    if (view === "code" && toolsBlocked()) {
+      view = "chat";
+      render();
+      return;
+    }
     if (view === "memory" || view === "connectors" || view === "code") {
       renderServerPill();
       paintComposerReady();

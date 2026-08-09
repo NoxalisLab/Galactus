@@ -150,6 +150,11 @@ html.pane-dragging iframe { pointer-events: none !important; }
 .nav { display: flex; flex-direction: column; gap: 2px; padding: 0 12px; }
 .nav-item { display: flex; align-items: center; gap: 11px; width: 100%; padding: 9px 11px; border: 0; border-radius: 9px;
   background: transparent; color: var(--dim2); text-align: left; cursor: default; transition: background 0.15s; }
+
+/* Surface desactivee faute d'appels d'outils : lisible, mais clairement
+   hors service, et le titre porte la raison. */
+.nav-item.off { opacity: 0.38; cursor: not-allowed; }
+.nav-item.off:hover { background: transparent; }
 .nav-item span { font-size: 13.5px; font-weight: 500; }
 .nav-item:hover { background: rgba(255, 255, 255, 0.05); color: var(--tx); }
 .nav-item { position: relative; }

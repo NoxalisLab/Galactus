@@ -71,6 +71,12 @@ export interface ServerStatus {
    * The hard bound on how many conversations may generate at the same time.
    */
   slots?: number;
+  /**
+   * Whether the running model actually emits tool calls, MEASURED at warmup.
+   * Undefined while unknown. False disables every agent surface, because
+   * without tool calls the agent reads no file and runs no command.
+   */
+  tools_ok?: boolean;
 }
 
 /** One excerpt found in a stored conversation. */

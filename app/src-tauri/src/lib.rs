@@ -951,6 +951,8 @@ struct ServerState {
     mode: String,
     /// Decode slots the running server was started with (--parallel).
     slots: u32,
+    /// Measured tool-calling verdict for the running model (see ServerStatus).
+    tools_ok: Option<bool>,
 }
 
 static SERVER: OnceLock<Mutex<ServerState>> = OnceLock::new();
@@ -966,6 +968,7 @@ fn server_state() -> &'static Mutex<ServerState> {
             port: 0,
             mode: String::new(),
             slots: 1,
+            tools_ok: None,
         })
     })
 }
@@ -1012,6 +1015,16 @@ struct ServerStatus {
     mode: String,
     /// Concurrent decode streams the running engine can serve.
     slots: u32,
+    /// Whether this model actually emits tool calls, MEASURED at warmup.
+    ///
+    /// None while unknown (server starting, or the probe has not answered).
+    /// A model that cannot call tools cannot drive the agent loop at all: it
+    /// reads no file and runs no command, and every agent surface silently
+    /// does nothing. The app disables those surfaces instead, which is only
+    /// possible if it knows. Declaring the capability in the registry would
+    /// have been cheaper and would have been wrong: it depends on the build,
+    /// the chat template and the quantization, not on the model name.
+    tools_ok: Option<bool>,
 }
 
 #[tauri::command]
@@ -1026,6 +1039,120 @@ fn server_status() -> ServerStatus {
         // Stopped: report what the NEXT start would give, so the UI never
         // promises a concurrency the engine will not have.
         slots: if s.child.is_some() { s.slots } else { engine_slots() },
+        tools_ok: s.tools_ok,
+    }
+}
+
+/// Ask the running model to call a trivial tool, and report whether it did.
+///
+/// This measures the one thing the agent loop cannot work without. It is a
+/// capability of the running combination, not of the model name: the same
+/// weights answer differently depending on the chat template baked into the
+/// GGUF, on whether the server was started with --jinja, and on the
+/// quantization. Declaring it in the registry would therefore have been a
+/// guess dressed up as a fact.
+///
+/// `tool_choice` is left on auto ON PURPOSE. Forcing it would measure whether
+/// the engine can constrain the grammar, which it always can; what the agent
+/// loop needs is whether the model reaches for a tool on its own when the
+/// question plainly calls for one. A model that answers in prose here will
+/// answer in prose when asked to read a file.
+fn probe_tool_calling(port: u16) -> Option<bool> {
+    const BODY: &str = r#"{
+      "model":"galactus-local",
+      "messages":[{"role":"user","content":"What time is it right now? Use the tool."}],
+      "tools":[{"type":"function","function":{
+        "name":"get_current_time",
+        "description":"Return the current time. Call this whenever the user asks what time it is.",
+        "parameters":{"type":"object","properties":{},"required":[]}}}],
+      "tool_choice":"auto","max_tokens":64,"stream":false,"temperature":0
+    }"#;
+    let out = Command::new("curl")
+        .args(["-s", "--max-time", "120", "-H", "Content-Type: application/json", "-d", BODY])
+        .arg(format!("http://127.0.0.1:{port}/v1/chat/completions"))
+        .output()
+        .ok()?;
+    read_tool_verdict(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// Read the verdict out of one chat-completions answer.
+///
+/// Split out of the probe so the part that can actually be wrong is testable
+/// without a 32 GB model: the transport is curl, which either answers or does
+/// not, while THIS is where a build that emits an empty `tool_calls` array
+/// beside a prose reply would be misread as capable.
+///
+/// Returns None only when the body is not JSON at all, which means the probe
+/// itself failed and the question stays open. Every parseable answer yields a
+/// definite yes or no.
+fn read_tool_verdict(body: &str) -> Option<bool> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    // A server whose chat template carries no tool support answers with an
+    // error rather than a choice. That is a definite no, not an unknown.
+    if v.get("error").is_some() {
+        return Some(false);
+    }
+    let calls = v
+        .get("choices")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("message"))
+        .and_then(|m| m.get("tool_calls"))
+        .and_then(|t| t.as_array());
+    match calls {
+        // Well formed means at least one call that actually names a function.
+        Some(a) => Some(a.iter().any(|c| {
+            c.pointer("/function/name").and_then(|n| n.as_str()).is_some_and(|n| !n.is_empty())
+        })),
+        None => Some(false),
+    }
+}
+
+#[cfg(test)]
+mod tool_probe_tests {
+    use super::read_tool_verdict;
+
+    #[test]
+    fn a_real_tool_call_reads_as_capable() {
+        // Shape captured from the running engine on Qwen3-30B-A3B.
+        let body = r#"{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[
+            {"type":"function","function":{"name":"get_current_time","arguments":"{}"},"id":"ai28"}]}}]}"#;
+        assert_eq!(read_tool_verdict(body), Some(true));
+    }
+
+    #[test]
+    fn a_prose_answer_reads_as_incapable() {
+        let body = r#"{"choices":[{"message":{"role":"assistant","content":"It is about noon."}}]}"#;
+        assert_eq!(read_tool_verdict(body), Some(false));
+    }
+
+    #[test]
+    fn an_empty_array_is_not_a_tool_call() {
+        // The trap: a build that always emits the key, empty, beside prose.
+        // Testing for the key's presence would have called this one capable.
+        let body = r#"{"choices":[{"message":{"content":"Noon.","tool_calls":[]}}]}"#;
+        assert_eq!(read_tool_verdict(body), Some(false));
+    }
+
+    #[test]
+    fn a_nameless_call_is_not_a_tool_call() {
+        let body = r#"{"choices":[{"message":{"tool_calls":[{"type":"function","function":{"arguments":"{}"}}]}}]}"#;
+        assert_eq!(read_tool_verdict(body), Some(false));
+        let empty = r#"{"choices":[{"message":{"tool_calls":[{"function":{"name":""}}]}}]}"#;
+        assert_eq!(read_tool_verdict(empty), Some(false));
+    }
+
+    #[test]
+    fn a_template_without_tool_support_is_a_definite_no() {
+        let body = r#"{"error":{"code":500,"message":"this chat template does not support tools"}}"#;
+        assert_eq!(read_tool_verdict(body), Some(false));
+    }
+
+    #[test]
+    fn a_non_json_answer_leaves_the_question_open() {
+        // curl timed out, or the server died mid-probe. Reporting "incapable"
+        // here would disable the Code view over a transport failure.
+        assert_eq!(read_tool_verdict(""), None);
+        assert_eq!(read_tool_verdict("<html>502</html>"), None);
     }
 }
 
@@ -1593,6 +1720,8 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
             "streamed-bit-exact".into()
         };
         s.phase = "starting".into();
+    // Verdict of the PREVIOUS model: it says nothing about this one.
+    s.tools_ok = None;
         s.generation = generation;
         s.port = port;
         s.slots = slots;
@@ -1696,6 +1825,23 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
                 s.phase = "ready".into();
                 drop(s);
                 let _ = app.emit("galactus://server", json!({"phase": "ready"}));
+
+                // The tool probe runs AFTER ready is announced, never before.
+                // It costs one short generation, and holding the UI on
+                // "starting" for it would make a model that works perfectly
+                // for chat look slower to load than it is. The agent surfaces
+                // read `tools_ok` and stay disabled while it is still None.
+                let verdict = probe_tool_calling(port);
+                let mut s = server_state().lock().unwrap_or_else(|e| e.into_inner());
+                if s.generation != generation || s.child.is_none() {
+                    return;
+                }
+                s.tools_ok = verdict;
+                drop(s);
+                let _ = app.emit(
+                    "galactus://server",
+                    json!({"phase": "ready", "tools_ok": verdict}),
+                );
                 return;
             }
         }

@@ -90,6 +90,11 @@ extern "C" {
 
 const O_RDWR: c_int = 0x0002;
 const O_NOCTTY: c_int = 0x0002_0000;
+/// How many times to reopen /dev/ptmx before giving up. Five attempts with a
+/// rising backoff spans about sixty milliseconds, which is far longer than the
+/// contention window and still imperceptible when opening a terminal.
+const PTMX_OPEN_ATTEMPTS: i32 = 5;
+
 /// `fcntl` command: set the file descriptor flags.
 const F_SETFD: c_int = 2;
 /// The only descriptor flag there is: close this fd on exec(2).
@@ -290,9 +295,29 @@ pub fn open_pty(
     // lose them, except between posix_openpt and the wrap, which is
     // straight-line code with no fallible call in between.
     unsafe {
-        let master_fd = posix_openpt(O_RDWR | O_NOCTTY);
+        // Darwin's /dev/ptmx clone device fails transiently under concurrency:
+        // several opens in the same instant return -1 with an errno that is not
+        // even a valid errno (-6 observed), and the very next attempt succeeds.
+        // Measured on this machine: two of three parallel test runs hit it,
+        // with 17 of the 511 allowed ptys in use, so it is contention on the
+        // clone and not exhaustion. A user opening several terminals quickly
+        // would meet the same failure, so the retry belongs here and not in
+        // the tests.
+        let mut master_fd = -1;
+        let mut attempt = 0;
+        while attempt < PTMX_OPEN_ATTEMPTS {
+            master_fd = posix_openpt(O_RDWR | O_NOCTTY);
+            if master_fd >= 0 {
+                break;
+            }
+            attempt += 1;
+            std::thread::sleep(std::time::Duration::from_millis(4 * attempt as u64));
+        }
         if master_fd < 0 {
-            return Err(last_err("posix_openpt"));
+            return Err(format!(
+                "posix_openpt failed {PTMX_OPEN_ATTEMPTS} times: {}",
+                std::io::Error::last_os_error()
+            ));
         }
         // From here on the fd is owned by `master`, so every `?`-style return
         // closes it instead of leaking it.
