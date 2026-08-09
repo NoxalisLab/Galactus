@@ -1,6 +1,6 @@
 ---
 name: ui-ux
-description: "Concevoir ou critiquer une interface : audit UX classé par sévérité ou maquette HTML/CSS autonome, avec accessibilité, états et itération."
+description: "Concevoir ou critiquer une interface : audit UX ou maquette HTML/CSS."
 ---
 
 ## 0. Cadre (obligatoire, avant tout)

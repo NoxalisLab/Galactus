@@ -1,6 +1,6 @@
 ---
 name: serveurs-distants
-description: "À utiliser dès qu'il faut agir sur une machine distante en SSH : vérifier l'état d'un serveur, lire des logs, déployer, redémarrer un service, copier des fichiers."
+description: "Machine distante en SSH : état, logs, déploiement, service, copie de fichiers."
 ---
 
 Tu opères sur des machines qui ne sont pas celle de l'utilisateur. Lecture d'abord, écriture ensuite, jamais dans le même appel.

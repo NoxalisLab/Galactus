@@ -58,3 +58,54 @@ https://www.python.org
 
   A private, isolated Python 3.12 runtime is bundled so the app never touches
   the system interpreter and never raises Apple's Command Line Tools installer.
+
+Superpowers
+Copyright (c) 2025 Jesse Vincent.
+Licensed under the MIT License.
+https://github.com/obra/superpowers
+
+  Debugging and verification method adapted into the Galactus skills
+  debogage-methodique, ecrire-des-tests, refactoring and revue-de-code: root
+  cause before fix, the red-green ordering, and the requirement that a
+  completion claim rest on fresh evidence. Rewritten in French for a local
+  model with an 8192-token window; no source text is reproduced.
+
+Awesome GitHub Copilot Customizations
+Copyright GitHub, Inc.
+Licensed under the MIT License.
+https://github.com/github/awesome-copilot
+
+  Domain reference material adapted into the Galactus skills accessibilite,
+  profilage-performance, sql-et-requetes, conteneurs-docker, kubernetes,
+  terraform, incident-production, refactoring, revue-de-code and
+  notes-de-reunion: the WCAG 2.2 AA criteria and severity model, the Core Web
+  Vitals thresholds, the SQL anti-pattern catalogue, the container and
+  Kubernetes checklists, the blameless post-mortem structure and the meeting
+  minutes schema. Rewritten in French and reduced to executable procedures.
+
+Fabric
+Copyright (c) 2012-2024 Scott Chacon and others.
+Licensed under the MIT License.
+https://github.com/danielmiessler/fabric
+
+  Output structures adapted into the Galactus skills revue-de-code,
+  analyse-de-logs, incident-production, notes-de-reunion and
+  latex-et-sciences, drawn from the review_code, analyze_logs,
+  analyze_incident, summarize_meeting and write_latex patterns.
+
+Prompt Engineering Guide
+Copyright (c) 2022 DAIR.AI.
+Licensed under the MIT License.
+https://github.com/dair-ai/Prompt-Engineering-Guide
+
+  The decomposition of a specific instruction (explicit inputs, named output
+  format, stated constraints) adapted into the Galactus skill prompts-locaux,
+  inverted for a small-context local model.
+
+learn-regex
+Copyright (c) 2019 Zeeshan Ahmad.
+Licensed under the MIT License.
+https://github.com/ziishaned/learn-regex
+
+  The greedy versus lazy quantifier and anchoring explanations adapted into
+  the Galactus skill expressions-regulieres as a symptom-to-cause table.

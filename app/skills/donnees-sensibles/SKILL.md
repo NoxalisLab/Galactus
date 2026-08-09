@@ -1,6 +1,6 @@
 ---
 name: donnees-sensibles
-description: "À utiliser dès qu'un document ou un jeu de données contient des données personnelles, de santé, RH, juridiques ou financières confidentielles : traitement strictement local, anonymisation ou pseudonymisation, extraction structurée, traçabilité."
+description: "Données personnelles, santé, RH ou juridiques : traitement local, anonymisation."
 ---
 
 Le traitement est **entièrement local** et doit le rester. C'est la seule raison pour laquelle ce travail est possible ici plutôt que dans un assistant en ligne.

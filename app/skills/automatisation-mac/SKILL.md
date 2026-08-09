@@ -1,6 +1,6 @@
 ---
 name: automatisation-mac
-description: "À utiliser quand tu dois automatiser une tâche sur le Mac de l'utilisateur : script zsh, tâche planifiée (launchd/cron) ou pilotage d'apps via AppleScript."
+description: "Automatiser le Mac : script zsh, tâche planifiée launchd ou cron, AppleScript."
 ---
 
 ## Règles d'or ; aucune exception

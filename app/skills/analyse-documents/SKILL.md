@@ -1,6 +1,6 @@
 ---
 name: analyse-documents
-description: "À utiliser dès qu'il faut lire, résumer, comparer ou extraire des données d'un document (PDF, Word, Excel, PowerPoint, image scannée) avec fidélité et citations localisées."
+description: "Lire, résumer, comparer ou extraire d'un PDF, Word, Excel, PowerPoint ou scan."
 ---
 
 ## Règle d'or

@@ -1,6 +1,6 @@
 ---
 name: data-ia
-description: "À utiliser pour un travail de données ou d'IA : explorer un CSV/Parquet/JSON, nettoyer et réconcilier un jeu de données, écrire un pipeline reproductible, évaluer un modèle ou construire un index de recherche local."
+description: "Données et IA : CSV ou Parquet, nettoyage, pipeline, évaluer un modèle, index local."
 ---
 
 Règle absolue : **aucun chiffre qui ne sorte d'un script exécuté**. Pas d'estimation de tête, pas de moyenne « à peu près », pas de total recopié depuis un extrait.

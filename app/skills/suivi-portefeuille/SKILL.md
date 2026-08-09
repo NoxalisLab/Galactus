@@ -1,6 +1,6 @@
 ---
 name: suivi-portefeuille
-description: "Suivre un portefeuille d'investissement en local : enregistrer achats/ventes avec frais et journal des décisions, récupérer les cours, calculer performance et allocation, proposer un rééquilibrage chiffré ; sans jamais donner de conseil personnalisé."
+description: "Portefeuille d'investissement en local : transactions, cours, performance, allocation."
 ---
 
 ## Garde-fous

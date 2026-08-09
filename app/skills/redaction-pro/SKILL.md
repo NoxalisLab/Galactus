@@ -1,6 +1,6 @@
 ---
 name: redaction-pro
-description: "À utiliser pour rédiger ou retravailler un texte professionnel en français : email, note interne, compte rendu, proposition commerciale ou documentation."
+description: "Rédiger en français : email, note, compte rendu, proposition, documentation."
 ---
 
 ## 1. Cadre avant d'écrire

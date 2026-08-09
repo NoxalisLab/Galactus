@@ -1,6 +1,6 @@
 ---
 name: recherche-sourcee
-description: "À utiliser quand l'utilisateur demande une recherche d'information fiable : faits vérifiés, sources croisées, synthèse avec URLs datées."
+description: "Recherche d'information fiable : sources croisées, URLs datées."
 ---
 
 Recherche 100% via `run_command` + `curl` (pas de navigateur). Règle d'or : aucun fait sans URL précise et sans date.
