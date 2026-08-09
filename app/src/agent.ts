@@ -16,6 +16,18 @@ import {
 import type { SearchEvent, SearchOptsWire } from "./api";
 import { getLang, t } from "./i18n";
 
+/**
+ * Bytes per token, measured rather than assumed, and identical to the figure
+ * the Rust side budgets with. The usual 4.0 is 25 percent optimistic on French
+ * markdown and the densest record measured 1.99, so an estimate built on 4.0
+ * is exactly how a request the caller believed fitted comes back as a 400.
+ */
+const BYTES_PER_TOKEN = 3.0;
+/** Room held back for the reply and the tool schemas, in tokens. */
+const REPLY_RESERVE_TOKENS = 900;
+/** Never hand back less than this, or retrieval cannot return one passage. */
+const MIN_TOOL_TOKENS = 512;
+
 export type PermissionKind =
   | "fs_read"
   | "fs_write"
@@ -283,6 +295,31 @@ const KNOWLEDGE_TOOL: ToolDef = {
         k: { type: "number", description: "Number of results (default 6)" },
       },
       required: ["query"],
+    },
+  },
+};
+
+/**
+ * Reach back into an oversized tool output.
+ *
+ * Always offered, because the situation it answers can arise on the very first
+ * tool call of a fresh conversation: one `fetch_url` on a paper is enough. A
+ * model that is told an output was kept whole somewhere, and has no way to
+ * query it, will invent the missing part instead.
+ */
+const RETRIEVE_TOOL: ToolDef = {
+  type: "function",
+  function: {
+    name: "retrieve",
+    description:
+      "Pull more passages out of an oversized tool output that was kept whole on disk. When a result announces it was too large for the window, its full text is at the path it gave you: query that path here with different terms to reach the parts the first retrieval did not return. Ranked by relevance and fitted to the window, so it is safe to call repeatedly.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "The path the oversized output reported" },
+        query: { type: "string", description: "What you are looking for in it" },
+      },
+      required: ["path", "query"],
     },
   },
 };
@@ -802,6 +839,7 @@ function builtinTools(
   // discovering it may not delegate.
   if (canDelegate) tools.push(LIST_AGENTS_TOOL, ASK_AGENT_TOOL);
   if (hasKb) tools.push(KNOWLEDGE_TOOL);
+  tools.push(RETRIEVE_TOOL);
   // Only while a workspace is open: offering a search over a folder that does
   // not exist teaches the model to call it and read an error.
   if (workspaceRoot()) tools.push(SEARCH_WORKSPACE_TOOL, FIND_FILES_TOOL);
@@ -823,6 +861,7 @@ function activityModeFor(tool: string): import("./pixel").PixelMode {
     case "list_directory":
     case "obsidian_search":
     case "search_knowledge":
+    case "retrieve":
     case "search_conversations":
     case "search_workspace":
     case "find_files":
@@ -1153,20 +1192,116 @@ export class Agent {
     return this.nCtx;
   }
 
-  /** Rough token estimate of the request body (~4 chars per token). */
+  /**
+   * Token estimate of the request body.
+   *
+   * The divisor is 3.0, not the usual 4.0. Calibrated against a real tokenizer
+   * over stratified records of French markdown, 4.0 is 25 percent optimistic
+   * and the densest single record reaches 1.99. An optimistic estimate is the
+   * expensive kind: it is what lets a request the caller believed fitted
+   * arrive at 9536 tokens in an 8192 window and come back as a 400 with the
+   * turn lost. The Rust side budgets at 3.0 for the same reason; the two must
+   * agree or the budget computed here does not describe the request sent.
+   */
   private estimateTokens(): number {
     let chars = 0;
     for (const m of this.messages) {
       chars += (typeof m.content === "string" ? m.content.length : 0) + 20;
       if (m.tool_calls) for (const tc of m.tool_calls) chars += tc.function.name.length + tc.function.arguments.length + 30;
     }
-    return Math.ceil(chars / 4) + 2500; // + tool schemas overhead
+    return Math.ceil(chars / BYTES_PER_TOKEN) + 2500; // + tool schemas overhead
   }
 
   /**
    * Fold the oldest ~60% of the thread into a model-written faithful summary.
    * Falls back to hard trimming only if the summarization call itself fails.
    */
+  /**
+   * How many characters of a tool result this turn can actually afford.
+   *
+   * The old rule was a constant, 20 000 characters whatever the model. At the
+   * measured 3.0 bytes per token that is 6666 tokens, which does not fit an
+   * 8192 window even before the system prompt, so the constant guaranteed the
+   * very rejection it was meant to prevent. The allowance is now what is left
+   * of the live window once the request so far and the room the reply needs
+   * are subtracted.
+   *
+   * A teammate's answer is already distilled and its full thread is one click
+   * away for the user, so it gets a larger share before anything is held back.
+   */
+  private async toolAllowanceChars(toolName: string): Promise<number> {
+    const ctx = await this.ensureCtxSize();
+    const share = toolName === "ask_agent" ? 0.45 : 0.3;
+    const free = ctx - this.estimateTokens() - REPLY_RESERVE_TOKENS;
+    const tokens = Math.max(MIN_TOOL_TOKENS, Math.min(Math.floor(ctx * share), free));
+    return Math.floor(tokens * BYTES_PER_TOKEN);
+  }
+
+  /**
+   * Make an oversized tool result usable WITHOUT throwing any of it away.
+   *
+   * The output goes to a scratch file whole, then the passages that answer the
+   * question at hand are retrieved from it with the same BM25, chunking and
+   * budget discipline the knowledge base uses, and only those enter the
+   * history. The full file stays on disk and the model can query it again with
+   * `retrieve`, or read exact byte ranges with `read_file`.
+   *
+   * Why retrieval rather than a head cut: on a 200 KB paper the first 8000
+   * characters are the title, the authors and the abstract. The paragraph that
+   * answers is on page nine. Both cost the same number of tokens in the
+   * window; only one of them changes the answer. The unit test in
+   * knowledge.rs pins exactly that case.
+   *
+   * If the spill or the retrieval fails, the caller still gets something
+   * honest: a head slice that says, in the text itself, that it is a head
+   * slice and how much is missing.
+   */
+  private async digestOversized(toolName: string, result: string, allowance: number): Promise<string> {
+    const budget = Math.max(MIN_TOOL_TOKENS, Math.floor(allowance / BYTES_PER_TOKEN));
+    let path = "";
+    try {
+      const stamp = Date.now().toString(36);
+      const safe = toolName.replace(/[^\w-]/g, "_").slice(0, 40);
+      path = await api.scratchWrite(`tool-${stamp}-${safe}.txt`, result);
+    } catch {
+      return (
+        result.slice(0, allowance) +
+        `\n[HEAD ONLY. ${result.length} characters were produced, the rest could not be saved and is lost. Treat everything below the cut as unknown, do not infer it.]`
+      );
+    }
+    const question = this.lastUserQuestion();
+    try {
+      const hits = await api.digestSearch(path, question, budget);
+      if (hits.length > 0) {
+        const body = hits.map((h) => `[${h.path}:${h.line}]\n${h.snippet}`).join("\n\n");
+        return (
+          `[${result.length} characters produced, too large for this window. Kept whole at ${path}.\n` +
+          `Below are the passages that match the question, retrieved by relevance, not the first bytes.\n` +
+          `Call retrieve(path, query) with a different query to pull other passages, or read_file(offset) for exact ranges.]\n\n` +
+          body
+        );
+      }
+    } catch {
+      // fall through to the honest head slice
+    }
+    return (
+      result.slice(0, allowance) +
+      `\n[HEAD ONLY, ${result.length} characters total, kept whole at ${path}.\n` +
+      `Retrieval returned nothing for this question. Call retrieve("${path}", "<query>") with other terms, or read_file(offset) for exact ranges. Do not infer what is past the cut.]`
+    );
+  }
+
+  /** The question the retrieval should answer: the user's most recent turn. */
+  private lastUserQuestion(): string {
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      const m = this.messages[i];
+      if (m.role === "user" && typeof m.content === "string" && m.content.trim()) {
+        return m.content.trim().slice(0, 1000);
+      }
+    }
+    return "";
+  }
+
   private async digestHistory(): Promise<boolean> {
     const msgs = this.messages;
     if (msgs.length < 6) return this.compactHistory();
@@ -1203,28 +1338,71 @@ export class Agent {
       .join("\n");
 
     try {
-      const summary = await chatOnce(
-        this.port,
-        [
-          {
-            role: "system",
-            content:
-              "You compress conversation history. Keep EVERY fact, number, URL, file path, decision and source attribution exactly as stated. Never invent, embellish or reinterpret anything. If something is uncertain in the original, keep it marked uncertain. Output a tight bullet list.",
-          },
-          { role: "user", content: "Summarize this conversation segment faithfully:\n\n" + rendered.slice(0, 60_000) },
-        ],
-        0.1,
-        this.abort?.signal
-      );
+      const summary = await this.foldToSummary(rendered);
       if (!summary.trim()) return this.compactHistory();
+      const ctx = await this.ensureCtxSize();
+      // The carried summary is charged on every later request, so it is capped
+      // as a share of the window rather than at a constant. Eight thousand
+      // characters is a third of an 8192 window spent before the user speaks.
+      const keep = Math.max(1200, Math.floor(ctx * 0.12 * BYTES_PER_TOKEN));
       this.contextSummary = (this.contextSummary ? this.contextSummary + "\n" : "") + summary.trim();
-      if (this.contextSummary.length > 8000) this.contextSummary = this.contextSummary.slice(-8000);
+      if (this.contextSummary.length > keep) this.contextSummary = this.contextSummary.slice(-keep);
       this.messages = [msgs[0], ...msgs.slice(cut)];
       if (this.messages[0].role === "system") this.messages[0].content = this.systemPrompt();
       return true;
     } catch {
       return this.compactHistory();
     }
+  }
+
+  /**
+   * Summarize a segment that may itself be larger than the context window.
+   *
+   * The previous version sent `rendered.slice(0, 60_000)` in one call. Sixty
+   * thousand characters is twenty thousand tokens: on an 8192 window the
+   * rescue call failed exactly when it was needed, `digestHistory` returned
+   * false, no retry happened and the user saw the raw 400. Recovery that only
+   * works when recovery is unnecessary is not recovery.
+   *
+   * So the segment is folded instead: summarize window-sized pieces, then
+   * summarize the summaries, until what remains fits in one call. Bounded
+   * passes, because a fold that does not converge is a hang.
+   */
+  private async foldToSummary(rendered: string): Promise<string> {
+    const ctx = await this.ensureCtxSize();
+    // What one summarization call may carry: the window, less the instruction
+    // and less the room its own answer needs.
+    const perCall = Math.max(1500, Math.floor((ctx - REPLY_RESERVE_TOKENS - 300) * BYTES_PER_TOKEN));
+    const SYSTEM =
+      "You compress conversation history. Keep EVERY fact, number, URL, file path, decision and source attribution exactly as stated. Never invent, embellish or reinterpret anything. If something is uncertain in the original, keep it marked uncertain. Output a tight bullet list.";
+    const once = async (text: string): Promise<string> =>
+      (
+        await chatOnce(
+          this.port,
+          [
+            { role: "system", content: SYSTEM },
+            { role: "user", content: "Summarize this conversation segment faithfully:\n\n" + text },
+          ],
+          0.1,
+          this.abort?.signal
+        )
+      ).trim();
+
+    let text = rendered;
+    for (let pass = 0; pass < 3; pass++) {
+      if (text.length <= perCall) return once(text);
+      const parts: string[] = [];
+      for (let i = 0; i < text.length; i += perCall) parts.push(text.slice(i, i + perCall));
+      const summaries: string[] = [];
+      for (const p of parts) {
+        if (this.abort?.signal.aborted) return summaries.join("\n");
+        summaries.push(await once(p));
+      }
+      text = summaries.join("\n");
+    }
+    // Three passes did not converge: hand back what the last pass produced
+    // rather than loop. It is already a summary of summaries, not raw text.
+    return text.slice(0, perCall);
   }
 
   /** Emergency fallback: trim old tool outputs in place, no model call. */
@@ -1244,7 +1422,7 @@ export class Agent {
     return changed;
   }
 
-  private async turn(depth: number, retriedAfterCompact = false): Promise<void> {
+  private async turn(depth: number, ctxRetries = 0): Promise<void> {
     const maxDepth = this.mode === "agent" ? 30 : 12;
     if (depth > maxDepth) {
       this.hooks.onError("tool loop limit reached");
@@ -1291,13 +1469,16 @@ export class Agent {
       this.taskTemp ?? 0.6
     );
     if (!ok && !this.abort.signal.aborted) {
-      // Context overflow (huge tool outputs, long thread): summarize the
-      // history once and retry instead of killing the conversation.
+      // Context overflow (huge tool outputs, long thread): shrink and retry
+      // instead of killing the conversation. Two escalating attempts, because
+      // one was not enough in practice: the first folds the old thread into a
+      // faithful summary, and if the server still refuses, the second trims
+      // tool outputs in place with no model call, which cannot itself fail for
+      // lack of context. Only then is the error the user's problem.
       const looksLikeCtx = streamErr !== null && /context|exceed|too (long|large|many)|kv[ _-]?cache|n_ctx|token/i.test(streamErr);
-      if (looksLikeCtx && !retriedAfterCompact && assistantText.length === 0) {
-        if (await this.digestHistory()) {
-          return this.turn(depth, true);
-        }
+      if (looksLikeCtx && assistantText.length === 0 && ctxRetries < 2) {
+        const shrank = ctxRetries === 0 ? await this.digestHistory() : this.compactHistory();
+        if (shrank) return this.turn(depth, ctxRetries + 1);
       }
       // Request failed for real: surface it. Do NOT push an empty assistant
       // message nor call finishTurn, that would end the turn twice.
@@ -1353,18 +1534,10 @@ export class Agent {
       // A teammate's answer is ALREADY distilled and its full thread is one
       // click away for the user: give it more room before spilling, or the
       // whole point of delegating is lost.
-      const HIST_TOOL_MAX = call.function.name === "ask_agent" ? 40_000 : 20_000;
       let hist = result && result.length > 0 ? result : "(no output)";
-      if (hist.length > HIST_TOOL_MAX) {
-        let note: string;
-        try {
-          const fname = `tool-${Date.now().toString(36)}-${call.function.name.replace(/[^\w-]/g, "_").slice(0, 40)}.txt`;
-          const path = await api.scratchWrite(fname, result);
-          note = `\n[output truncated here, the FULL output (${result.length} chars) is saved at: ${path}\nRead precise sections with read_file (offset=<byte>, max_bytes=…) instead of assuming the rest.]`;
-        } catch {
-          note = `\n…(truncated, ${result.length} chars total)`;
-        }
-        hist = hist.slice(0, 8_000) + note;
+      const allowance = await this.toolAllowanceChars(call.function.name);
+      if (hist.length > allowance) {
+        hist = await this.digestOversized(call.function.name, result, allowance);
       }
       this.messages.push({
         role: "tool",
@@ -1682,6 +1855,21 @@ export class Agent {
               .map((h) => `${h.path}:${h.line} (score ${h.score.toFixed(2)})\n${h.snippet}`)
               .join("\n\n---\n\n")
           : "(no match in the knowledge folders)";
+      } else if (name === "retrieve") {
+        // No gate: this reads back only what the app itself spilled, into a
+        // directory the model cannot write to, and Rust refuses any path
+        // outside it. The content already passed whatever gate its own tool
+        // required when it was produced.
+        const ctx = await this.ensureCtxSize();
+        const budget = Math.max(MIN_TOOL_TOKENS, Math.floor(ctx * 0.3) - this.estimateTokens());
+        const hits = await api.digestSearch(
+          String(args.path ?? ""),
+          String(args.query ?? ""),
+          budget > MIN_TOOL_TOKENS ? budget : MIN_TOOL_TOKENS
+        );
+        result = hits.length
+          ? hits.map((h) => `[${h.path}:${h.line}]\n${h.snippet}`).join("\n\n")
+          : "(nothing in that output matches those terms, try other words)";
       } else if (name === "search_workspace") {
         // GATED with fs_read, on the workspace ROOT, before anything is read.
         //

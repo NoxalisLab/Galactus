@@ -4327,6 +4327,7 @@ pub fn run() {
             pylang::py_analyze,
             rust_analyzer_paths,
             knowledge::kb_search,
+            knowledge::digest_search,
             preview_publish
         ])
         .build(tauri::generate_context!())

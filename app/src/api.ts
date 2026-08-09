@@ -295,6 +295,10 @@ export const api = {
   // 0.813 once the window is filled.
   kbSearch: (query: string, k?: number, budgetTokens?: number) =>
     invoke<{ path: string; snippet: string; score: number; line: number }[]>("kb_search", { query, k, budgetTokens }),
+  // Retrieval over one oversized tool output kept whole on disk. Same BM25,
+  // same budget discipline as kbSearch, restricted to a single scratch file.
+  digestSearch: (path: string, query: string, budgetTokens?: number) =>
+    invoke<{ path: string; snippet: string; score: number; line: number }[]>("digest_search", { path, query, budgetTokens }),
 
   // Code workspace. Every path is relative to `root` and confined to it in
   // Rust, not merely here: the model reaches these commands too.

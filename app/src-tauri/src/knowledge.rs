@@ -836,3 +836,109 @@ fn fit_to_budget(hits: Vec<KbHit>, budget: usize) -> Vec<KbHit> {
     out
 }
 
+
+// ------------------------------------------------- oversized tool outputs
+
+/// Retrieval over ONE oversized document kept whole on disk.
+///
+/// A tool output too large for the window is never cut down to fit. It is
+/// written whole to the scratch area and searched from there, with the same
+/// chunking, tokenizer, BM25 and snippet centring the knowledge folders use,
+/// then fitted to the caller's live token budget.
+///
+/// The difference matters. Truncating a 200 KB PDF keeps its title page and
+/// throws away the paragraph that answers the question; retrieving keeps the
+/// paragraph and throws away the title page. Same number of tokens in the
+/// window, opposite outcome for the answer.
+///
+/// Reads are confined to the scratch area on purpose: this command exists to
+/// re-read what the app itself spilled, not to become a second file reader
+/// with its own path rules.
+#[tauri::command]
+pub async fn digest_search(
+    path: String,
+    query: String,
+    budget_tokens: Option<usize>,
+) -> Result<Vec<KbHit>, String> {
+    tauri::async_runtime::spawn_blocking(move || digest_search_blocking(path, query, budget_tokens))
+        .await
+        .map_err(|e| format!("the digest thread died: {e}"))?
+}
+
+fn digest_search_blocking(
+    path: String,
+    query: String,
+    budget_tokens: Option<usize>,
+) -> Result<Vec<KbHit>, String> {
+    let scratch = app_support().join("scratch");
+    let root = std::fs::canonicalize(&scratch)
+        .map_err(|e| format!("no scratch area yet: {e}"))?;
+    let file = std::fs::canonicalize(PathBuf::from(&path))
+        .map_err(|e| format!("cannot open {path}: {e}"))?;
+    if !file.starts_with(&root) {
+        return Err("digest_search only reads the scratch area".into());
+    }
+    let text = std::fs::read_to_string(&file).map_err(|e| format!("cannot read {path}: {e}"))?;
+    if text.trim().is_empty() {
+        return Err(format!("{path} is empty"));
+    }
+    let name = file
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.clone());
+    let budget = budget_tokens.filter(|b| *b > 0);
+    // Rank deep enough that the budget, not the cut-off, decides what fits.
+    let k = match budget {
+        Some(_) => 64,
+        None => DEFAULT_K,
+    };
+    let hits = rank_documents(&[(name, text)], &query, k);
+    Ok(match budget {
+        None => hits,
+        Some(b) => fit_to_budget(hits, b),
+    })
+}
+
+#[cfg(test)]
+mod digest_tests {
+    use super::*;
+
+    #[test]
+    fn retrieval_finds_a_passage_a_head_cut_would_have_lost() {
+        // A document whose answer sits far past any plausible truncation point.
+        let mut doc = String::new();
+        for i in 0..400 {
+            doc.push_str(&format!("Filler paragraph {i} about unrelated matters.\n"));
+        }
+        doc.push_str("The expert cache is sized from the measured resident footprint.\n");
+        for i in 0..400 {
+            doc.push_str(&format!("More filler {i}.\n"));
+        }
+        let hits = rank_documents(
+            &[("spill.txt".to_string(), doc.clone())],
+            "expert cache measured footprint",
+            8,
+        );
+        assert!(!hits.is_empty(), "BM25 returned nothing");
+        assert!(
+            hits[0].snippet.contains("expert cache"),
+            "the answering passage did not rank first: {}",
+            hits[0].snippet
+        );
+        // The same budget spent on the head of the file would have missed it.
+        assert!(!doc[..8_000].contains("expert cache"));
+    }
+
+    #[test]
+    fn budget_is_respected_and_omission_reported() {
+        let doc = (0..200)
+            .map(|i| format!("line {i} expert cache line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let hits = rank_documents(&[("s.txt".to_string(), doc)], "expert cache", 64);
+        let fitted = fit_to_budget(hits, 300);
+        let spent: usize = fitted.iter().map(hit_tokens).sum();
+        assert!(spent <= 300, "budget overrun: {spent}");
+        assert!(!fitted.is_empty());
+    }
+}
