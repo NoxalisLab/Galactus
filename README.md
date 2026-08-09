@@ -2,7 +2,7 @@
 
 # Galactus, your RAM stops being the limit
 
-![app](https://img.shields.io/badge/app-macOS%20Apple%20Silicon-1a7f37) ![dmg](https://img.shields.io/badge/download-51%20MB%20dmg-4a90d9) ![models](https://img.shields.io/badge/catalog-8%20certified%20MoE%20models-7c60e6) ![exact](https://img.shields.io/badge/output-bit--exact-2ea44f) ![offline](https://img.shields.io/badge/network-only%20when%20you%20ask-38b2ac)
+![app](https://img.shields.io/badge/app-macOS%20Apple%20Silicon-1a7f37) ![dmg](https://img.shields.io/badge/download-51%20MB%20dmg-4a90d9) ![models](https://img.shields.io/badge/catalog-9%20certified%20MoE%20models-7c60e6) ![exact](https://img.shields.io/badge/output-bit--exact-2ea44f) ![offline](https://img.shields.io/badge/network-only%20when%20you%20ask-38b2ac)
 
 A local AI app for macOS that runs Mixture-of-Experts models **several times larger than your Mac's memory**, at usable speed, with output identical bit for bit to stock llama.cpp.
 
@@ -28,7 +28,7 @@ That last point is not a slogan. A differential probe fingerprints every MoE ten
 
 ### What that buys, measured
 
-Every figure below was measured on real hardware and lives in the model registry the app reads at runtime. Minimum RAM is what the app will let you install on, derived from measured resident footprint, not from arithmetic.
+Every throughput below was measured on real hardware and lives in the model registry the app reads at runtime. Two entries carry no curve yet: they are certified bit-transparent, which is a different claim and the one that gates availability. Minimum RAM is what the app will let you install on, derived from measured resident footprint, not from arithmetic.
 
 | model | on disk | min RAM | measured throughput |
 |---|---|---|---|
@@ -39,7 +39,8 @@ Every figure below was measured on real hardware and lives in the model registry
 | Llama-4 Scout 17B-16E (Q4_K_M) | 65 GB | 24 GB | 3.7 tok/s at 12 GB, 9.4 at 33, 14.4 at 59 |
 | Qwen3-Next-80B-A3B (Q4_K_M) | 48 GB | 16 GB | 3.8 tok/s at 1.8 GB, 18.4 at 16, 22.6 at 47 |
 | Qwen3-30B-A3B (Q8_0) | 32 GB | 16 GB | 11.7 tok/s at 9.8 GB, 25.0 at 17, 28.7 at 31 |
-| Qwen3-Coder-30B (Q8_0) | 32 GB | 16 GB | certification pending |
+| Qwen3-Coder-30B (Q8_0) | 32 GB | 16 GB | certified, curve not measured yet |
+| OLMoE 1B-7B 0924 (Q4_K_M) | 4 GB | 8 GB | certified, curve not measured yet |
 
 Read the second and third columns together: a 142 GB model is usable on a 24 GB Mac, a 65 GB model on 16 GB. The app picks the regime for your machine on its own, every expert resident when the cache fits them all, streamed from SSD when it does not, or CPU experts for counter-verification. **All three regimes are bit-exact.** There is no fast-but-approximate mode, because a mode that changes the answer is not the same model.
 
@@ -245,17 +246,57 @@ One stride-aware read later: 13.74 became 2.6439, and the differential probe now
 | `patches/` | pinned llama.cpp diff and apply script |
 | `lanceurs/` | the exact scripted runs behind every number above, by category |
 
-### Porting to another MoE model
+### Adding another MoE model
 
-Galactus is wired for GLM-5.2 UD-IQ1_S, and honestly so: several pieces are frozen constants, not parameters. If you want to port it, this is the actual work list.
+This section used to be a work list of frozen constants and a fifteen-line
+branch to write in each architecture's own file. That stopped being true, and
+the claim was measured rather than argued: **OLMoE 1B-7B, architecture `olmoe`,
+which this project had never seen, went from a download to a certified model
+with no code change at all.** Profile, plan, pack, certify. The differential
+came back with 5140 tensors identical, zero divergence, and a perplexity of
+3.988 on both sides.
 
-1. **Record geometry** (`src/h4/h4-core.*`), the per-layer record sizes are a frozen table generated from this checkpoint's GGUF layout. `scripts/analyze-gguf-layout.py` recomputes tensor geometry for any GGUF and self-checks against shard sizes; regenerate the table from its output.
-2. **Pack plan and packer expectations** (`scripts/h4-pack-plan.py`, `scripts/h4-pack-write.py`), record count, total bytes and volume split are asserted against frozen values. Recompute the split from your drives' measured throughputs, update the constants.
-3. **Cache key layout** (`src/h4/h4-expert-cache.hpp`), keys are `layer << 8 | expert`, which assumes at most 256 experts per layer; first and last MoE layer are constants.
-4. **The architecture hook** (`patches/`), expert-tensor creation is intercepted in the model's build function, `glm-dsa.cpp` here. Other MoE architectures need the same 15-line branch in their own file.
-5. **Re-verify, do not trust.** The verification tools are model-agnostic once the plan exists: byte-level content audit (`LANCER-VERIF-EXHAUSTIVE`), zero-eviction probe, full-run differential fingerprints. Run all three before believing any perplexity number, this project's history shows why.
+The engine hook lives in `llm_graph_context::build_moe_ffn`, the MoE graph
+builder every architecture shares, plus an interception at tensor creation that
+filters on the tensor NAME. Zero architecture files are touched: `glm-dsa.cpp`
+contains no reference to Galactus. Record geometry comes from a profile read at
+runtime, and expert keys are ten bits wide, so the old ceiling of 256 experts
+per layer is gone.
 
-The economics move too. This approach pays when expert bytes dwarf RAM and your storage is fast relative to `(model_bytes_per_token x miss_rate)`. The closed model in `docs/PHYSICAL-MODEL.md` section 1 gives the formula: three measured constants and you know your ceiling before writing a line.
+So the work list is now three commands:
+
+```bash
+# Does the engine support this file at all? Reads the header over HTTP,
+# a few megabytes, before you pull the weights.
+python3 scripts/probe-gguf.py https://huggingface.co/.../model.gguf
+
+python3 scripts/moe-profile.py --model-directory models/<id> --output models/<id>/profile.json
+python3 scripts/galactus-pack-plan.py --profile models/<id>/profile.json --output models/<id>/plan.json --volumes single
+python3 scripts/galactus-pack-write.py --plan models/<id>/plan.json --mode full ...
+
+python3 scripts/certify.py --model <id>
+```
+
+The probe exists because of a real cost. A 26 GB Mixtral download finished
+before anything reported that the file was unusable: TheBloke's 2023
+quantization stores experts as 768 separate per-expert tensors, from before
+llama.cpp merged them into fused `*_exps` tensors, and the engine intercepts
+the fused ones. Every Mixtral GGUF checked afterwards, including a 2024
+requantization, had the same layout. The answer was in the first few megabytes
+the whole time, and the probe now reads exactly those.
+
+**Certification is not optional and not a formality.** `certify.py` runs the
+same corpus, the same seed and the same batch shape twice, once wired and once
+stock, and compares the fingerprint of every MoE tensor of one layer byte for
+byte. One differing line fails. It also refuses to run above
+`op_offload_min_batch_size`, which is 32: past that llama.cpp offloads to the
+GPU, `--n-cpu-moe` stops being a CPU reference, and the comparison measures
+nothing. That mistake invalidated a whole perplexity table here once.
+
+The economics still move. This approach pays when expert bytes dwarf RAM and
+your storage is fast relative to `(model_bytes_per_token x miss_rate)`. The
+closed model in `docs/PHYSICAL-MODEL.md` section 1 gives the formula: three
+measured constants and you know your ceiling before writing a line.
 
 ### Limitations
 
