@@ -440,6 +440,28 @@ fn readable(fd: RawFd, timeout_ms: c_int) -> bool {
 /// Signal the whole process group, escalating. SIGHUP is what a terminal
 /// closing actually means, and well behaved programs save and exit on it;
 /// SIGKILL is for the ones that do not.
+/// Put a child in its own session, so it can later be killed as a GROUP.
+///
+/// Shared with the shell tool, and it is not a convenience there: without it,
+/// killing the direct child leaves every grandchild alive holding the write
+/// end of the inherited stdout pipe, and the reader thread blocks in read(2)
+/// forever. The tool then never returns at all, which is worse than the
+/// timeout it was supposed to enforce.
+///
+/// SAFETY: `pre_exec` runs between fork and exec, where only async-signal-safe
+/// calls are allowed. setsid(2) is one of them.
+pub fn own_session(cmd: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+    unsafe {
+        cmd.pre_exec(|| {
+            if setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
 pub fn kill_group(pgid: i32) {
     if pgid <= 1 {
         return; // never signal pid 1 or the whole system (pgid 0 means "my group")
@@ -1160,6 +1182,47 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn killing_the_group_frees_a_pipe_a_grandchild_still_holds() {
+        // The exact shape that hung the shell tool: zsh backgrounds a child,
+        // the deadline kills the direct process, the grandchild keeps the
+        // inherited stdout write end, and read_to_end never returns.
+        //
+        // Reproduced before the fix with a plain kill: the reader stayed
+        // blocked and the orphan was still listed by pgrep afterwards.
+        use std::io::Read;
+        use std::process::{Command, Stdio};
+
+        let mut cmd = Command::new("/bin/zsh");
+        cmd.arg("-lc").arg("(sleep 30 &) ; sleep 30");
+        own_session(&mut cmd);
+        let mut child = cmd.stdout(Stdio::piped()).spawn().expect("spawn");
+        let pgid = child.id() as i32;
+        let mut out = child.stdout.take().expect("stdout");
+
+        let reader = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = out.read_to_end(&mut buf);
+            buf.len()
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        kill_group(pgid);
+        let _ = child.wait();
+
+        // Without the group kill this join never completes and the test hangs
+        // instead of failing, which is why the deadline below is the assertion.
+        let start = std::time::Instant::now();
+        while !reader.is_finished() {
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(5),
+                "the pipe never closed: a grandchild is still holding it"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        reader.join().expect("reader");
+    }
+
     fn kill_group_refuses_dangerous_group_ids() {
         // pgid 0 means "every process in my own group", which would take
         // Galactus down with it. A defensive guard, exercised so it cannot be

