@@ -1,20 +1,24 @@
 {
   "name": "galactus-app",
   "productName": "Galactus",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "prebuild": "node tools/tsintel/copy-libs.mjs",
+    "prebuild": "node tools/sync-packaged.mjs && node tools/tsintel/copy-libs.mjs",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
     "tslib": "node tools/tsintel/copy-libs.mjs",
+    "sync:packaged": "node tools/sync-packaged.mjs",
     "test:editor": "tsc -p tools/editor-core/tsconfig.json && node --test \"tools/editor-core/out/**/*.test.js\"",
     "test:nav": "tsc -p tools/nav/tsconfig.json && node --test \"tools/nav/out/**/*.test.js\"",
     "test:tsintel": "tsc -p tools/tsintel/tsconfig.json && node --test \"tools/tsintel/out/**/*.test.js\"",
-    "test:lang": "tsc -p tools/universal-lang/tsconfig.json && node --test \"tools/universal-lang/out/**/*.test.js\""
+    "test:lang": "tsc -p tools/universal-lang/tsconfig.json && node --test \"tools/universal-lang/out/**/*.test.js\"",
+    "test:policy": "tsc -p tools/model-policy/tsconfig.json && node --test \"tools/model-policy/out/**/*.test.js\"",
+    "test:layout": "tsc -p tools/layout/tsconfig.json && node --test \"tools/layout/out/**/*.test.js\"",
+    "test": "npm run test:editor && npm run test:nav && npm run test:tsintel && npm run test:lang && npm run test:policy && npm run test:layout"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",

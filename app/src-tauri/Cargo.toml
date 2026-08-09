@@ -1,7 +1,7 @@
 [package]
 name = "galactus-app"
-version = "0.1.2"
-description = "Galactus — local MoE assistant by Noxalis Lab"
+version = "0.1.3"
+description = "Galactus, local MoE assistant by Noxalis Lab"
 edition = "2021"
 # Two binaries live in this crate (the app and the galactus CLI); tauri
 # needs to know which one is the app.
