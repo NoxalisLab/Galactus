@@ -527,6 +527,35 @@ async function setWorkspace(p: string): Promise<void> {
 }
 
 /**
+ * Deferred start of the Rust language server.
+ *
+ * `armed` says the workspace deserves one; `fired` says it has been asked for.
+ * Two flags rather than one because they answer different questions, and
+ * collapsing them would make "a Rust project the user never opened a .rs file
+ * in" indistinguishable from "already running".
+ */
+const rustLsp = { armed: false, fired: false };
+
+/**
+ * Start rust-analyzer if this workspace deserves one and it is not started.
+ *
+ * Called when a Rust file is opened, never at launch. Idempotent on purpose:
+ * a user moving between two .rs files must not spawn a second server. The
+ * lifecycle lock in lsp.rs would turn that into a slow no-op rather than two
+ * processes, but relying on a lock to paper over a double call is how the
+ * process leak that lock exists for came back the first time.
+ */
+function fireRustLsp(): void {
+  if (!rustLsp.armed || rustLsp.fired || !root) return;
+  rustLsp.fired = true;
+  void enableRustLsp(root).then(() => {
+    applyRustBindings();
+    paintFileHead();
+    paintTabs();
+  });
+}
+
+/**
  * Bring up everything that depends on having a root: the search subscription
  * and, when the folder looks like a JavaScript or TypeScript project, the
  * in-app language service. Both are lazy and neither is required.
@@ -540,15 +569,16 @@ async function startWorkspaceServices(): Promise<void> {
   // Rust is independent of the TypeScript gate: a repository can be both, and
   // this one is. It also has to be decided BEFORE the early return below, or a
   // pure Rust workspace would never reach it.
-  if (shouldStartRustLsp(top)) {
-    void enableRustLsp(root).then(() => {
-      applyRustBindings();
-      paintFileHead();
-      paintTabs();
-    });
-  } else {
-    void disableRustLsp();
-  }
+  //
+  // Decided here, STARTED later. This function runs at launch on the restored
+  // workspace, before the user has opened anything, and a cold rust-analyzer
+  // spends minutes on `cargo metadata` and indexing. Paying that for someone
+  // who reopened the app to write a paragraph in Chat is the wrong default, so
+  // the server is armed and the first Rust file opened fires it. A Rust
+  // workspace nobody opens a Rust file in now costs nothing.
+  rustLsp.armed = shouldStartRustLsp(top);
+  rustLsp.fired = false;
+  if (!rustLsp.armed) void disableRustLsp();
   if (!shouldLoadTsIntel(top)) {
     tsintel?.disable();
     return;
@@ -851,6 +881,10 @@ function mountEditor(): void {
 
 export async function openFile(rel: string): Promise<void> {
   if (!root) return;
+  // The moment the Rust server is actually worth its cold index. Fired before
+  // the read rather than after, so the server is already coming up while the
+  // file loads; it is idempotent, so every later .rs open is free.
+  if (isRust(rel)) fireRustLsp();
   mid = "editor";
   patch = null;
   let disk = "";

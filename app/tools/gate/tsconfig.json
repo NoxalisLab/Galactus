@@ -24,6 +24,8 @@
   ],
   "files": [
     "../../src/sensitive.ts",
-    "sensitive.test.ts"
+    "../../src/code/rust-lsp.ts",
+    "sensitive.test.ts",
+    "deferred-lsp.test.ts"
   ]
 }
