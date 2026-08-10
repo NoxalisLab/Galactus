@@ -24,6 +24,39 @@ const dict: Record<string, { en: string; fr: string }> = {
     en: "Serve the running model to other apps and other machines",
     fr: "Servir le modele en cours a d'autres apps et d'autres machines",
   },
+  "common.on": { en: "On", fr: "Oui" },
+  "common.off": { en: "Off", fr: "Non" },
+  "mode.title": { en: "How should Galactus start?", fr: "Comment demarrer Galactus ?" },
+  "mode.body": {
+    en: "This decides which half of the app exists. You can change it later in Settings.",
+    fr: "Ce choix decide quelle moitie de l'app existe. Il se change ensuite dans les Reglages.",
+  },
+  "mode.appBody": {
+    en: "The full assistant, on this Mac.",
+    fr: "L'assistant complet, sur ce Mac.",
+  },
+  "mode.appA": { en: "Chat, workspace, memory, teammates", fr: "Chat, atelier, memoire, equipiers" },
+  "mode.appB": { en: "The model stays on 127.0.0.1", fr: "Le modele reste sur 127.0.0.1" },
+  "mode.appC": { en: "Everything below is available too", fr: "Tout ce qui suit reste disponible" },
+  "mode.serverBody": {
+    en: "Serve the model to your other tools, and to other machines.",
+    fr: "Servir le modele a tes autres outils, et a d'autres machines.",
+  },
+  "mode.serverA": { en: "Models, connectors, settings, runs", fr: "Modeles, connecteurs, reglages, runs" },
+  "mode.serverB": {
+    en: "Authenticating relay, reachable from your network",
+    fr: "Relais authentifie, joignable depuis ton reseau",
+  },
+  "mode.serverC": {
+    en: "No surface that reads your files",
+    fr: "Aucune surface qui lit tes fichiers",
+  },
+  "mode.askAlways": { en: "Ask again every launch", fr: "Redemander a chaque lancement" },
+  "net.modeAsk": { en: "Ask at launch", fr: "Demander au lancement" },
+  "net.modeAskHint": {
+    en: "Show the two doors at every start instead of reopening in the last mode.",
+    fr: "Montrer les deux portes a chaque demarrage au lieu de rouvrir dans le dernier mode.",
+  },
   "net.mode": { en: "App mode", fr: "Mode de l'app" },
   "net.modeHint": {
     en: "Server mode keeps the model, the settings and the measurements, and hides the assistant surfaces.",

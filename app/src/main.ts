@@ -114,6 +114,19 @@ function toolsBlocked(): boolean {
 type AppMode = "app" | "server";
 let appMode: AppMode = "app";
 /**
+ * Whether the launch screen still owes the user a choice.
+ *
+ * The mode existed before this and could only be reached through one row of
+ * the settings page, in the network section, which is to say it could not be
+ * reached: someone who starts Galactus to serve a model to their editor had to
+ * first open the assistant, find a setting they did not know existed, and
+ * switch. A mode that decides which half of the app exists is a launch
+ * question, so it is asked at launch.
+ */
+let modePending = false;
+/** Ask again on every start, for someone who alternates. Off by default. */
+let modeAskAlways = false;
+/**
  * The only views that survive server mode.
  *
  * Runs is here rather than beside the assistant surfaces because it is the
@@ -3130,6 +3143,9 @@ function settingsView(): HTMLElement {
       <div class="set-row"><div class="grow"><b>${esc(t("net.mode"))}</b><span>${esc(t("net.modeHint"))}</span></div>
         <div class="seg" id="appmodeseg"><button data-m="app" class="${appMode === "app" ? "on" : ""}">${esc(t("net.modeApp"))}</button><button data-m="server" class="${appMode === "server" ? "on" : ""}">${esc(t("net.modeServer"))}</button></div>
       </div>
+      <div class="set-row"><div class="grow"><b>${esc(t("net.modeAsk"))}</b><span>${esc(t("net.modeAskHint"))}</span></div>
+        <div class="seg" id="modeaskseg"><button data-a="0" class="${modeAskAlways ? "" : "on"}">${esc(t("common.off"))}</button><button data-a="1" class="${modeAskAlways ? "on" : ""}">${esc(t("common.on"))}</button></div>
+      </div>
       <div class="set-row"><div class="grow"><b>${esc(t("net.expose"))}</b><span>${esc(t("net.exposeHint"))}</span></div>
         <div class="seg" id="bindseg"><button data-b="127.0.0.1" class="${relayBind === "127.0.0.1" ? "on" : ""}">${esc(t("net.localOnly"))}</button><button data-b="0.0.0.0" class="${relayBind === "0.0.0.0" ? "on" : ""}">${esc(t("net.network"))}</button></div>
       </div>
@@ -3157,6 +3173,16 @@ function settingsView(): HTMLElement {
   wrap.querySelector("#openconnectors")!.addEventListener("click", () => { view = "connectors"; render(); });
   wrap.querySelector("#openskills")!.addEventListener("click", () => { view = "agent"; render(); });
   {
+    const askSeg = wrap.querySelector<HTMLElement>("#modeaskseg");
+    askSeg?.addEventListener("click", async (e) => {
+      const b = (e.target as HTMLElement).closest("[data-a]") as HTMLElement | null;
+      if (!b) return;
+      modeAskAlways = b.dataset.a === "1";
+      askSeg.querySelectorAll("button").forEach((x) =>
+        x.classList.toggle("on", (x as HTMLElement).dataset.a === (modeAskAlways ? "1" : "0"))
+      );
+      await api.settingsSet("app_mode_ask", modeAskAlways ? "1" : "0");
+    });
     const seg = wrap.querySelector<HTMLElement>("#autoseg");
     if (seg) {
       const paint = (m: AutoMode) =>
@@ -3287,6 +3313,50 @@ function settingsView(): HTMLElement {
   return wrap;
 }
 
+// ---------- the launch choice ----------
+
+/**
+ * Two doors, before anything else is drawn.
+ *
+ * Not a modal over the app: picking `server` removes the chat, the workspace,
+ * the memory and the agent, so drawing them first and then taking them away
+ * would be showing the user something that was never theirs. The choice is
+ * remembered, and the settings row still switches it afterwards.
+ */
+function modeChoiceView(): HTMLElement {
+  const card = (mode: AppMode, title: string, body: string, points: string[]) => `
+    <button class="modepick plate" data-m="${mode}">
+      <b>${esc(title)}</b>
+      <span class="d">${esc(body)}</span>
+      <ul>${points.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>
+    </button>`;
+  const wrap = el(`<div class="onb modechoice"><div class="box">
+    <img class="g" src="${LOGO}" alt="Galactus"/>
+    <h1>${esc(t("mode.title"))}</h1>
+    <p>${esc(t("mode.body"))}</p>
+    <div class="modepicks">
+      ${card("app", t("net.modeApp"), t("mode.appBody"), [t("mode.appA"), t("mode.appB"), t("mode.appC")])}
+      ${card("server", t("net.modeServer"), t("mode.serverBody"), [t("mode.serverA"), t("mode.serverB"), t("mode.serverC")])}
+    </div>
+    <label class="modeask"><input type="checkbox" id="modeask" ${modeAskAlways ? "checked" : ""}/><span>${esc(t("mode.askAlways"))}</span></label>
+  </div></div>`);
+  const ask = wrap.querySelector<HTMLInputElement>("#modeask")!;
+  ask.addEventListener("change", () => {
+    modeAskAlways = ask.checked;
+    void api.settingsSet("app_mode_ask", modeAskAlways ? "1" : "0");
+  });
+  wrap.querySelectorAll<HTMLElement>("[data-m]").forEach((b) => {
+    b.addEventListener("click", () => {
+      appMode = b.dataset.m === "server" ? "server" : "app";
+      void api.settingsSet("app_mode", appMode);
+      if (appMode === "server" && !SERVER_MODE_VIEWS.includes(view)) view = "models";
+      modePending = false;
+      render();
+    });
+  });
+  return wrap;
+}
+
 // ---------- onboarding ----------
 function onboardView(): HTMLElement {
   const wrap = el(`<div class="onb"><div class="box">
@@ -3397,6 +3467,14 @@ function render() {
   if (!root) {
     const l = el(`<div class="layout"></div>`);
     l.appendChild(onboardView());
+    app.appendChild(l);
+    wireUiSemantics(l);
+    return;
+  }
+
+  if (modePending) {
+    const l = el(`<div class="layout"></div>`);
+    l.appendChild(modeChoiceView());
     app.appendChild(l);
     wireUiSemantics(l);
     return;
@@ -3755,6 +3833,11 @@ async function boot() {
   await codeview.initCodeRoot(s["code_root"]).catch(() => {});
   if (s["ram_mode"] === "eco" || s["ram_mode"] === "perf") ramMode = s["ram_mode"];
   if (s["app_mode"] === "server") appMode = "server";
+  modeAskAlways = s["app_mode_ask"] === "1";
+  // Asked when nothing was ever chosen, and on every start if that was asked
+  // for. A stored answer is honoured silently: a question already answered is
+  // not a choice, it is a toll.
+  modePending = modeAskAlways || s["app_mode"] === undefined;
   if (s["relay_bind"] === "0.0.0.0") relayBind = "0.0.0.0";
   // The relay never survives a restart: the key lived in memory only, so there
   // is nothing to reopen with. Its status is read anyway, since a previous
