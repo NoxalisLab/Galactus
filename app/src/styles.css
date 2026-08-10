@@ -1513,6 +1513,22 @@ html.pane-dragging .pvw-frame { pointer-events: none; }
 .runs-budget .runs-field { width: 110px; }
 .runs-budget-hint { flex: 1; min-width: 160px; font-size: 11px; color: var(--dim3); line-height: 1.45; }
 
+/* Answering the every-time requests in advance. Only rendered under the
+   autonomous policy, and deliberately not styled as a warning: it is the thing
+   that makes a run finish, not a hazard to talk someone out of. It goes amber
+   once ticked, the same tone the block uses, because it is the same decision
+   taken earlier. */
+.runs-preauth {
+  display: flex; gap: 10px; align-items: flex-start; padding: 11px 13px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--panel2);
+}
+.runs-preauth:hover { border-color: var(--dim3); }
+.runs-preauth.on { border-color: var(--warn); }
+.runs-preauth input { margin: 2px 0 0; accent-color: var(--warn); }
+.runs-preauth span { display: flex; flex-direction: column; gap: 3px; }
+.runs-preauth b { font-size: 12px; font-weight: 600; }
+.runs-preauth small { font-size: 11px; color: var(--dim3); line-height: 1.45; }
+
 /* The block. It is the reason blocking exists rather than refusing, so it is
    the loudest thing on the card: amber brackets, the question in full, and
    two answers side by side. */

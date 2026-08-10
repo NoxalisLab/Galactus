@@ -129,9 +129,13 @@ A machine serving a model with nobody in front of it can be given a task and lef
 
 Three policies, and the list is closed on purpose, because the alternative is an interface where the dangerous configuration and the safe one look alike. `read_only` looks and never touches. `propose` adds web retrieval and code proposals, which land in the editor as pending diffs and only reach the disk when a human accepts a hunk. `autonomous` covers every ordinary permission.
 
-What no policy covers: elevated requests are refused under all three, with no value that unlocks them, and anything the attended gate insists on showing every time (a push, with its branch and its count) stops the run rather than being auto-approved. The run's agent never writes a standing rule either, because a rule written by a run nobody was watching would outlive it and pre-approve the same action in a later session, in another project.
+Elevated requests are refused under all three, with no value that unlocks them. A refusal does not stop the run: the model is told no and carries on, exactly as when a human presses Deny, because stopping there would turn every elevated attempt into a dead task.
 
-When a run meets a decision only a person can make, it stops, records what it is waiting for, and resumes where it left off. Granting it is scoped to that one kind and that one path, is stored in the run's own append-only transcript rather than in a settings field, and overrules the policy alone: a cancelled run and a run past its wall clock stay refused whatever anyone granted them.
+Under `autonomous`, exactly two things could still stop a run: `git push` and `git pull`, which the attended gate shows every time so the user sees the branch and the count. Nobody is watching a run, so a **stop is a failure of the design, not a safety feature**: a task that waits for a click is not automated. The declaration form answers those two in advance, which is where the decision belongs in an automated system, made once by someone who knows what the run is for rather than paged mid-turn to approve a branch name out of context. It reaches nothing else: elevated is refused before it is consulted, a kind outside the policy is refused before it too, so under `read_only` it changes nothing at all. It is part of the frozen limits and of the transcript's first entry, so a run cannot acquire it afterwards and a snapshot claiming it against a transcript that does not is refused.
+
+Under the two narrower policies, a run does stop on anything outside its grants, which is the point of choosing them: it records what it is waiting for and resumes where it left off. Granting it then is scoped to that one kind and that one path, is stored in the run's own append-only transcript rather than in a settings field, and overrules the policy alone: a cancelled run and a run past its wall clock stay refused whatever anyone granted them.
+
+The run's agent never writes a standing rule, under any policy. A rule written by a run nobody was watching would outlive it and pre-approve the same action in a later session, in another project.
 
 ### The command line
 

@@ -126,3 +126,97 @@ test("elevated stays refused under every policy, in a turn or out of one", () =>
     assert.deepEqual(out, { decision: "refuse", reason: "elevated" }, `policy ${policy}`);
   }
 });
+
+// ---------------------------------------------------- answering in advance
+//
+// A run that stops for a person is not automated, it is a task with a queue of
+// interruptions. Under `autonomous` exactly two requests could still stop one,
+// `git push` and `git pull`, because the attended gate shows those every time
+// so the user sees the branch and the count. Nobody is there to see anything in
+// a run, so the choice is between never pushing and deciding in advance.
+//
+// Deciding in advance is the honest one, and these tests are about the part
+// that makes it honest: it answers that one question and reaches nothing else.
+
+const PUSH = { kind: "git" as const, detail: "push origin main (3)", elevated: false, noAlways: true };
+
+function runWith(policy: RunPolicy, pre: boolean): Run {
+  const run = Run.create({
+    id: "r1",
+    name: "nightly",
+    limits: { maxTurns: 10, maxWallClockMs: 60_000, policy, preauthorizeEveryTime: pre },
+    now: clock(0),
+  });
+  run.beginTurn();
+  return run;
+}
+
+test("without it, an autonomous run still stops on a push", () => {
+  assert.deepEqual(runWith("autonomous", false).gate(PUSH), {
+    decision: "block",
+    reason: "every_time",
+  });
+});
+
+test("with it, an autonomous run pushes without asking anyone", () => {
+  assert.deepEqual(runWith("autonomous", true).gate(PUSH), { decision: "allow" });
+});
+
+test("it does not grant the kind, only answers the question", () => {
+  // read_only does not grant `git` at all, so the policy check refuses before
+  // this is ever consulted. A flag that could hand a read_only run a push would
+  // be a policy in disguise.
+  assert.deepEqual(runWith("read_only", true).gate(PUSH), { decision: "block", reason: "policy" });
+  assert.deepEqual(runWith("propose", true).gate(PUSH), { decision: "block", reason: "policy" });
+});
+
+test("it never reaches an elevated request", () => {
+  const run = runWith("autonomous", true);
+  assert.deepEqual(
+    run.gate({ kind: "shell", detail: "sudo launchctl load x", elevated: true, noAlways: true }),
+    { decision: "refuse", reason: "elevated" },
+  );
+});
+
+test("it is part of the contract, so it cannot be switched on afterwards", () => {
+  const run = runWith("autonomous", false);
+  assert.throws(() => {
+    (run.limits as { preauthorizeEveryTime?: boolean }).preauthorizeEveryTime = true;
+  }, /read only|readonly|not extensible|Cannot assign/i);
+  assert.equal(run.gate(PUSH).decision, "block");
+});
+
+test("a snapshot cannot switch it on either", () => {
+  // The same rule as the policy: the transcript's created entry is the
+  // contract, and a snapshot that disagrees is refused rather than repaired.
+  const run = runWith("autonomous", false);
+  const entries = run.transcript();
+  const snapshot = JSON.parse(JSON.stringify(run.snapshot())) as { limits: RunLimits };
+  snapshot.limits.preauthorizeEveryTime = true;
+  assert.throws(
+    () => Run.restore(snapshot as never, entries, clock(0)),
+    /disagree with the transcript/i,
+  );
+});
+
+test("absent and false are the same thing, and both still stop", () => {
+  const run = Run.create({
+    id: "r1",
+    name: "n",
+    limits: { maxTurns: 5, maxWallClockMs: 1000, policy: "autonomous" },
+    now: clock(0),
+  });
+  run.beginTurn();
+  assert.equal(run.gate(PUSH).decision, "block", "the default must be the cautious one");
+});
+
+test("a run that pushes without asking still says so in its record", () => {
+  // The whole trade is that the human moved their decision earlier, not that it
+  // stopped being recorded. An audit that lost the pushes would make the
+  // preauthorized run the one nobody can review.
+  const run = runWith("autonomous", true);
+  run.gate(PUSH);
+  const gate = run.transcript().find((e) => e.type === "gate");
+  assert.equal(gate?.type === "gate" ? gate.decision : "", "allow");
+  assert.match(gate?.type === "gate" ? gate.detail : "", /push origin main/);
+});

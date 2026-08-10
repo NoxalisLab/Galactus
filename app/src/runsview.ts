@@ -129,6 +129,12 @@ const draft = {
   policy: "read_only" as RunPolicy,
   turns: 8,
   minutes: 20,
+  /**
+   * Answer the two every-time requests in advance. Off by default, and only
+   * offered under `autonomous`, where it is the difference between a run that
+   * finishes and a run that stops on its first push waiting for a click.
+   */
+  preauth: false,
 };
 
 // ---------------------------------------------------------------- prompts
@@ -554,6 +560,10 @@ function declareRun(): void {
     maxTurns: clampInt(draft.turns, 1, 200),
     maxWallClockMs: clampInt(draft.minutes, 1, 24 * 60) * 60_000,
     policy: draft.policy,
+    // Only ever true for the policy that already grants git. Sending it under
+    // read_only would store a permission the run can never use and put a claim
+    // in its transcript that its behaviour does not back.
+    preauthorizeEveryTime: draft.policy === "autonomous" && draft.preauth,
   };
   const now = Date.now();
   const id = makeRunId(now);
@@ -705,7 +715,11 @@ function paintForm(scope?: HTMLElement): void {
       </div>
       <span class="runs-budget-hint">${esc(t("runs.budgetHint"))}</span>
       <button class="bp" id="rf-start">${esc(t("runs.start"))}</button>
-    </div>`;
+    </div>
+    ${draft.policy === "autonomous" ? `<label class="runs-preauth ${draft.preauth ? "on" : ""}">
+      <input type="checkbox" id="rf-preauth" ${draft.preauth ? "checked" : ""}/>
+      <span><b>${esc(t("runs.preauth"))}</b><small>${esc(t("runs.preauthHint"))}</small></span>
+    </label>` : ""}`;
   const name = box.querySelector<HTMLInputElement>("#rf-name")!;
   const task = box.querySelector<HTMLTextAreaElement>("#rf-task")!;
   const turns = box.querySelector<HTMLInputElement>("#rf-turns")!;
@@ -718,6 +732,11 @@ function paintForm(scope?: HTMLElement): void {
     const card = (e.target as HTMLElement).closest("[data-policy]") as HTMLElement | null;
     if (!card) return;
     draft.policy = card.dataset.policy as RunPolicy;
+    paintForm();
+  });
+  const preauth = box.querySelector<HTMLInputElement>("#rf-preauth");
+  preauth?.addEventListener("change", () => {
+    draft.preauth = preauth.checked;
     paintForm();
   });
   box.querySelector<HTMLButtonElement>("#rf-start")!.addEventListener("click", () => declareRun());

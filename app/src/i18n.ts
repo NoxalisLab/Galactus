@@ -988,6 +988,14 @@ const dict: Record<string, { en: string; fr: string }> = {
     en: "Every ordinary permission. Elevated ones stay refused, whatever the policy says.",
     fr: "Toutes les permissions ordinaires. Les permissions élevées restent refusées, quoi qu'en dise la politique.",
   },
+  "runs.preauth": {
+    en: "Answer the every-time requests now",
+    fr: "Repondre maintenant aux demandes systematiques",
+  },
+  "runs.preauthHint": {
+    en: "git push and git pull are the only two things that still stop an autonomous run, because the attended gate shows them every time. Nobody is watching this one, so decide here or it will stop.",
+    fr: "git push et git pull sont les deux seules choses qui arretent encore une run autonome, parce que la validation surveillee les montre a chaque fois. Personne ne regarde celle-ci : decide ici, sinon elle s'arretera.",
+  },
   "runs.turns": { en: "Turns", fr: "Tours" },
   "runs.turnsUnit": { en: "turns", fr: "tours" },
   "runs.minutes": { en: "Minutes", fr: "Minutes" },

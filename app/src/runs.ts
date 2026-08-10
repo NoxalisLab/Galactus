@@ -191,10 +191,18 @@ export type RunGateOutcome =
  * its own. Order matters: elevated is tested first and short circuits, so no
  * policy table, present or future, can reach a decision on an elevated request.
  */
-export function decideGate(policy: RunPolicy, req: RunPermissionRequest): RunGateOutcome {
+export function decideGate(
+  policy: RunPolicy,
+  req: RunPermissionRequest,
+  preauthorizeEveryTime = false,
+): RunGateOutcome {
   if (req.elevated) return { decision: "refuse", reason: "elevated" };
   if (!POLICY_GRANTS[policy].includes(req.kind)) return { decision: "block", reason: "policy" };
-  if (req.noAlways) return { decision: "block", reason: "every_time" };
+  // Third, and only third. The two checks above have already run, so this can
+  // turn nothing into an allow that the policy or the elevated rule refused.
+  if (req.noAlways && !preauthorizeEveryTime) {
+    return { decision: "block", reason: "every_time" };
+  }
   return { decision: "allow" };
 }
 
@@ -210,15 +218,40 @@ export interface RunLimits {
    */
   maxWallClockMs: number;
   policy: RunPolicy;
+  /**
+   * Answer, in advance, the requests the attended gate insists on showing every
+   * time: today that is `git push` and `git pull`, the only two things an
+   * `autonomous` run can still stop on.
+   *
+   * Without it a run is not unattended, it is merely unwatched until the first
+   * push, and then it is a task waiting for someone to click. That is not a
+   * subtlety about one permission kind, it is the difference between automation
+   * and a queue of interruptions. So the decision moves to where it belongs in
+   * an automated system: the declaration. A human still makes it, once, knowing
+   * what the run is for, instead of being paged mid-turn to approve a branch
+   * name they now have to reconstruct the context for.
+   *
+   * It cannot reach anything else. decideGate refuses elevated before it looks
+   * at this, and blocks on a kind outside the policy before it too, so this only
+   * ever turns the `every_time` block into an allow, and only for a policy that
+   * already grants the kind. Under read_only it changes nothing at all.
+   *
+   * Absent means false. It is part of the frozen limits and part of the
+   * transcript's created entry, so a run cannot acquire it after the fact and a
+   * snapshot claiming it against a transcript that does not is refused.
+   */
+  preauthorizeEveryTime?: boolean;
 }
 
-export type LimitsError = "max_turns" | "max_wall_clock" | "policy";
+export type LimitsError = "max_turns" | "max_wall_clock" | "policy" | "preauthorize";
 
 /** Null when the limits are usable, otherwise which field is wrong. */
 export function validateLimits(limits: RunLimits): LimitsError | null {
   if (!Number.isInteger(limits.maxTurns) || limits.maxTurns < 1) return "max_turns";
   if (!Number.isFinite(limits.maxWallClockMs) || limits.maxWallClockMs < 1) return "max_wall_clock";
   if (!isRunPolicy(limits.policy)) return "policy";
+  const pre = limits.preauthorizeEveryTime;
+  if (pre !== undefined && typeof pre !== "boolean") return "preauthorize";
   return null;
 }
 
@@ -732,7 +765,7 @@ export class Run {
         ? { decision: "refuse", reason: "cancelled" }
         : expired
           ? expired
-          : decideGate(this.limits.policy, req);
+          : decideGate(this.limits.policy, req, this.limits.preauthorizeEveryTime === true);
     this.push({
       type: "gate",
       kind: req.kind,
