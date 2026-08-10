@@ -76,9 +76,15 @@ public:
     [[nodiscard]] const ExpertCache & cache() const noexcept { return cache_; }
     [[nodiscard]] std::uint64_t slot_bytes() const noexcept { return slot_bytes_; }
     [[nodiscard]] bool pinned() const noexcept { return pin_; }
-    // Emplacements reellement alloues par couche : tous les experts du modele
-    // en mode epingle, sinon le quota resident du cache.
-    [[nodiscard]] std::uint32_t slots_per_layer() const noexcept;
+    // Emplacements reellement alloues pour UNE couche : tous les experts du
+    // modele en mode epingle, sinon le quota que le cache accorde a cette
+    // couche. Il n'y a plus de nombre unique : un plan de cache donne plus de
+    // places aux couches ou une place enleve le plus de lectures.
+    [[nodiscard]] std::uint32_t slots_of(std::uint32_t layer) const noexcept;
+    [[nodiscard]] std::uint32_t max_slots_per_layer() const noexcept;
+    // Le plus gros bloc contigu d'une seule couche, pour le decoupage des
+    // tampons du backend.
+    [[nodiscard]] std::uint64_t max_slab_bytes() const noexcept;
 
 private:
     std::uint32_t allocate_slot(std::uint32_t key);  // lance si la liste libre est a sec
@@ -92,6 +98,7 @@ private:
     unsigned char * arena_ = nullptr;
     std::uint64_t slot_bytes_ = 0;
     std::vector<std::uint64_t> layer_base_;          // offset du premier emplacement
+    std::vector<std::uint32_t> slots_of_layer_;      // places allouees, par couche
     std::vector<std::int16_t> slot_of_;              // couches * capacite, -1 si absent
     std::vector<std::vector<std::int16_t>> free_slots_;
     std::uint64_t next_request_id_ = 0;

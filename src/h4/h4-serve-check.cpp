@@ -42,7 +42,7 @@ int main(int argc, char ** argv) try {
     DualVolumeReader reader(internal_path, external_path, 32, 32ULL << 20, 2ULL << 30, true);
     P0Layout layout(frozen_layer_record_bytes(), P0Profile::v2_7157_2843);
     ExpertStore store(capacity, 0.75, reader, layout);
-    std::printf("magasin : %u experts par couche\n", store.slots_per_layer());
+    std::printf("magasin : jusqu'a %u experts par couche\n", store.max_slots_per_layer());
 
     struct Span { std::string role, shard; std::uint64_t source_offset, length, record_offset; };
     std::map<std::uint32_t, std::vector<Span>> spans_by_key;

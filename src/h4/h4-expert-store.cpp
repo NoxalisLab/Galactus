@@ -33,7 +33,6 @@ ExpertStore::ExpertStore(std::uint64_t capacity_bytes,
                          std::uint32_t split)
     : cache_(capacity_bytes, protected_fraction), reader_(reader), layout_(layout),
       split_(split == 0 ? 1 : split) {
-    const std::uint32_t quota = cache_.quota_per_layer();
     // Mode epingle : une couche cablee recoit TOUS les experts du modele, pas
     // la capacite d'encodage des clefs.
     const std::uint32_t model_experts = ModelProfile::active().experts;
@@ -56,6 +55,7 @@ ExpertStore::ExpertStore(std::uint64_t capacity_bytes,
     }
     layer_base_.resize(ExpertCache::layer_count());
     free_slots_.resize(ExpertCache::layer_count());
+    slots_of_layer_.reserve(ExpertCache::layer_count());
     // Indexe par (clef & key_expert_mask) : dimensionne sur la CAPACITE
     // d'encodage pour qu'une clef hors domaine reste dans les bornes.
     slot_of_.assign(static_cast<std::size_t>(ExpertCache::layer_count()) * key_expert_capacity, -1);
@@ -68,9 +68,12 @@ ExpertStore::ExpertStore(std::uint64_t capacity_bytes,
             throw std::runtime_error("expert store: record size is not 16 KiB aligned");
         }
         const std::uint32_t layer_number = index + ExpertCache::first_layer();
-        const std::uint32_t layer_quota = !pin_ ? quota
+        // La couche recoit exactement les places que le cache lui accorde.
+        // Sans plan de cache elles sont toutes egales, comme avant.
+        const std::uint32_t layer_quota = !pin_ ? cache_.quota_of(layer_number)
             : (layer_number >= pin_low_ && layer_number <= pin_high_
                ? model_experts : 0U);
+        slots_of_layer_.push_back(layer_quota);
         offset += record * layer_quota;
         free_slots_[index].reserve(layer_quota);
         for (std::int32_t slot = static_cast<std::int32_t>(layer_quota) - 1; slot >= 0; --slot) {
@@ -90,8 +93,27 @@ ExpertStore::~ExpertStore() {
     std::free(arena_);
 }
 
-std::uint32_t ExpertStore::slots_per_layer() const noexcept {
-    return pin_ ? ModelProfile::active().experts : cache_.quota_per_layer();
+std::uint32_t ExpertStore::slots_of(std::uint32_t layer) const noexcept {
+    return slots_of_layer_[layer - ExpertCache::first_layer()];
+}
+
+std::uint32_t ExpertStore::max_slots_per_layer() const noexcept {
+    std::uint32_t most = 0;
+    for (const auto slots : slots_of_layer_) most = std::max(most, slots);
+    return most;
+}
+
+std::uint64_t ExpertStore::max_slab_bytes() const noexcept {
+    // La plaque d'une couche : ses places contigues, une par expert resident.
+    // C'est CETTE taille qui doit etre le chevauchement des MTLBuffers quand
+    // ggml decoupe l'arene, pas le produit du plus gros enregistrement par le
+    // plus grand nombre de places, qui appartiendrait a aucune couche.
+    std::uint64_t widest = 0;
+    for (std::size_t index = 0; index < slots_of_layer_.size(); ++index) {
+        widest = std::max(widest, frozen_layer_record_bytes()[index]
+                                      * static_cast<std::uint64_t>(slots_of_layer_[index]));
+    }
+    return widest;
 }
 
 const void * ExpertStore::data(std::uint32_t key) const noexcept {
@@ -173,7 +195,13 @@ void ExpertStore::issue_part(Volume volume, std::uint64_t offset, std::uint64_t 
 }
 
 void ExpertStore::warm(const std::vector<std::uint32_t> & keys) {
+    std::uint32_t current_layer = keys.empty() ? 0 : (keys.front() >> key_expert_bits);
+    if (!keys.empty()) cache_.begin_batch(current_layer);
     for (const auto key : keys) {
+        if ((key >> key_expert_bits) != current_layer) {
+            current_layer = key >> key_expert_bits;
+            cache_.begin_batch(current_layer);
+        }
         const auto access = cache_.access(key);
         if (access.evicted) release_slot(access.evicted_key);  // meme sur un succes
         if (access.hit) continue;
@@ -187,6 +215,10 @@ std::int16_t ExpertStore::slot_of(std::uint32_t key) const noexcept {
 }
 
 std::uint64_t ExpertStore::serve_layer(const std::uint32_t * keys, std::uint32_t count) {
+    // Un appel = un micro-lot d'une couche. Le cache doit le savoir avant le
+    // premier acces : sa victime ne peut pas etre une cle que ce lot fait
+    // entrer, sans quoi la couche calculerait sur des octets absents.
+    if (count > 0) cache_.begin_batch(keys[0] >> key_expert_bits);
     std::uint64_t bytes_read = 0;
     std::vector<std::future<ReadResult>> pending;
     pending.reserve(count * 2U);
@@ -251,9 +283,15 @@ ExpertStore::TokenResult ExpertStore::serve_token(
     };
 
     std::uint32_t current_layer = keys.empty() ? 0 : (keys.front() >> key_expert_bits);
+    if (!keys.empty()) cache_.begin_batch(current_layer);
     std::vector<std::uint32_t> inflight;
     inflight.reserve(keys.size());
     for (const auto key : keys) {
+        if ((key >> key_expert_bits) != current_layer) {
+            // Nouvelle couche, donc nouveau micro-lot du point de vue du
+            // cache, quel que soit le regime de service.
+            cache_.begin_batch(key >> key_expert_bits);
+        }
         if (mode == ServeMode::layer && (key >> key_expert_bits) != current_layer) {
             // regime reel : on ne peut pas lire la couche suivante avant que
             // celle-ci soit servie, puisque son routeur n'a pas encore tourne

@@ -35,7 +35,8 @@ find_library(GGML_BASE_LIBRARY
 add_executable(galactus-route-trace src/route-trace.cpp)
 add_executable(galactus-process-memory src/process-memory.cpp)
 
-add_library(galactus-h4-core STATIC src/h4/h4-core.cpp src/h4/h4-profile.cpp src/h4/h4-reader.cpp)
+add_library(galactus-h4-core STATIC src/h4/h4-core.cpp src/h4/h4-profile.cpp src/h4/h4-reader.cpp
+    src/h4/h4-cache-plan.cpp)
 target_include_directories(galactus-h4-core PUBLIC "${CMAKE_SOURCE_DIR}/src/h4")
 target_link_libraries(galactus-h4-core PUBLIC Threads::Threads)
 
@@ -77,6 +78,7 @@ add_executable(galactus-h4-clone-pack src/h4/h4-clone-pack.cpp)
 add_executable(galactus-h4-serve-check
     src/h4/h4-serve-check.cpp
     src/h4/h4-core.cpp src/h4/h4-profile.cpp
+    src/h4/h4-cache-plan.cpp
     src/h4/h4-expert-cache.cpp
     src/h4/h4-expert-store.cpp
     src/h4/h4-reader.cpp)
@@ -251,6 +253,12 @@ target_link_libraries(galactus-h4-runtime-size-audit PRIVATE galactus-h4-core)
 add_executable(galactus-h4-split-probe src/h4/h4-split-probe.cpp)
 target_link_libraries(galactus-h4-split-probe PRIVATE galactus-h4-core)
 
+# galactus-h4-cache-plan-probe : expose plan_layer_quotas au differentiel
+# contre l'allocateur Python qui a produit toutes les mesures publiees
+# (scripts/tests/test-cache-plan-differential.py).
+add_executable(galactus-h4-cache-plan-probe src/h4/h4-cache-plan-probe.cpp)
+target_link_libraries(galactus-h4-cache-plan-probe PRIVATE galactus-h4-core)
+
 enable_testing()
 add_test(NAME galactus-h4-selftest COMMAND galactus-h4-selftest)
 add_test(
@@ -258,6 +266,15 @@ add_test(
     COMMAND "${CMAKE_COMMAND}" -E env
         "GALACTUS_SPLIT_PROBE=$<TARGET_FILE:galactus-h4-split-probe>"
         python3 "${CMAKE_SOURCE_DIR}/scripts/tests/test-p0-split-differential.py")
+add_test(
+    NAME galactus-cache-plan-differential
+    COMMAND "${CMAKE_COMMAND}" -E env
+        "GALACTUS_CACHE_PLAN_PROBE=$<TARGET_FILE:galactus-h4-cache-plan-probe>"
+        "GALACTUS_EXPERT_CACHE_REPLAY=$<TARGET_FILE:galactus-h4-expert-cache-replay>"
+        python3 "${CMAKE_SOURCE_DIR}/scripts/tests/test-cache-plan-differential.py")
+add_test(
+    NAME galactus-replay-cache-harness
+    COMMAND python3 "${CMAKE_SOURCE_DIR}/scripts/tests/test-replay-cache.py")
 if(APPLE)
     add_test(
         NAME galactus-b2c-sha256-file-runtime

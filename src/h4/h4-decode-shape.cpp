@@ -121,8 +121,8 @@ int main(int argc, char ** argv) try {
     P0Layout layout(frozen_layer_record_bytes(), P0Profile::v2_7157_2843);
     ExpertStore store(capacity_bytes, protected_fraction, reader, layout, split);
 
-    std::printf("cache %" PRIu64 " octets -> %u experts par couche, arene %" PRIu64 " octets\n",
-                capacity_bytes, store.slots_per_layer(), store.slot_bytes());
+    std::printf("cache %" PRIu64 " octets -> jusqu'a %u experts par couche, arene %" PRIu64 " octets\n",
+                capacity_bytes, store.max_slots_per_layer(), store.slot_bytes());
     std::printf("regime %s, QD %u, split %u, F_NOCACHE int/ext %d/%d\n",
                 mode == ServeMode::token ? "token (borne haute)" : "layer (reel)",
                 queue_depth, split,
