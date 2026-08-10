@@ -57,6 +57,7 @@ target_link_libraries(galactus-h4-decode-shape PRIVATE galactus-h4-core Threads:
 add_executable(galactus-h4-selftest src/h4/h4-selftest.cpp)
 target_link_libraries(galactus-h4-selftest PRIVATE galactus-h4-core)
 
+
 add_executable(galactus-h4-fixture src/h4/h4-fixture.cpp)
 target_link_libraries(galactus-h4-fixture PRIVATE galactus-h4-core)
 
@@ -245,8 +246,18 @@ set_target_properties(galactus-h4-memory-probe PROPERTIES
 add_executable(galactus-h4-runtime-size-audit src/h4/h4-runtime-size-audit.cpp)
 target_link_libraries(galactus-h4-runtime-size-audit PRIVATE galactus-h4-core)
 
+# galactus-h4-split-probe : expose plan_p0_split au differentiel packeur/lecteur
+# (scripts/tests/test-p0-split-differential.py).
+add_executable(galactus-h4-split-probe src/h4/h4-split-probe.cpp)
+target_link_libraries(galactus-h4-split-probe PRIVATE galactus-h4-core)
+
 enable_testing()
 add_test(NAME galactus-h4-selftest COMMAND galactus-h4-selftest)
+add_test(
+    NAME galactus-p0-split-differential
+    COMMAND "${CMAKE_COMMAND}" -E env
+        "GALACTUS_SPLIT_PROBE=$<TARGET_FILE:galactus-h4-split-probe>"
+        python3 "${CMAKE_SOURCE_DIR}/scripts/tests/test-p0-split-differential.py")
 if(APPLE)
     add_test(
         NAME galactus-b2c-sha256-file-runtime

@@ -28,9 +28,22 @@ measures nothing. That mistake already invalidated a whole perplexity table in
 this project. The batch shape is therefore checked before anything runs, and a
 request outside the safe regime is refused rather than answered.
 
+DUAL PACKS
+
+By default the wired run points both volumes at the one pack it found, which
+is the mono-volume layout. --internal-pack / --external-pack aim it at a real
+two-volume pair instead, which is how a pack cut at a measured ratio gets
+proven readable: the engine takes the cut from the .split record beside the
+internal pack, and one wrong block anywhere shows up here as a differing
+fingerprint. --ratio additionally hands the engine the caller's own copy of
+that ratio, exercising the cross-check that refuses to start on a mismatch.
+
 Usage:
   python3 scripts/certify.py --model qwen3-30b-a3b
   python3 scripts/certify.py --model qwen3-30b-a3b --layer 3 --json
+  python3 scripts/certify.py --model olmoe-1b-7b \
+      --internal-pack /a/m-internal.pack --external-pack /b/m-external.pack \
+      --ratio 0.5
 """
 from __future__ import annotations
 
@@ -167,7 +180,8 @@ def final_ppl(raw: str) -> float | None:
     return float(m[-1]) if m else None
 
 
-def certify(model_id: str, layer: int) -> dict:
+def certify(model_id: str, layer: int, internal_pack: str | None = None,
+            external_pack: str | None = None, ratio: str | None = None) -> dict:
     if SAFE_UBATCH >= OP_OFFLOAD_MIN_BATCH:
         die("the reference batch is at or above op_offload_min_batch_size: "
             "--n-cpu-moe would not be a CPU reference and the comparison would "
@@ -177,6 +191,18 @@ def certify(model_id: str, layer: int) -> dict:
 
     entry = find_model(model_id)
     gguf, pack, profile = resolve_paths(model_id)
+    # An explicit pair replaces the discovered pack entirely. Both halves are
+    # required together: one of the two alone would silently fall back to the
+    # mono layout and the run would certify something nobody asked for.
+    if (internal_pack is None) != (external_pack is None):
+        die("--internal-pack and --external-pack go together")
+    if internal_pack is not None:
+        for side in (internal_pack, external_pack):
+            if not pathlib.Path(side).is_file():
+                die(f"{side} does not exist")
+        pack_internal, pack_external = internal_pack, external_pack
+    else:
+        pack_internal = pack_external = str(pack)
     corpus = pick_corpus()
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
@@ -184,20 +210,27 @@ def certify(model_id: str, layer: int) -> dict:
 
     print(f"certifying {model_id} ({entry.get('arch', 'unknown arch')})")
     print(f"  gguf   {gguf.name}")
-    print(f"  pack   {pack.name}")
+    if internal_pack is not None:
+        print(f"  packs  {pathlib.Path(pack_internal).name} + "
+              f"{pathlib.Path(pack_external).name}"
+              + (f" @ ratio {ratio}" if ratio else ""))
+    else:
+        print(f"  pack   {pack.name}")
     print(f"  corpus {corpus.name}")
     print(f"  layer  {layer}, ubatch {SAFE_UBATCH}, seed {SEED}")
 
     stock_raw = run_pass("stock ", gguf, layer, {}, [], base.with_suffix(".stock.out"), corpus)
     wired_env = {
         "GALACTUS_H4": "1",
-        "GALACTUS_H4_INTERNAL": str(pack),
-        "GALACTUS_H4_EXTERNAL": str(pack),
+        "GALACTUS_H4_INTERNAL": pack_internal,
+        "GALACTUS_H4_EXTERNAL": pack_external,
         "GALACTUS_H4_CPU_MOE": "1",
         "GALACTUS_H4_QD": "32",
     }
     if profile:
         wired_env["GALACTUS_PROFILE"] = str(profile)
+    if ratio:
+        wired_env["GALACTUS_H4_RATIO"] = ratio
     wired_raw = run_pass("wired ", gguf, layer, wired_env, ["--no-mmap"],
                          base.with_suffix(".wired.out"), corpus)
 
@@ -209,6 +242,9 @@ def certify(model_id: str, layer: int) -> dict:
         "model": model_id,
         "arch": entry.get("arch"),
         "layer": layer,
+        "internal_pack": pack_internal,
+        "external_pack": pack_external,
+        "ratio": ratio,
         "stock_lines": len(a),
         "wired_lines": len(b),
         "stock_ppl": final_ppl(stock_raw),
@@ -244,9 +280,13 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--model", required=True)
     ap.add_argument("--layer", type=int, default=3)
+    ap.add_argument("--internal-pack", help="dual pack: internal half (overrides discovery)")
+    ap.add_argument("--external-pack", help="dual pack: external half")
+    ap.add_argument("--ratio", help="pass this ratio to the engine as GALACTUS_H4_RATIO "
+                                    "(cross-check against the pack's own .split record)")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
-    v = certify(args.model, args.layer)
+    v = certify(args.model, args.layer, args.internal_pack, args.external_pack, args.ratio)
     if args.json:
         print(json.dumps(v, indent=2))
     else:

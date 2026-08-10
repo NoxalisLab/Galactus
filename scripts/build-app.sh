@@ -104,6 +104,36 @@ done
 rm -f "$ROOT/app/src-tauri/target/release/bundle/macos/rw."*.dmg 2>/dev/null || true
 rm -f "$ROOT/app/src-tauri/target/release/bundle/dmg/rw."*.dmg 2>/dev/null || true
 
+# ------------------------------------------------------- fraicheur du moteur
+# prepare-engine.sh copie ce qui traine dans third_party/llama.cpp/build/bin,
+# sans jamais verifier que ce binaire correspond aux sources du moteur. Un audit
+# a trouve exactement cette panne : le bundle portait un libllama compile avant
+# le mecanisme de decoupe, donc une app capable d'ecrire un pack a un ratio
+# mesure, embarquant un moteur qui ignore ce ratio et relit le pack a la coupe
+# gelee. En silence, et c'est precisement ce que le mecanisme existe pour
+# empecher.
+#
+# Le controle est une date, pas une liste de fonctionnalites : une liste
+# oublierait la prochaine. Si une source du moteur est plus recente que le
+# binaire, le binaire ne peut pas la contenir.
+ENGINE_BIN="$ROOT/third_party/llama.cpp/build/bin/libllama.0.dylib"
+if [ ! -f "$ENGINE_BIN" ]; then
+  echo "ECHEC: moteur absent ($ENGINE_BIN). Construis-le avant." >&2
+  exit 1
+fi
+STALE="$(find "$ROOT/src/h4" "$ROOT/third_party/llama.cpp/src/llama-galactus-h4.cpp" \
+  "$ROOT/third_party/llama.cpp/src/llama-galactus-h4.h" \
+  -newer "$ENGINE_BIN" -type f 2>/dev/null | head -5)"
+if [ -n "$STALE" ]; then
+  echo "ECHEC: le moteur construit est plus ancien que ses sources." >&2
+  echo "  binaire : $ENGINE_BIN" >&2
+  echo "  sources plus recentes :" >&2
+  echo "$STALE" | sed 's/^/    /' >&2
+  echo "  reconstruis-le : cmake --build third_party/llama.cpp/build --target llama-server -j" >&2
+  exit 1
+fi
+echo "moteur : a jour vis-a-vis de ses sources"
+
 # ------------------------------------------------------------------ contenu
 "$ROOT/app/src-tauri/prepare-engine.sh"
 

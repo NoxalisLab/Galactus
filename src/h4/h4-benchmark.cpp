@@ -53,6 +53,10 @@ struct Options {
     std::string active_volume = "both";
     std::string io_policy = "unchanged";
     std::string p0_profile = "v1";
+    // Empty means "the profile's own cut". A value selects
+    // P0Profile::dual_ratio, so a pack packed at a measured r* can be read
+    // the way the engine reads it.
+    std::string p0_ratio;
 };
 
 std::string require_value(int argc, char ** argv, int & index, const std::string & option) {
@@ -114,6 +118,8 @@ Options parse_options(int argc, char ** argv) {
             options.io_policy = require_value(argc, argv, index, option);
         } else if (option == "--p0-profile") {
             options.p0_profile = require_value(argc, argv, index, option);
+        } else if (option == "--p0-ratio") {
+            options.p0_ratio = require_value(argc, argv, index, option);
         } else {
             throw std::invalid_argument("unknown option: " + option);
         }
@@ -151,6 +157,9 @@ Options parse_options(int argc, char ** argv) {
     }
     if (options.layout != "p0" && options.p0_profile != "v1") {
         throw std::invalid_argument("--p0-profile v2 is restricted to P0");
+    }
+    if (!options.p0_ratio.empty() && options.layout != "p0") {
+        throw std::invalid_argument("--p0-ratio is restricted to P0");
     }
     return options;
 }
@@ -430,10 +439,16 @@ int run(const Options & options) {
         throw std::runtime_error("getiopolicy_np after configuration failed: " + std::string(std::strerror(errno)));
     }
     const auto & record_bytes = galactus::h4::frozen_layer_record_bytes();
-    const auto p0_profile = options.p0_profile == "v2"
-        ? P0Profile::v2_7157_2843
-        : P0Profile::v1_599_401;
-    const P0Layout p0(record_bytes, p0_profile);
+    const bool explicit_ratio = !options.p0_ratio.empty();
+    const auto p0_profile = explicit_ratio
+        ? P0Profile::dual_ratio
+        : (options.p0_profile == "v2" ? P0Profile::v2_7157_2843 : P0Profile::v1_599_401);
+    // std::stod is strtod: the same decimal spelling the packer wrote yields
+    // the same double here, which is what makes the pack readable at all.
+    const double p0_ratio = explicit_ratio
+        ? std::stod(options.p0_ratio)
+        : galactus::h4::p0v2_default_ratio;
+    const P0Layout p0(record_bytes, p0_profile, p0_ratio);
     const P1Layout p1(record_bytes);
     const auto expected_internal = options.layout == "p0" ? p0.internal_bytes() : p1.internal_bytes();
     const auto expected_external = options.layout == "p0" ? p0.external_bytes() : p1.external_bytes();
@@ -577,7 +592,8 @@ int run(const Options & options) {
     std::cout << std::fixed << std::setprecision(9)
               << "{\"schema\":\"galactus.h4.exploratory-run.v1\""
               << ",\"layout\":\"" << options.layout << "\""
-              << ",\"p0_profile\":\"" << options.p0_profile << "\""
+              << ",\"p0_profile\":\"" << (options.p0_ratio.empty() ? options.p0_profile : "dual_ratio") << "\""
+              << ",\"p0_ratio\":\"" << options.p0_ratio << "\""
               << ",\"active_volume\":\"" << options.active_volume << "\""
               << ",\"io_policy_requested\":\"" << options.io_policy << "\""
               << ",\"io_policy_set_succeeded\":"

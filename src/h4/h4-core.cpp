@@ -3,8 +3,12 @@
 
 #include <algorithm>
 #include <array>
+#include <cfenv>
 #include <cmath>
+#include <cstdlib>
+#include <fstream>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -48,13 +52,119 @@ std::uint64_t checked_add(std::uint64_t left, std::uint64_t right, const char * 
     return left + right;
 }
 
+// THE cut. Every dual record on the generic path goes through this function
+// and nothing else, so there is exactly one place where the packer and the
+// reader can disagree, and it is three lines long.
+//
+// It must reproduce scripts/galactus-pack-plan.py, i.e. Python
+// round(blocks * ratio): a double multiply, then round-half-to-even.
+// std::nearbyint IS round-half-to-even, but only under FE_TONEAREST. That is
+// the default rounding mode, and a caller who changed it would silently move
+// the cut of every record in the pack, so it is checked rather than assumed.
+std::uint64_t generic_dual_cut(std::uint64_t blocks, double ratio) {
+    if (std::fegetround() != FE_TONEAREST) {
+        throw std::runtime_error(
+            "P0 dual split requires the FE_TONEAREST rounding mode: the packer rounds "
+            "ties to even and any other mode would cut records elsewhere");
+    }
+    const double cut = std::nearbyint(static_cast<double>(blocks) * ratio);
+    return std::min(static_cast<std::uint64_t>(cut), blocks);
+}
+
+std::string ratio_text(double ratio) {
+    std::ostringstream out;
+    // 17 significant digits round-trip any IEEE double, so a mismatch message
+    // never shows two values that print the same.
+    out.precision(17);
+    out << ratio;
+    return out.str();
+}
+
 } // namespace
+
+bool p0_ratio_usable(double ratio) noexcept {
+    return std::isfinite(ratio) && ratio >= p0_ratio_minimum && ratio <= p0_ratio_maximum;
+}
+
+double sanitized_p0_ratio(double ratio) noexcept {
+    return p0_ratio_usable(ratio) ? ratio : p0v2_default_ratio;
+}
+
+std::string split_sidecar_path(const std::string & internal_pack_path) {
+    return internal_pack_path + ".split";
+}
+
+bool load_split_sidecar(const std::string & path, SplitSidecar & out) {
+    std::ifstream in(path);
+    if (!in) {
+        return false;   // pack written before this record existed
+    }
+    auto fail = [&](const std::string & why) {
+        throw std::runtime_error("split sidecar (" + path + "): " + why);
+    };
+    std::string magic;
+    int version = 0;
+    in >> magic >> version;
+    if (magic != "galactus-split" || version != 1) fail("en-tete inconnu");
+    SplitSidecar parsed;
+    bool ended = false;
+    bool has_volumes = false;
+    bool has_ratio = false;
+    std::string key;
+    while (in >> key) {
+        if (key == "volumes") {
+            std::string mode;
+            in >> mode;
+            if (mode != "dual" && mode != "single") fail("volumes inconnu: " + mode);
+            parsed.dual = mode == "dual";
+            has_volumes = true;
+        } else if (key == "ratio") {
+            std::string text;
+            in >> text;
+            char * stop = nullptr;
+            // strtod is correctly rounded, and so is Python float(): the same
+            // decimal spelling therefore yields the same double on both sides.
+            parsed.ratio = std::strtod(text.c_str(), &stop);
+            if (stop == text.c_str() || (stop != nullptr && *stop != '\0')) {
+                fail("ratio illisible: " + text);
+            }
+            has_ratio = true;
+        } else if (key == "records") {
+            in >> parsed.records;
+        } else if (key == "internal_bytes") {
+            in >> parsed.internal_bytes;
+        } else if (key == "external_bytes") {
+            in >> parsed.external_bytes;
+        } else if (key == "end") {
+            ended = true;
+            break;
+        } else {
+            fail("clef inconnue " + key);
+        }
+        if (!in) fail("lecture interrompue");
+    }
+    if (!ended) fail("fin de fichier sans 'end'");
+    if (!has_volumes) fail("champ 'volumes' absent");
+    if (parsed.dual) {
+        if (!has_ratio) fail("pack dual sans champ 'ratio'");
+        if (!p0_ratio_usable(parsed.ratio)) {
+            fail("ratio " + ratio_text(parsed.ratio) + " hors bornes ["
+                 + ratio_text(p0_ratio_minimum) + ", " + ratio_text(p0_ratio_maximum) + "]");
+        }
+        if (parsed.external_bytes == 0) fail("pack dual sans octets externes");
+    } else if (parsed.external_bytes != 0) {
+        fail("pack mono-volume avec des octets externes");
+    }
+    if (parsed.records == 0 || parsed.internal_bytes == 0) fail("totaux vides");
+    out = parsed;
+    return true;
+}
 
 const std::vector<std::uint64_t> & frozen_layer_record_bytes() noexcept {
     return ModelProfile::active().record_bytes;
 }
 
-SplitRecordPlan plan_p0_split(std::uint64_t record_bytes, P0Profile profile) {
+SplitRecordPlan plan_p0_split(std::uint64_t record_bytes, P0Profile profile, double ratio) {
     if (record_bytes == 0 || record_bytes % record_alignment_bytes != 0) {
         throw std::invalid_argument("P0 record size must be a positive multiple of 16 KiB");
     }
@@ -69,22 +179,34 @@ SplitRecordPlan plan_p0_split(std::uint64_t record_bytes, P0Profile profile) {
             throw std::overflow_error("P0 block split overflow");
         }
         internal_blocks = (blocks * 599 + 500) / 1000;
+    } else if (profile == P0Profile::dual_ratio) {
+        // Generic dual pack: the cut comes from the measured bandwidths, and
+        // the ONLY thing the reader is allowed to do with it is reproduce
+        // scripts/galactus-pack-plan.py. No per-record special case lives on
+        // this path: a literal exception here would apply to models the packer
+        // never gave one to. Refuse an unusable ratio outright instead of
+        // quietly substituting a default, because the caller has already had
+        // its chance to fall back (sanitized_p0_ratio) and a cut that differs
+        // from the pack's is worse than not starting.
+        if (!p0_ratio_usable(ratio)) {
+            throw std::invalid_argument(
+                "P0 dual split ratio " + ratio_text(ratio) + " is outside ["
+                + ratio_text(p0_ratio_minimum) + ", " + ratio_text(p0_ratio_maximum) + "]");
+        }
+        internal_blocks = generic_dual_cut(blocks, ratio);
     } else {
-        // Jointly selected literal P0v2 cut points for the frozen GLM-5.2
-        // classes. Do not derive these by per-class rounding: 576 minimizes
-        // the aggregate large-class error.
+        // LEGACY P0v2, and legacy only: the packs that carry no ratio record.
+        // Jointly selected literal cut points for the frozen GLM-5.2 classes.
+        // Do not derive these by per-class rounding: 576 minimizes the
+        // aggregate large-class error, and it is NOT what round(804 * 0.7157)
+        // gives (575). That divergence is precisely why these literals may
+        // never leak onto the generic path above.
         switch (record_bytes) {
         case 9'732'096: internal_blocks = 425; break;
         case 11'304'960: internal_blocks = 494; break;
         case 13'172'736: internal_blocks = 576; break;
         default:
-            // Generic dual packs (app install, any MoE model): the cut MUST
-            // reproduce scripts/galactus-pack-plan.py --volumes dual, i.e.
-            // round(blocks * 0.7157) with Python's round() semantics
-            // (ties-to-even). nearbyint under FE_TONEAREST matches exactly.
-            internal_blocks = static_cast<std::uint64_t>(
-                std::nearbyint(static_cast<double>(blocks) * 0.7157));
-            internal_blocks = std::min(internal_blocks, blocks);
+            internal_blocks = generic_dual_cut(blocks, p0v2_default_ratio);
             break;
         }
     }

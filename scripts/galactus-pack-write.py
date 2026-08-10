@@ -10,6 +10,11 @@ the plan hash, free-space check, atomic manifest, full readback verification.
 
   fixture : 3 records (first, middle, last) written and verified, seconds.
   full    : the real packs. --confirm must equal WRITE-<12 first hex of plan sha>.
+
+A full write also leaves "<internal pack>.split" beside the internal pack: the
+ratio the records were cut at and the totals it produced. That file is what the
+engine reads to know where to cut, and what it checks its own arithmetic
+against before serving a single byte.
 """
 import argparse, hashlib, json, os
 from pathlib import Path
@@ -104,10 +109,53 @@ def main():
         if dual and written_e != plan["totals"]["external_bytes"]:
             raise SystemExit("octets externes ecrits != plan")
 
+    # The split record, beside the pack it describes.
+    #
+    # A dual pack is unreadable without the ratio its records were cut at, and
+    # a reader that guesses is a reader that returns the wrong bytes in
+    # silence. The ratio therefore travels WITH the pack, not with the app:
+    # settings can be copied between machines, an app update can change a
+    # default, a user can reprobe their SSDs and get a different r*, and none
+    # of that moves the bytes already on disk.
+    #
+    # It lives here rather than in a pack header because a header would shift
+    # every record offset and make every installed pack unreadable, and rather
+    # than in the model's engine profile because that file describes the MODEL
+    # (geometry, shared by every pack of it) while this describes ONE pack.
+    #
+    # Flat text, same shape as profile.engine.txt: the C++ loader parses it
+    # without a JSON library. The totals are what makes a rounding
+    # disagreement loud: the engine recomputes the layout and refuses to start
+    # unless it reproduces these two numbers exactly.
+    #
+    # Full mode only. A fixture pack holds three records, so its totals would
+    # describe nothing the engine could check itself against.
+    if args.mode == "full":
+        ratio = plan["ratio"] if dual else 1.0
+        split = args.internal_output.with_name(args.internal_output.name + ".split")
+        split_tmp = split.with_name(split.name + ".tmp")
+        split_tmp.write_text(
+            "\n".join([
+                "galactus-split 1",
+                f"volumes {plan['volumes']}",
+                # repr() is the shortest spelling that round-trips this double,
+                # and C strtod recovers the same one: that is what lets the
+                # engine reproduce round(blocks * ratio) block for block.
+                f"ratio {ratio!r}",
+                f"records {len(chosen)}",
+                f"internal_bytes {written_i}",
+                f"external_bytes {written_e}",
+                "end",
+            ]) + "\n",
+            encoding="utf-8")
+        split_tmp.replace(split)
+        print(f"decoupe: {split}")
+
     manifest = {
         "generator": "galactus-pack-write", "mode": args.mode,
         "plan_sha256": plan_sha, "architecture": plan["architecture"],
-        "volumes": plan["volumes"], "records_written": len(chosen),
+        "volumes": plan["volumes"], "ratio": plan["ratio"],
+        "records_written": len(chosen),
         "internal_pack": str(args.internal_output),
         "internal_bytes": written_i,
         "internal_sha256": sha256_file(args.internal_output),

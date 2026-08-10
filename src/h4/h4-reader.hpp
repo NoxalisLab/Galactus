@@ -79,9 +79,11 @@ struct P0RecordLocation {
 
 class P0Layout {
 public:
+    // `ratio` is read only by P0Profile::dual_ratio (see plan_p0_split).
     explicit P0Layout(
         const std::vector<std::uint64_t> & layer_record_bytes,
-        P0Profile profile = P0Profile::v1_599_401);
+        P0Profile profile = P0Profile::v1_599_401,
+        double ratio = p0v2_default_ratio);
 
     [[nodiscard]] const P0RecordLocation & lookup(std::uint32_t key) const;
     [[nodiscard]] std::uint64_t internal_bytes() const noexcept;

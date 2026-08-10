@@ -2,7 +2,7 @@
 
 # Galactus, your RAM stops being the limit
 
-![app](https://img.shields.io/badge/app-macOS%20Apple%20Silicon-1a7f37) ![dmg](https://img.shields.io/badge/download-51%20MB%20dmg-4a90d9) ![models](https://img.shields.io/badge/catalog-10%20certified%20MoE%20models-7c60e6) ![exact](https://img.shields.io/badge/output-bit--exact-2ea44f) ![offline](https://img.shields.io/badge/network-only%20when%20you%20ask-38b2ac)
+![app](https://img.shields.io/badge/app-macOS%20Apple%20Silicon-1a7f37) ![dmg](https://img.shields.io/badge/download-52%20MB%20dmg-4a90d9) ![models](https://img.shields.io/badge/catalog-10%20certified%20MoE%20models-7c60e6) ![exact](https://img.shields.io/badge/output-bit--exact-2ea44f) ![offline](https://img.shields.io/badge/network-only%20when%20you%20ask-38b2ac)
 
 A local AI app for macOS that runs Mixture-of-Experts models **several times larger than your Mac's memory**, at usable speed, with output identical bit for bit to stock llama.cpp.
 
@@ -22,26 +22,26 @@ Every runtime still asks you to hold all of them in RAM. That is the constraint 
 
 The routed experts are repacked out of the GGUF into contiguous, aligned records on SSD. A pinned arena in RAM holds a per-layer cache of expert slots, and a graph node inserted after the router rewrites expert ids into slot ids: hits cost nothing, misses stream from the SSD into their slot before the matrix multiply runs, and the multiply reads the arena directly with zero copies. Your RAM becomes a cache, not a floor.
 
-The cache is elastic. Give it 7 GB and gpt-oss-120b answers at 4.6 tok/s; give it 61 GB and the same model reaches 19.4. Nothing is pruned, quantized further, or dropped at any point along that curve. **The model you run is the model that was published, and its output is bit-identical to running it the ordinary way.**
+The cache is elastic. Give it 5.06 GB and gpt-oss-120b answers at 3.2 tok/s; give it 60.9 GB and the same model reaches 20.6. Nothing is pruned, quantized further, or dropped at any point along that curve. **The model you run is the model that was published, and its output is bit-identical to running it the ordinary way.**
 
 That last point is not a slogan. A differential probe fingerprints every MoE tensor over a full perplexity run and finds zero divergence against stock llama.cpp. The GPU path is held to the same standard: the Metal expert kernels replicate the CPU integer pipeline exactly, verified across all 11 expert quantization types in the catalog, 32768 of 32768 bits identical per type, maximum absolute difference 0.0.
 
 ### What that buys, measured
 
-Every throughput below was measured on real hardware and lives in the model registry the app reads at runtime. Two entries carry no curve yet: they are certified bit-transparent, which is a different claim and the one that gates availability. Minimum RAM is what the app will let you install on, derived from measured resident footprint, not from arithmetic.
+Every throughput below was measured on real hardware and lives in the model registry the app reads at runtime. One entry carries no curve yet, GLM-5.2 744B, which has a single measured point: it is certified bit-transparent, which is a different claim and the one that gates availability. Minimum RAM is what the app will let you install on, derived from measured resident footprint, not from arithmetic.
 
 | model | on disk | min RAM | measured throughput |
 |---|---|---|---|
 | GLM-5.2 744B (UD-IQ1_S) | 202 GB | 128 GB | 5.9 tok/s at 92 GB cache |
-| Qwen3-235B-A22B (Q4_K_M) | 142 GB | 24 GB | 1.1 tok/s at 14 GB, 3.5 at 54, 7.0 at 89 |
-| GLM-4.5-Air 106B (Q4_K_M) | 73 GB | 32 GB | 2.7 tok/s at 14 GB, 4.8 at 33, 8.2 at 67 |
-| gpt-oss-120b | 65 GB | 16 GB | 4.6 tok/s at 7 GB, 12.7 at 27, 19.4 at 61 |
-| Llama-4 Scout 17B-16E (Q4_K_M) | 65 GB | 24 GB | 3.7 tok/s at 12 GB, 9.4 at 33, 14.4 at 59 |
-| Qwen3-Next-80B-A3B (Q4_K_M) | 48 GB | 16 GB | 3.8 tok/s at 1.8 GB, 18.4 at 16, 22.6 at 47 |
-| Qwen3-30B-A3B (Q8_0) | 32 GB | 16 GB | 11.7 tok/s at 9.8 GB, 25.0 at 17, 28.7 at 31 |
-| Qwen3-Coder-30B (Q8_0) | 32 GB | 16 GB | certified, curve not measured yet |
-| Phi-3.5-MoE instruct (Q4_K_M) | 25 GB | 16 GB | certified, curve not measured yet |
-| OLMoE 1B-7B 0924 (Q4_K_M) | 4 GB | 16 GB | certified, curve not measured yet |
+| Qwen3-235B-A22B (Q4_K_M) | 142 GB | 24 GB | 0.6 tok/s at 12.5 GB, 1.0 at 24.2, 2.4 at 44.8 |
+| GLM-4.5-Air 106B (Q4_K_M) | 73 GB | 32 GB | 1.8 tok/s at 11.8 GB, 3.4 at 33.6, 15.4 at 66 |
+| gpt-oss-120b | 65 GB | 16 GB | 3.2 tok/s at 5.06 GB, 6.0 at 24.8, 20.6 at 60.9 |
+| Llama-4 Scout 17B-16E (Q4_K_M) | 65 GB | 24 GB | 2.8 tok/s at 9.59 GB, 10.0 at 32.6, 12.4 at 58.5 |
+| Qwen3-Next-80B-A3B (Q4_K_M) | 48 GB | 16 GB | 9.3 tok/s at 9.05 GB, 17.8 at 25.2, 18.2 at 46.9 |
+| Qwen3-30B-A3B (Q8_0) | 32 GB | 16 GB | 7.1 tok/s at 9.07 GB, 25.5 at 22.4, 26.9 at 30.8 |
+| Qwen3-Coder-30B (Q8_0) | 32 GB | 16 GB | 4.3 tok/s at 9.07 GB, 27.9 at 22.4, 28.5 at 30.8 |
+| Phi-3.5-MoE instruct (Q4_K_M) | 25 GB | 16 GB | 13.2 tok/s at 10.1 GB, 22.7 at 22.4, 23.8 at 24.4 |
+| OLMoE 1B-7B 0924 (Q4_K_M) | 4 GB | 16 GB | 11.0 tok/s at 0.98 GB, 52.4 at 2.93, 77.2 at 3.9 |
 
 Read the second and third columns together: a 142 GB model is usable on a 24 GB Mac, a 65 GB model on 16 GB. The app picks the regime for your machine on its own, every expert resident when the cache fits them all, streamed from SSD when it does not, or CPU experts for counter-verification. **All three regimes are bit-exact.** There is no fast-but-approximate mode, because a mode that changes the answer is not the same model.
 
@@ -51,7 +51,7 @@ Read the second and third columns together: a 142 GB model is usable on a 24 GB 
 
 A native macOS app for Apple Silicon, self-contained. The patched engine and its libraries, a private Python 3.12 runtime, the on-device dictation and document helpers, the model registry, 30 skills and a 50-note starter vault all ship inside the bundle. No Homebrew, no Python install, no account.
 
-**What reaches the network, precisely.** The app never opens a connection on its own: no telemetry, no analytics, no account, no update check, no phone-home of any kind. Inference is always local, and the answer to your question is computed on your Mac and nowhere else. Three things do reach the internet, and each one only because you asked for it: downloading a model from Hugging Face when you install it; the agent fetching a page, running deep research, or executing a shell command that you allowed, each shown as a tool card with the exact URL or command before it runs; and any MCP connector you enable, which fetches its own server package. Turn none of them on and the app is fully offline. That is a weaker claim than "nothing ever leaves your Mac", and it is the true one.
+**What reaches the network, precisely.** No telemetry, no analytics, no account, no phone-home of any kind. Inference is always local. One connection is opened on the app's own initiative, and only one: eight seconds after launch, in assistant mode, Galactus asks GitHub whether a newer version exists. It sends nothing but the request, downloads nothing, and a settings row turns it off. Server mode never checks at all, because an offer on a screen nobody watches can only get an accidental answer. The answer to your question is computed on your Mac and nowhere else. Three things do reach the internet, and each one only because you asked for it: downloading a model from Hugging Face when you install it; the agent fetching a page, running deep research, or executing a shell command that you allowed, each shown as a tool card with the exact URL or command before it runs; and any MCP connector you enable, which fetches its own server package. Turn none of them on and the app is fully offline. That is a weaker claim than "nothing ever leaves your Mac", and it is the true one.
 
 Grab `Galactus_x.y.z_aarch64.dmg` from the Releases page, drag it to Applications, launch it.
 

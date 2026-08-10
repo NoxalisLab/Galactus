@@ -103,7 +103,8 @@
       "min_ram_gb": 128,
       "record_bytes": 13172736,
       "non_expert_bytes": 12000000000,
-      "min_cache_bytes": 92000000000
+      "min_cache_bytes": 92000000000,
+      "measured_note": "M5 Max reference, single measured point at 92 GB of cache, taken before scripts/bench-curve.py existed. One point is not a curve: the app clamps to it on every machine instead of interpolating. Not re-measured because the pack does not live in the repository"
     },
     {
       "id": "qwen3-30b-a3b",
@@ -288,7 +289,7 @@
           "mac_gb": 64
         }
       ],
-      "measured_note": "MacBook Pro M5 Max, 128 GB, internal SSD, shipped path (Metal bit-exact experts), batch 512, planner ubatch, 192 predicted tokens on a 24-paragraph prompt, bench 2026-08-10 by scripts/bench-curve.py; cache = app planning ceiling per Mac tier, curve stops at full residency (137.29 GB)",
+      "measured_note": "MacBook Pro M5 Max, 128 GB, internal SSD, shipped path (Metal bit-exact experts), batch 512, planner ubatch, 192 predicted tokens on a 24-paragraph prompt, bench 2026-08-10 by scripts/bench-curve.py; cache = app planning ceiling per Mac tier, curve stops at the 64 GB Mac tier. Full residency needs 137.29 GB of cache and is never reached on any tier; the 128 GB tier, which plans an 89.60 GB arena, was attempted three times and never produced a timing line, so it is absent rather than estimated",
       "download": {
         "base": "https://huggingface.co/unsloth/Qwen3-235B-A22B-Instruct-2507-GGUF/resolve/main/Q4_K_M",
         "files": [

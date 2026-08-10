@@ -121,7 +121,7 @@ was checked, on the development machine:
   shellcheck over every inline `run` block.
 - every command the CI workflow runs was executed by hand and passed:
   `check-dashes.py` at zero, `check-skills.py` clean, `npx tsc --noEmit` clean,
-  `npm test` at 822 passed and 0 failed, `cargo test --offline` at 177 passed
+  `npm test` at 858 passed and 0 failed, `cargo test --offline` at 251 passed
   and 0 failed.
 - `shellcheck` is clean at warning level on every script.
 

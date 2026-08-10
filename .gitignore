@@ -29,6 +29,25 @@ tests/
 # them: an integration test that cannot be committed cannot run in CI either,
 # and its absence looks exactly like a passing build.
 !app/src-tauri/tests/
+# Same reasoning, one file: CMake registers this differential as a ctest
+# (galactus-p0-split-differential). A checkout without it does not skip the
+# test, it fails to run it, and the packer/reader agreement it proves is the
+# one thing in the split chain that cannot be checked from one side alone.
+!scripts/tests/
+scripts/tests/*
+!scripts/tests/test-p0-split-differential.py
+# And the directory the bare rule above actually names. CMakeLists.txt calls
+# add_executable on all three sources here and registers them as ctest tests
+# (galactus-b2c-sha256-file-runtime, galactus-c1-contract-runtime,
+# galactus-h4-a0-contract-runtime). A missing source is not a skipped test:
+# add_executable on a file that is not there is a hard CMake configure error,
+# so a fresh clone cannot even generate a build system. The fixture is listed
+# too because galactus-b2c-sha256-file-runtime is invoked with its path as the
+# argument, and a test that cannot find its known-answer file proves nothing.
+!tests/
+tests/*
+!tests/*.cpp
+!tests/fixtures/
 PROJECT.md
 galactus.env
 .gstack/

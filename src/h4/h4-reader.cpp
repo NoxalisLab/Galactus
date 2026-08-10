@@ -351,11 +351,12 @@ std::future<ReadResult> DualVolumeReader::submit(ReadRequest request) {
 
 P0Layout::P0Layout(
     const std::vector<std::uint64_t> & layer_record_bytes,
-    P0Profile profile) {
+    P0Profile profile,
+    double ratio) {
     const std::uint32_t experts = ModelProfile::active().experts;
     records_.reserve(layer_record_bytes.size() * experts);
     for (std::uint32_t layer_index = 0; layer_index < layer_record_bytes.size(); ++layer_index) {
-        const auto split = plan_p0_split(layer_record_bytes[layer_index], profile);
+        const auto split = plan_p0_split(layer_record_bytes[layer_index], profile, ratio);
         for (std::uint32_t expert = 0; expert < experts; ++expert) {
             records_.push_back({internal_bytes_, split.internal_bytes, external_bytes_, split.external_bytes});
             internal_bytes_ += split.internal_bytes;

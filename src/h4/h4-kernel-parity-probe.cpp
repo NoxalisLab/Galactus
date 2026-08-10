@@ -473,6 +473,22 @@ int main() {
         } else {
             std::printf("PARITE ROMPUE : %" PRId64 " cas divergents sur %" PRId64 "\n",
                         failures, cases);
+            // The bit-exact Metal kernels are opt-in on the host side
+            // (GALACTUS_METAL_BITEXACT=1, set by start_engine). Without the
+            // variable this probe measures the UPSTREAM Metal kernels, which
+            // are expected to diverge, and the verdict above reads exactly
+            // like a regression in the shipped path. Say which path was
+            // measured rather than letting a reader guess: an audit already
+            // spent a run concluding the certified numerics were broken when
+            // the only thing missing was this variable.
+            const char * bitexact = std::getenv("GALACTUS_METAL_BITEXACT");
+            if (bitexact == nullptr || bitexact[0] != '1') {
+                std::printf(
+                    "note : GALACTUS_METAL_BITEXACT n'etait pas a 1, donc ce sont les noyaux "
+                    "Metal AMONT qui viennent d'etre mesures, et non le chemin expedie. "
+                    "Relancer avec GALACTUS_METAL_BITEXACT=1 avant de conclure a une "
+                    "regression.\n");
+            }
         }
 
         ggml_quantize_free();
