@@ -1663,3 +1663,32 @@ html.pane-dragging .pvw-frame { pointer-events: none; }
 .bs.danger { color: var(--bad); border-color: rgba(209, 107, 111, 0.35); }
 .learned-sheet { width: 720px; max-height: 82vh; overflow: auto; }
 .learned-sheet .hold { display: flex; flex-direction: column; gap: 12px; }
+
+/* ---- updates (main.ts) ----
+   The offer is a block inside the settings page, not a modal. An update that
+   takes the screen is an update answered by whichever button dismisses it
+   fastest, and this one asks for a restart: it has to be readable next to the
+   version it replaces, and it has to be possible to walk away from. The
+   corner brackets mark it as a reading, which is what it is until someone
+   presses a button. */
+.upd-status { font-size: 11.5px; color: var(--dim); margin-top: 3px; }
+.upd-status.ok { color: var(--acc-tx); }
+.upd-status.bad { color: var(--bad); }
+.upd-offer {
+  display: flex; flex-direction: column; gap: 12px;
+  padding: 15px 16px; margin: 2px 0 0;
+  background: var(--card); border: 1px solid var(--bd);
+}
+.upd-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.upd-head b { font-size: 13.5px; font-weight: 600; }
+.upd-head .d { font-size: 11.5px; color: var(--dim); font-family: var(--mono); }
+.upd-notes {
+  font-size: 11.5px; line-height: 1.6; color: var(--tx2);
+  background: var(--inset); border: 1px solid var(--bd2); padding: 12px 13px;
+  max-height: 240px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+}
+.upd-warn { font-size: 11.5px; line-height: 1.5; color: var(--warn); }
+.upd-prog { display: flex; flex-direction: column; gap: 6px; }
+.upd-prog .n { font-size: 11px; color: var(--dim2); font-family: var(--mono); }
+.upd-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.upd-actions .upd-status { margin-top: 0; }

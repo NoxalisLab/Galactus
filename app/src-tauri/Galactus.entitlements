@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened runtime entitlements for Galactus.
+
+  The hardened runtime is already on (tauri.conf.json, bundle.macOS.hardenedRuntime).
+  It closes a fixed list of doors; an entitlement reopens exactly one of them.
+  Every key below is here because a door the product actually walks through is
+  closed by default. Nothing else is granted, and the empty set is the default:
+  a capability that works today under the hardened runtime does not get a key
+  "to be safe", because a granted entitlement is a permanently widened attack
+  surface that reviewers have to justify forever.
+
+  GRANTED
+
+    com.apple.security.device.audio-input
+      Galactus dictates locally. Resources/packaged/galactus-voice opens
+      AVAudioEngine on the built in microphone and feeds SFSpeechRecognizer.
+      Under the hardened runtime a process that calls AVCaptureDevice for
+      .audio without this key is denied, and the denial is silent from the
+      user's point of view. The app itself carries the key as well as the
+      helper because the app is the TCC responsible process: it is Galactus,
+      not the helper, that owns the microphone grant and whose Info.plist
+      NSMicrophoneUsageDescription is shown in the prompt.
+
+  DELIBERATELY NOT GRANTED, with the reason
+
+    com.apple.security.cs.allow-jit
+    com.apple.security.cs.allow-unsigned-executable-memory
+      Nothing in the process JIT compiles. The web view runs its JavaScript in
+      WebKit's own out of process WebContent service, which carries its own
+      signature and its own entitlements; the host app never needs them. The
+      Metal shaders of the inference engine are compiled by MTLCompilerService
+      over XPC, not as executable pages in llama-server.
+
+    com.apple.security.cs.disable-library-validation
+      Every Mach-O inside the bundle is signed by the same Developer ID team
+      before the bundle is sealed (scripts/macos-sign-resources.sh), so library
+      validation is satisfied without disabling it. The app loads no plugin it
+      did not ship: there is no dlopen anywhere in src-tauri/src.
+
+    com.apple.security.cs.disable-executable-page-protection
+    com.apple.security.cs.allow-dyld-environment-variables
+      No self modifying code, no injected loader environment.
+
+    com.apple.security.automation.apple-events
+      The app spawns /usr/bin/osascript for `choose folder` and
+      `display notification`. Both are Standard Additions commands that
+      osascript executes in its own process; no Apple event is sent to another
+      application, so the sender entitlement is not needed. The two call sites
+      are pick_folder and notify in src-tauri/src/lib.rs.
+
+    com.apple.security.app-sandbox and the com.apple.security.network.*,
+    com.apple.security.files.* families
+      Those keys only mean something under the App Sandbox, which this build
+      does not enable and does not need: Developer ID distribution outside the
+      Mac App Store has no sandbox requirement. Binding a TCP listener on
+      127.0.0.1 (src-tauri/src/relay.rs), opening a pseudo terminal with
+      posix_openpt (src-tauri/src/pty.rs) and running llama-server as a child
+      process are all unrestricted under the hardened runtime alone.
+
+    com.apple.security.get-task-allow
+      A debugging entitlement. Its presence makes the notary service reject the
+      submission. scripts/macos-notarize.sh asserts that it is absent.
+-->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.device.audio-input</key>
+  <true/>
+</dict>
+</plist>

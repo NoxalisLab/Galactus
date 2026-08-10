@@ -1,0 +1,155 @@
+name: CI
+
+# Every push and every pull request runs what used to be run by hand, on one
+# machine, in whatever order the person remembered: the TypeScript suites, the
+# Rust suites, a type check, and the two repository invariants that have each
+# already shipped a defect when nobody checked them.
+#
+# The runner has to be macOS on Apple Silicon, and the jobs assert it rather
+# than trust the label. The Rust side links against macOS frameworks through
+# Tauri, the pty tests open a real pseudo terminal, and the product only ever
+# ships as an arm64 bundle. A green run on any other platform would be a lie.
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+
+permissions:
+  contents: read
+
+# A second push to the same branch makes the first run pointless. Cancel it.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  # Incremental artifacts are large, are never reused across runners, and
+  # inflate the cached target directory by hundreds of megabytes.
+  CARGO_INCREMENTAL: '0'
+
+jobs:
+  invariants:
+    name: Repository invariants
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assert the runner is macOS on Apple Silicon
+        run: |
+          test "$(uname -s)" = Darwin || { echo "not macOS"; exit 1; }
+          test "$(uname -m)" = arm64 || { echo "not Apple Silicon: $(uname -m)"; exit 1; }
+          sw_vers
+
+      - name: No em dash and no en dash on the shipped surface
+        # Must stay at zero. The checker self tests, so a broken checker fails
+        # rather than reporting a clean tree.
+        run: python3 scripts/check-dashes.py
+
+      - name: Skills validate against the runtime tool surface
+        run: python3 scripts/check-skills.py
+
+  frontend:
+    name: Frontend suites and type check
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assert the runner is macOS on Apple Silicon
+        run: |
+          test "$(uname -s)" = Darwin || { echo "not macOS"; exit 1; }
+          test "$(uname -m)" = arm64 || { echo "not Apple Silicon: $(uname -m)"; exit 1; }
+
+      - uses: actions/setup-node@v4
+        with:
+          # Bumping this is a one line change. Node 21 or newer is required:
+          # the suites are driven by `node --test` with glob patterns.
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install exactly what the lockfile pins
+        working-directory: app
+        run: npm ci
+
+      - name: Materialise public/tslib
+        working-directory: app
+        # Generated, not committed, and three tsintel suites read it. Without
+        # this step npm test fails on a clean checkout, which is the only kind
+        # of checkout CI ever has.
+        run: npm run tslib
+
+      - name: Type check
+        working-directory: app
+        run: npx tsc --noEmit
+
+      - name: Test
+        working-directory: app
+        run: npm test
+
+  rust:
+    name: Rust suites
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assert the runner is macOS on Apple Silicon
+        run: |
+          test "$(uname -s)" = Darwin || { echo "not macOS"; exit 1; }
+          test "$(uname -m)" = arm64 || { echo "not Apple Silicon: $(uname -m)"; exit 1; }
+          rustc --version
+          cargo --version
+
+      - name: Add the toolchain components the job needs
+        run: rustup component add clippy rustfmt
+
+      - name: Restore the cargo caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            app/src-tauri/target
+          # Keyed on the lockfile alone, on purpose. The expensive half of a
+          # cold build is the dependency tree, which changes only when the
+          # lockfile does; keying on the sources as well would throw that away
+          # on every commit. actions/cache writes a new entry only on a key
+          # miss, so the entry is refreshed exactly when the tree changes.
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('app/src-tauri/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Download the locked dependency set
+        working-directory: app/src-tauri
+        # --locked refuses to touch Cargo.lock. This is the one step allowed to
+        # reach the network, so that the compile below can be pinned offline.
+        run: cargo fetch --locked
+
+      - name: Test
+        working-directory: app/src-tauri
+        run: cargo test --offline
+
+      - name: Clippy
+        working-directory: app/src-tauri
+        # Advisory, not a gate. The tree currently carries 21 clippy warnings
+        # across the lib and its tests, all style level. Turning this into a
+        # gate is a one line change (drop continue-on-error, add
+        # `-- -D warnings`) and should be done once that backlog is at zero.
+        continue-on-error: true
+        run: cargo clippy --offline --all-targets
+
+      - name: Format check
+        working-directory: app/src-tauri
+        # Advisory for the same reason: rustfmt currently wants 342 hunks
+        # across 22 files. Reformatting the tree to make this green would bury
+        # every other change in the diff, so the check reports and does not
+        # block until someone lands the reformat on purpose.
+        continue-on-error: true
+        run: cargo fmt --all -- --check

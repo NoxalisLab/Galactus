@@ -24,6 +24,24 @@ tauri = { version = "2", features = ["tray-icon"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# The two halves of "install the next version without a download page".
+#
+# tauri-plugin-updater does the whole transaction on the Rust side: it fetches
+# the manifest, verifies the minisign signature of the archive against the
+# public key baked into tauri.conf.json, unpacks it over the installed bundle.
+# Nothing of that crosses the webview, so the app's content policy is untouched
+# and a compromised page cannot ask for an install of its own.
+#
+# tauri-plugin-process exists for exactly one call, `restart`. Replacing the
+# bundle on disk does not replace the process that is running from it, so an
+# update that is not followed by a relaunch is an update that appears to have
+# done nothing. That call has ONE caller in the whole app, behind a button,
+# and the reason is in the frontend comment: this process may be running
+# scheduled jobs with nobody in front of it.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+
 [profile.release]
 strip = true
 lto = true

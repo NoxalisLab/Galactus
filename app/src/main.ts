@@ -1,4 +1,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getVersion } from "@tauri-apps/api/app";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { check as checkForUpdate, type Update } from "@tauri-apps/plugin-updater";
 import { api, benchOnce, chatOnce, fetchCtxSize, HwInfo, inlineCodeOnce, InstallVolumes, ModelEntry, onEvent, RelayStatus, ServerStatus, SkillInfo, VolumeInfo } from "./api";
 import {
   Agent,
@@ -34,6 +37,17 @@ import {
   scanMentions,
   type MentionCandidate,
 } from "./mentions";
+import {
+  applyChunk,
+  autoCheckAllowed,
+  downloadLabel,
+  emptyProgress,
+  isNewer,
+  progressPercent,
+  restartVerdict,
+  summariseNotes,
+  type DownloadProgress,
+} from "./update";
 
 const app = document.getElementById("app")!;
 const LOGO = "/galactus-mark.svg";
@@ -3112,10 +3126,306 @@ function agentView(): HTMLElement {
 }
 
 // ---------- settings ----------
+// ---------- updates ----------
+//
+// AUTOMATIC OR MANUAL, and why it is both.
+//
+// The two halves of an update are not the same decision and they do not get
+// the same answer.
+//
+// The CHECK is automatic, once, a few seconds after launch, in assistant mode
+// only. Manual-only checking sounds safer and is not: this project ships a
+// version a day, the check lives at the bottom of a settings page, and a
+// button nobody presses is a fleet that never updates. What the check does is
+// one HTTPS GET of a 8 kB JSON file; it downloads nothing, writes nothing and
+// changes nothing, and if it fails it fails silently, because a machine that
+// happens to be offline at launch has not done anything wrong.
+//
+// The INSTALL is manual, always, in both modes. It replaces the running
+// application and then relaunches the process, and this process is where the
+// agent loop that drives runs lives. There is no schedule, no idle timer and
+// no "install on quit" path: the only thing that starts a download is the
+// button, and the only thing that restarts Galactus is the second button after
+// the download.
+//
+// SERVER MODE, which is what the whole shape is for. A Mac in server mode
+// hosts a model for other machines and runs scheduled jobs with its window
+// hidden behind a menu bar item. It gets NO automatic check at all: an offer
+// on a screen nobody is watching is an offer that can only be answered by
+// accident, and until it is answered it is a banner sitting on top of a
+// working machine. Someone who wants the new version opens the window and
+// presses Check now, which is exactly the act of a human being present.
+//
+// And under both of those, one rule with a test: restartVerdict. A restart
+// needs a human AND an idle scheduler. A run that is halfway through has
+// already written files and already spent an hour, and it does not come back;
+// so even a deliberate click is refused while anything is moving, with the
+// reason on screen.
+
+type UpdateStage =
+  | "idle"
+  | "checking"
+  | "uptodate"
+  | "available"
+  | "downloading"
+  | "ready"
+  | "error";
+
+let updateStage: UpdateStage = "idle";
+/** The plugin's handle. Held because install() is a second call on the same object. */
+let updateHandle: Update | null = null;
+let updateOffer: { version: string; notes: string; date: string } | null = null;
+let updateProgress: DownloadProgress = emptyProgress();
+/** Free text under the version row: the error, or what just happened. */
+let updateMessage = "";
+/** Stored preference. Governs the CHECK only, and only in assistant mode. */
+let updateAutoCheck = true;
+/** At most one automatic check per process, whatever happens to it. */
+let updateAutoDone = false;
+let appVersion = "";
+
+/** Tauri hands back "2026-08-10 09:00:00.0 +00:00:00". Only the day is useful. */
+function updateDay(raw: string): string {
+  const m = /^(\d{4}-\d{2}-\d{2})/.exec(raw ?? "");
+  return m ? m[1] : "";
+}
+
+/**
+ * How much work a restart would destroy, counted from both ends.
+ *
+ * The frontend map is the honest one, because it holds manually declared runs
+ * as well as scheduled ones. Rust is asked too: between a job coming due and
+ * the run being declared there is a window in which the scheduler considers a
+ * job in flight and this webview has nothing yet.
+ */
+async function workInFlight(): Promise<number> {
+  const here = runsview.runsInFlight();
+  let there = 0;
+  try {
+    const raw = (await api.jobsList()) as { jobs?: { in_flight?: boolean }[] } | null;
+    there = (raw?.jobs ?? []).filter((j) => j?.in_flight === true).length;
+  } catch {
+    // The scheduler could not be asked. Not treated as "busy": that would
+    // make a broken jobs.json block every future update forever, and the
+    // frontend count above is the one that actually knows about live agents.
+    there = 0;
+  }
+  return Math.max(here, there);
+}
+
+/** The block under the version row. Empty when there is nothing to offer. */
+function updateOfferHtml(): string {
+  if (!updateOffer) return "";
+  const o = updateOffer;
+  const day = updateDay(o.date);
+  const notes = summariseNotes(o.notes);
+  const pct = progressPercent(updateProgress);
+  const busy = updateStage === "downloading";
+  const done = updateStage === "ready";
+  return `<div class="upd-offer plate">
+    <div class="upd-head"><b>${esc(t("update.version").replace("%s", o.version))}</b>${day ? `<span class="d">${esc(day)}</span>` : ""}</div>
+    ${notes ? `<div class="upd-notes">${esc(notes)}</div>` : ""}
+    ${appMode === "server" ? `<div class="upd-warn">${esc(t("update.serverWarn"))}</div>` : ""}
+    ${busy ? `<div class="upd-prog"><div class="bar"><div style="width:${pct ?? 8}%"></div></div><span class="n">${esc(downloadLabel(updateProgress))}</span></div>` : ""}
+    <div class="upd-actions">
+      ${done
+        ? `<button class="bp" id="updrestart">${esc(t("update.restart"))}</button><span class="upd-status ok">${esc(t("update.readyHint"))}</span>`
+        : `<button class="bp" id="updgo" ${busy ? "disabled" : ""}>${esc(busy ? t("update.downloading") : t("update.install"))}</button><button class="bs" id="updlater" ${busy ? "disabled" : ""}>${esc(t("update.later"))}</button>`}
+    </div>
+  </div>`;
+}
+
+/**
+ * Repaint the update rows in place.
+ *
+ * In place rather than through render(), because a download lasts a minute and
+ * a full re-render would rebuild the settings page under the user's cursor
+ * forty times. A no-op when the settings screen is not the one on display,
+ * which is the case that matters: the progress keeps arriving whether or not
+ * anyone is looking, and comes back correct when they return, because the
+ * markup is rebuilt from this same state.
+ */
+function paintUpdate(): void {
+  const status = document.getElementById("updstatus");
+  if (status) {
+    status.textContent = updateMessage;
+    status.className = `upd-status${updateStage === "error" ? " bad" : updateStage === "uptodate" ? " ok" : ""}`;
+  }
+  const btn = document.getElementById("updcheck") as HTMLButtonElement | null;
+  if (btn) {
+    btn.disabled = updateStage === "checking" || updateStage === "downloading";
+    btn.textContent = updateStage === "checking" ? t("update.checking") : t("update.check");
+  }
+  const host = document.getElementById("updoffer");
+  if (!host) return;
+  host.innerHTML = updateOfferHtml();
+  wireUpdateOffer(host);
+}
+
+function wireUpdateOffer(host: HTMLElement): void {
+  host.querySelector<HTMLButtonElement>("#updgo")?.addEventListener("click", () => { void downloadUpdate(); });
+  host.querySelector<HTMLButtonElement>("#updlater")?.addEventListener("click", () => {
+    // Declining is a real answer and it sticks for this run of the app. The
+    // offer comes back on the next launch, or on the next Check now.
+    updateOffer = null;
+    updateHandle = null;
+    updateStage = "idle";
+    updateMessage = t("update.declined").replace("%s", appVersion);
+    paintUpdate();
+  });
+  host.querySelector<HTMLButtonElement>("#updrestart")?.addEventListener("click", () => { void restartForUpdate(); });
+}
+
+/**
+ * Ask the endpoint whether there is anything newer.
+ *
+ * `silent` is the automatic call: it says nothing on failure and nothing when
+ * the app is already current, because neither is news to somebody who did not
+ * ask a question.
+ */
+async function checkUpdate(silent: boolean): Promise<void> {
+  if (updateStage === "checking" || updateStage === "downloading") return;
+  updateStage = "checking";
+  updateMessage = silent ? "" : t("update.checking");
+  paintUpdate();
+  let found: Update | null = null;
+  try {
+    found = await checkForUpdate();
+  } catch (e) {
+    updateStage = silent ? "idle" : "error";
+    updateMessage = silent ? "" : t("update.failed").replace("%s", String(e));
+    paintUpdate();
+    return;
+  }
+  // The plugin compares versions itself. It is compared AGAIN here against the
+  // running binary, because the one failure this must not have is a downgrade:
+  // an endpoint briefly serving the previous release would otherwise hand
+  // every install a correctly signed archive of an older Galactus, which
+  // installs cleanly and looks exactly like an update.
+  if (!found || !isNewer(appVersion, found.version)) {
+    updateHandle = null;
+    updateOffer = null;
+    updateStage = silent ? "idle" : "uptodate";
+    updateMessage = silent ? "" : t("update.upToDate").replace("%s", appVersion);
+    paintUpdate();
+    return;
+  }
+  updateHandle = found;
+  updateOffer = { version: found.version, notes: found.body ?? "", date: found.date ?? "" };
+  updateProgress = emptyProgress();
+  updateStage = "available";
+  updateMessage = t("update.found").replace("%s", found.version);
+  // Only surface enough to be noticed. The offer itself is a settings row, not
+  // a modal: nothing is taken over, and a user in the middle of a turn keeps
+  // their screen.
+  if (silent && view !== "settings") toast(t("update.found").replace("%s", found.version), "ok");
+  paintUpdate();
+}
+
+/**
+ * Fetch and unpack, with the bar moving.
+ *
+ * `download` and `install` are called separately rather than through
+ * `downloadAndInstall`, because the two halves answer to different rules: the
+ * download may run while a job runs, since it only writes to a temporary file,
+ * and the install replaces the bundle. The restart, which is the part that
+ * actually ends work, stays behind its own button and its own verdict.
+ */
+async function downloadUpdate(): Promise<void> {
+  if (!updateHandle || updateStage === "downloading") return;
+  // Asked here as well as before the restart, and for a different reason.
+  // install() swaps the application bundle on disk, and a run in flight reads
+  // out of that bundle for its skills, its Python and its engine library:
+  // replacing it underneath a working agent breaks the run without ending it,
+  // which is worse than refusing. The download itself would be harmless, but
+  // a download that cannot be installed is a progress bar that lies.
+  {
+    const jobs = await workInFlight();
+    if (restartVerdict({ userInitiated: true, jobsInFlight: jobs }) !== "ok") {
+      toast(t("update.busyJobs"));
+      return;
+    }
+  }
+  updateStage = "downloading";
+  updateProgress = emptyProgress();
+  updateMessage = "";
+  paintUpdate();
+  try {
+    await updateHandle.download((event) => {
+      if (event.event === "Started") {
+        updateProgress = applyChunk(emptyProgress(), 0, event.data.contentLength ?? 0);
+      } else if (event.event === "Progress") {
+        updateProgress = applyChunk(updateProgress, event.data.chunkLength);
+      }
+      paintUpdate();
+    });
+    await updateHandle.install();
+  } catch (e) {
+    updateStage = "error";
+    updateMessage = t("update.failed").replace("%s", String(e));
+    paintUpdate();
+    return;
+  }
+  updateStage = "ready";
+  updateMessage = "";
+  paintUpdate();
+  toast(t("update.installedHint"), "ok");
+}
+
+/**
+ * The only call to relaunch() in the whole app.
+ *
+ * Guarded by restartVerdict, which has its own suite. `userInitiated: true` is
+ * written here and nowhere else: there is no timer, no event handler and no
+ * quit hook that reaches this function, and if one is ever added it will have
+ * to write that literal, which is the moment somebody has to think about it.
+ */
+async function restartForUpdate(): Promise<void> {
+  const jobs = await workInFlight();
+  const verdict = restartVerdict({ userInitiated: true, jobsInFlight: jobs });
+  if (verdict === "jobs-in-flight") {
+    // Refused, and said out loud. The new version is already on disk and will
+    // be the one that starts whenever Galactus is next launched, so nothing is
+    // lost by waiting: a job that began during the download keeps its hour.
+    toast(t("update.busyJobs"));
+    return;
+  }
+  if (verdict !== "ok") return;
+  // Everything unsaved goes to disk first. A relaunch is a process ending.
+  try { runsview.flushRuns(); } catch {}
+  try { store.flushAll(); } catch {}
+  try {
+    await relaunch();
+  } catch (e) {
+    updateStage = "error";
+    updateMessage = t("update.failed").replace("%s", String(e));
+    paintUpdate();
+  }
+}
+
+/** The launch check, subject to the mode and the preference. */
+function maybeAutoCheck(): void {
+  if (updateAutoDone) return;
+  if (!autoCheckAllowed({ mode: appMode, enabled: updateAutoCheck })) return;
+  updateAutoDone = true;
+  // Deliberately late. The first seconds after launch belong to reading the
+  // registry, probing the hardware and reopening a conversation; a network
+  // call in that window competes with the things the user is waiting for.
+  window.setTimeout(() => { void checkUpdate(true); }, 8000);
+}
+
 function settingsView(): HTMLElement {
   const wrap = el(`<div class="main">
     <div class="topbar" data-tauri-drag-region><span class="ttl">${esc(t("nav.settings"))}</span></div>
     <div class="page"><div class="hold narrow">
+      <div class="sect"><b>${esc(t("sect.updates"))}</b><span>${esc(t("sect.updatesHint"))}</span></div>
+      <div class="set-row"><div class="grow"><b>${esc(t("update.current"))}</b><span>${esc(appVersion ? `Galactus ${appVersion}` : "Galactus")}</span><span class="upd-status" id="updstatus"></span></div>
+        <button class="bs" id="updcheck">${esc(t("update.check"))}</button>
+      </div>
+      <div id="updoffer"></div>
+      <div class="set-row"><div class="grow"><b>${esc(t("update.autoTitle"))}</b><span>${esc(appMode === "server" ? t("update.autoServer") : t("update.autoHint"))}</span></div>
+        <div class="seg" id="updautoseg"><button data-u="0" class="${updateAutoCheck ? "" : "on"}"${appMode === "server" ? " disabled" : ""}>${esc(t("common.off"))}</button><button data-u="1" class="${updateAutoCheck ? "on" : ""}"${appMode === "server" ? " disabled" : ""}>${esc(t("common.on"))}</button></div>
+      </div>
       <div class="sect"><b>${esc(t("sect.appearance"))}</b><span>${esc(t("sect.appearanceHint"))}</span></div>
       <div class="set-row"><div class="grow"><b>${esc(t("settings.language"))}</b><span>${esc(t("settings.languageDesc"))}</span></div>
         <div class="seg" id="lang"><button data-l="fr" class="${getLang() === "fr" ? "on" : ""}">Français</button><button data-l="en" class="${getLang() === "en" ? "on" : ""}">English</button></div>
@@ -3181,6 +3491,31 @@ function settingsView(): HTMLElement {
       </div>`).join("") : `<div class="set-row"><div class="grow"><span>${esc(t("net.needOpen"))}</span></div></div>`}
       <div class="set-row"><div class="grow"><b>${esc(t("settings.permissions"))}</b><span>${esc(t("settings.permissionsHint"))}</span></div><button class="bs" id="pclear">${esc(t("settings.permissionsClear"))}</button></div>
     </div></div></div>`);
+  wrap.querySelector<HTMLButtonElement>("#updcheck")!.addEventListener("click", () => { void checkUpdate(false); });
+  {
+    const seg = wrap.querySelector<HTMLElement>("#updautoseg")!;
+    seg.addEventListener("click", async (e) => {
+      const b = (e.target as HTMLElement).closest("[data-u]") as HTMLElement | null;
+      if (!b || (b as HTMLButtonElement).disabled) return;
+      updateAutoCheck = b.dataset.u === "1";
+      seg.querySelectorAll("button").forEach((x) =>
+        x.classList.toggle("on", (x as HTMLElement).dataset.u === (updateAutoCheck ? "1" : "0"))
+      );
+      await api.settingsSet("update_check_auto", updateAutoCheck ? "1" : "0");
+    });
+  }
+  // Rebuilt from state on every mount, so a download that started before the
+  // user walked away is still on screen, at the right percentage, when they
+  // come back.
+  {
+    const host = wrap.querySelector<HTMLElement>("#updoffer")!;
+    host.innerHTML = updateOfferHtml();
+    wireUpdateOffer(host);
+    const status = wrap.querySelector<HTMLElement>("#updstatus")!;
+    status.textContent = updateMessage;
+    if (updateStage === "error") status.classList.add("bad");
+    if (updateStage === "uptodate") status.classList.add("ok");
+  }
   wrap.querySelector("#lang")!.addEventListener("click", async (e) => { const b = (e.target as HTMLElement).closest("[data-l]") as HTMLElement | null; if (!b) return; setLang(b.dataset.l as Lang); await loadTaskDefs(); render(); });
   wrap.querySelector("#rpick")!.addEventListener("click", async () => { const p = await api.pickFolder(); if (p) await setRoot(p); });
   wrap.querySelector<HTMLButtonElement>("#autotab")!.addEventListener("click", async (e) => {
@@ -3268,6 +3603,10 @@ function settingsView(): HTMLElement {
       // a nav entry must not stay on screen.
       if (appMode === "server" && !SERVER_MODE_VIEWS.includes(view)) view = "models";
       syncTray();
+      // Coming back to assistant mode makes the launch check legal again, and
+      // this is the moment a human is demonstrably present. Going the other
+      // way needs nothing: the check has already either run or been skipped.
+      maybeAutoCheck();
       render();
     })
   );
@@ -3374,6 +3713,7 @@ function modeChoiceView(): HTMLElement {
       if (appMode === "server" && !SERVER_MODE_VIEWS.includes(view)) view = "models";
       modePending = false;
       syncTray();
+      maybeAutoCheck();
       render();
     });
   });
@@ -3867,6 +4207,16 @@ async function boot() {
   // mode they never deliberately chose, are exactly the ones who never see it.
   // A separate key is the only thing that can tell a choice from a leftover.
   modePending = modeAskAlways || s["app_mode_chosen"] !== "1";
+  // Defaults on. The launch check is one GET of a small JSON file and it
+  // installs nothing; the setting exists for people who would rather their app
+  // never spoke to the network unasked, and server mode ignores it entirely
+  // (see autoCheckAllowed).
+  updateAutoCheck = s["update_check_auto"] !== "0";
+  // The version the updater compares against is the one this binary reports,
+  // never the one in package.json: those two have drifted before, and a stale
+  // constant here is either an update that is never offered or one that is
+  // offered forever.
+  try { appVersion = await getVersion(); } catch { appVersion = ""; }
   if (s["relay_bind"] === "0.0.0.0") relayBind = "0.0.0.0";
   // The relay never survives a restart: the key lived in memory only, so there
   // is nothing to reopen with. Its status is read anyway, since a previous
@@ -3903,6 +4253,10 @@ async function boot() {
   if (server.running && server.phase === "starting") loadStartMs = Date.now();
   render();
   syncTray();
+  // Never before the first paint, and never in server mode. See the comment
+  // above the update section: this is a check, not an install, and it is the
+  // only thing in this feature that happens without a click.
+  maybeAutoCheck();
   // A job came due. Rust owns the clock and has already decided this is the
   // one fire to honour (see the catch-up rule in scheduler.rs); all that is
   // left here is to declare the run and drive it. Subscribed at the app shell

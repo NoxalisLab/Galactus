@@ -4641,9 +4641,29 @@ fn tray_set(app: AppHandle, on: bool) -> Result<(), String> {
     }
 }
 
+/// Register the update plugins.
+///
+/// Split out of `run` because the two plugins are desktop-only and the
+/// `cfg` has to sit on a statement rather than in the middle of a builder
+/// chain. The updater is registered unconditionally at startup, which is NOT
+/// the same thing as checking for an update at startup: registering only
+/// installs the commands the frontend may call. Whether a check ever happens,
+/// and whether a restart ever follows it, is decided in the frontend, where
+/// the app knows if a human is watching (see updateSection in main.ts).
+#[cfg(desktop)]
+fn with_updates<R: tauri::Runtime>(b: tauri::Builder<R>) -> tauri::Builder<R> {
+    b.plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
+}
+
+#[cfg(not(desktop))]
+fn with_updates<R: tauri::Runtime>(b: tauri::Builder<R>) -> tauri::Builder<R> {
+    b
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    with_updates(tauri::Builder::default())
         .register_uri_scheme_protocol("gxpreview", |_app, _request| {
             let html = preview_slot()
                 .lock()

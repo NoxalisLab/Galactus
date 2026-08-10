@@ -24,6 +24,11 @@ lanceurs/archive/
 scripts/archive/
 config/
 tests/
+# app/src-tauri/tests holds the crate's integration tests. They are produced
+# code, not a development scratch directory, and the bare rule above swallowed
+# them: an integration test that cannot be committed cannot run in CI either,
+# and its absence looks exactly like a passing build.
+!app/src-tauri/tests/
 PROJECT.md
 galactus.env
 .gstack/
@@ -39,3 +44,14 @@ build-*/
 # scripts/fetch-rust-tooling.sh le reconstruit avec ses empreintes epinglees.
 app/src-tauri/rust-tooling/
 .tmp-rust-cache/
+
+# Cle privee de signature des mises a jour. Elle vit hors du depot, dans
+# ~/.galactus/updater/, et rien ne devrait jamais l'amener ici. Ces motifs sont
+# le filet : quiconque signe une archive avec cette cle fait tourner du code
+# arbitraire sur toutes les machines qui ont Galactus, donc une seule copie
+# egaree suffit. La cle PUBLIQUE, elle, est dans tauri.conf.json et doit y
+# rester, c'est tout l'interet.
+*.key
+*.key.pub
+.tauri/
+updater-keys/

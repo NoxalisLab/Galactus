@@ -31,6 +31,7 @@
       "dmg",
       "app"
     ],
+    "createUpdaterArtifacts": true,
     "publisher": "Noxalis Lab",
     "copyright": "Copyright 2026 Noxalis Lab. Licensed under the Apache License 2.0.",
     "icon": [
@@ -51,6 +52,14 @@
     "macOS": {
       "signingIdentity": "-",
       "hardenedRuntime": true
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/NoxalisLab/Galactus/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZCM0REQUNBNTVCRUE5QzUKUldURnFiNVZ5dG85KzVDek02UFRHNDlaMFZqTzZoYlovcGVxUVYrQXN3NnVNN3U3dE4xdFhDUWQK"
     }
   }
 }

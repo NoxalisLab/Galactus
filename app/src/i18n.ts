@@ -885,6 +885,56 @@ const dict: Record<string, { en: string; fr: string }> = {
   "tool.searchWorkspace": { en: "Search the workspace", fr: "Chercher dans l'espace de travail" },
   "tool.findFiles": { en: "Find files", fr: "Trouver des fichiers" },
 
+  // ---- updates ----
+  "sect.updates": { en: "Updates", fr: "Mises à jour" },
+  "sect.updatesHint": {
+    en: "Install the next version of Galactus without downloading it by hand",
+    fr: "Installer la prochaine version de Galactus sans la télécharger à la main",
+  },
+  "update.current": { en: "This version", fr: "Cette version" },
+  "update.check": { en: "Check now", fr: "Vérifier" },
+  "update.checking": { en: "Checking...", fr: "Vérification..." },
+  "update.upToDate": {
+    en: "Galactus %s is the latest version.",
+    fr: "Galactus %s est la derniere version.",
+  },
+  "update.found": { en: "Version %s is available.", fr: "La version %s est disponible." },
+  "update.version": { en: "Version %s", fr: "Version %s" },
+  "update.failed": { en: "Update failed: %s", fr: "Echec de la mise a jour : %s" },
+  "update.install": { en: "Download and install", fr: "Telecharger et installer" },
+  "update.downloading": { en: "Downloading...", fr: "Telechargement..." },
+  "update.later": { en: "Not now", fr: "Pas maintenant" },
+  "update.declined": {
+    en: "Staying on version %s. The offer comes back at the next launch.",
+    fr: "On reste en version %s. L'offre revient au prochain lancement.",
+  },
+  "update.restart": { en: "Restart now", fr: "Redemarrer" },
+  "update.readyHint": {
+    en: "Installed. Galactus uses it after a restart.",
+    fr: "Installee. Galactus l'utilisera apres un redemarrage.",
+  },
+  "update.installedHint": {
+    en: "The new version is on disk. Restart when you are ready.",
+    fr: "La nouvelle version est sur le disque. Redemarre quand tu veux.",
+  },
+  "update.busyJobs": {
+    en: "A run is still working. Updating now would end it with no way back. Wait for it to finish, or stop it in Runs.",
+    fr: "Un run est encore en cours. Mettre a jour maintenant l'interromprait sans retour possible. Attends la fin, ou arrete-le dans Runs.",
+  },
+  "update.serverWarn": {
+    en: "This machine serves a model and may run scheduled jobs. Restarting stops both until Galactus is back.",
+    fr: "Cette machine sert un modele et peut executer des taches planifiees. Redemarrer arrete les deux jusqu'au retour de Galactus.",
+  },
+  "update.autoTitle": { en: "Check at launch", fr: "Verifier au lancement" },
+  "update.autoHint": {
+    en: "Look once, a few seconds after start. It never downloads and never restarts on its own.",
+    fr: "Regarder une fois, quelques secondes apres le demarrage. Aucun telechargement ni redemarrage automatique.",
+  },
+  "update.autoServer": {
+    en: "Off in server mode: a machine running unattended is never interrupted by an offer nobody is there to decline.",
+    fr: "Desactive en mode serveur : une machine sans personne devant n'est jamais interrompue par une offre que personne ne peut refuser.",
+  },
+
   // ---- page section headings ----
   "sect.appearance": { en: "Appearance", fr: "Apparence" },
   "sect.appearanceHint": { en: "Language and where Galactus keeps its data", fr: "Langue et emplacement des données de Galactus" },

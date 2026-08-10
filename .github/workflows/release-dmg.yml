@@ -1,0 +1,199 @@
+name: Release DMG
+
+# Builds the macOS bundle, notarizes it, and attaches the dmg to a GitHub
+# release. Triggered by hand, or by pushing an app-vX.Y.Z tag.
+#
+# THIS WORKFLOW DOES NOT RUN ON A GITHUB HOSTED RUNNER, and that is not an
+# oversight. Producing a Galactus dmg needs two things that only exist on a
+# build machine:
+#
+#   1. the patched llama.cpp engine. third_party/ is not in the repository and
+#      a hosted runner would have to clone upstream at the pinned commit, apply
+#      five patches and run a full Metal build before it could even start.
+#   2. the Developer ID Application certificate, in a keychain, with its
+#      private key. Shipping that certificate into an ephemeral runner as a
+#      base64 secret is possible and is a materially worse idea than keeping it
+#      on one machine.
+#
+# So: register the build machine as a self hosted runner. Set the repository
+# variable GALACTUS_BUILD_RUNNER if you want a label other than "self-hosted",
+# and GALACTUS_ENGINE_BIN to the absolute path of the built llama.cpp bin
+# directory on that machine (the one holding llama-server and its dylibs).
+#
+# CREDENTIALS. Everything credential shaped is read from repository secrets
+# that you set yourself, and is passed to the build as an environment variable.
+# Nothing is written to a file, echoed, or committed. Set the identity plus
+# exactly one authentication set:
+#
+#   secrets.APPLE_SIGNING_IDENTITY   "Developer ID Application: ... (TEAMID)"
+#
+#   vars.APPLE_KEYCHAIN_PROFILE      name of a notarytool profile stored on the
+#                                    runner with `xcrun notarytool
+#                                    store-credentials`. Recommended: no secret
+#                                    ever leaves the machine.
+#   or
+#   secrets.APPLE_API_KEY            App Store Connect key id
+#   secrets.APPLE_API_ISSUER         issuer id
+#   vars.APPLE_API_KEY_PATH          path to the .p8 on the runner
+#   or
+#   secrets.APPLE_ID                 Apple ID e-mail
+#   secrets.APPLE_PASSWORD           app specific password, not the account one
+#   secrets.APPLE_TEAM_ID            ten character team id
+#
+# See docs/RELEASE-SIGNING.md for how to obtain each of those.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to attach the dmg to. Empty means artifact only.'
+        type: string
+        required: false
+        default: ''
+      draft:
+        description: 'Create the GitHub release as a draft'
+        type: boolean
+        default: true
+  push:
+    tags:
+      - 'app-v*'
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  dmg:
+    name: Build, notarize and attach the dmg
+    runs-on: ${{ vars.GALACTUS_BUILD_RUNNER || 'self-hosted' }}
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assert the runner is macOS on Apple Silicon
+        run: |
+          test "$(uname -s)" = Darwin || { echo "not macOS"; exit 1; }
+          test "$(uname -m)" = arm64 || { echo "not Apple Silicon: $(uname -m)"; exit 1; }
+          sw_vers
+
+      - name: Preflight
+        env:
+          ENGINE_BIN: ${{ vars.GALACTUS_ENGINE_BIN }}
+          SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          fail() { echo "PREFLIGHT FAILED: $1" >&2; exit 1; }
+
+          # The engine. third_party/ is git ignored, so a fresh checkout never
+          # has it. Link the prebuilt one from the build machine into place.
+          if [ -z "${ENGINE_BIN}" ]; then
+            fail "repository variable GALACTUS_ENGINE_BIN is not set. Point it at the llama.cpp build/bin directory on this runner."
+          fi
+          [ -x "${ENGINE_BIN}/llama-server" ] || fail "no llama-server under ${ENGINE_BIN}"
+          mkdir -p third_party/llama.cpp/build
+          rm -rf third_party/llama.cpp/build/bin
+          ln -s "${ENGINE_BIN}" third_party/llama.cpp/build/bin
+          echo "engine linked from ${ENGINE_BIN}"
+
+          # OpenSSL, which prepare-engine.sh relocates into the bundle.
+          brew --prefix openssl@3 >/dev/null 2>&1 || fail "brew openssl@3 is not installed on this runner"
+
+          # Swift, for the two precompiled helpers.
+          command -v swiftc >/dev/null 2>&1 || fail "swiftc is not on PATH, the helpers would ship uncompiled"
+
+          # The GitHub CLI, used by the last step to attach the dmg.
+          command -v gh >/dev/null 2>&1 || fail "gh is not on PATH on this runner"
+
+          # The identity. Checked here so a missing secret costs a second
+          # rather than a full build.
+          [ -n "${SIGNING_IDENTITY}" ] || fail "secret APPLE_SIGNING_IDENTITY is not set"
+          case "${SIGNING_IDENTITY}" in
+            "Developer ID Application:"*) ;;
+            *) fail "APPLE_SIGNING_IDENTITY is not a Developer ID Application identity" ;;
+          esac
+          security find-identity -v -p codesigning | grep -qF "${SIGNING_IDENTITY}" \
+            || fail "the runner keychain holds no usable identity matching APPLE_SIGNING_IDENTITY"
+          echo "preflight ok"
+
+      - name: Install frontend dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Build, sign, notarize, staple and verify
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_KEYCHAIN_PROFILE: ${{ vars.APPLE_KEYCHAIN_PROFILE }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_PATH: ${{ vars.APPLE_API_KEY_PATH }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # The in-app updater is a separate mechanism with a separate key: a
+          # minisign pair whose public half is in tauri.conf.json under
+          # plugins.updater.pubkey. When bundle.createUpdaterArtifacts is true
+          # the bundler needs the private half, and macos-release.sh refuses to
+          # start without it rather than failing at the end of the build.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        # This script refuses to start unless the identity and one complete set
+        # of notarization credentials are present, and refuses to finish unless
+        # spctl reports a notarized Developer ID source. There is no path
+        # through it that produces an artifact a user would be warned about.
+        run: scripts/macos-release.sh
+
+      - name: Locate the dmg
+        id: artifact
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          dmgs=(app/src-tauri/target/release/bundle/dmg/*.dmg)
+          if [ "${#dmgs[@]}" -ne 1 ]; then
+            echo "expected exactly one dmg, found ${#dmgs[@]}" >&2
+            exit 1
+          fi
+          dmg="${dmgs[0]}"
+          echo "path=$dmg" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$dmg")" >> "$GITHUB_OUTPUT"
+          shasum -a 256 "$dmg"
+
+      - name: Upload the dmg as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.artifact.outputs.name }}
+          path: ${{ steps.artifact.outputs.path }}
+          if-no-files-found: error
+          retention-days: 14
+
+      # SEAM, not yet wired. A parallel workstream is adding an in-app updater,
+      # which needs two more assets on the release: the Galactus.app.tar.gz that
+      # the bundler now produces next to the dmg, and the latest.json that
+      # scripts/release-manifest.sh builds and verifies. When that script has
+      # settled, add a step here that runs it and a `gh release upload` for both
+      # files. The dmg attachment below is deliberately independent of it, so a
+      # failure in the updater path cannot cost the release its installer.
+
+      - name: Attach the dmg to the release
+        # A tag push releases under that tag. A manual run releases only if the
+        # operator named a tag, otherwise the artifact above is the deliverable.
+        if: startsWith(github.ref, 'refs/tags/app-v') || inputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DMG: ${{ steps.artifact.outputs.path }}
+          TAG: ${{ inputs.tag != '' && inputs.tag || github.ref_name }}
+          # A tag push always drafts. A manual run honours the checkbox. Written
+          # as "not dispatch OR the input" because `a && b || c` returns c when
+          # b is boolean false, which would silently publish.
+          DRAFT: ${{ github.event_name != 'workflow_dispatch' || inputs.draft }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            args=(--title "$TAG" --generate-notes)
+            if [ "${DRAFT}" = "true" ]; then args+=(--draft); fi
+            gh release create "$TAG" "${args[@]}"
+          fi
+          gh release upload "$TAG" "$DMG" --clobber
+          echo "attached $(basename "$DMG") to release $TAG"

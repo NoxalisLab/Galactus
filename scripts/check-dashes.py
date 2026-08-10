@@ -26,6 +26,10 @@ DEFAULT_ROOTS = [
     "vault",
     "README.md",
     "NOTICE",
+    # The build and release pipeline. Not a user surface, but this check is the
+    # thing that gates it, and a check that does not cover the file it runs from
+    # is an invitation.
+    ".github",
 ]
 
 SKIP_PARTS = {"node_modules", "out", "dist", "target", "third_party", ".git"}

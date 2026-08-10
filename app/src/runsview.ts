@@ -236,6 +236,28 @@ function persist(run: LiveRun, immediate = false): void {
   );
 }
 
+/**
+ * How much work would be destroyed by restarting this process, right now.
+ *
+ * The agent loop that drives a run lives in this webview, so a relaunch ends
+ * every run in the map with no resume and no record beyond a transcript that
+ * stops mid sentence. The updater asks this before it will restart, which is
+ * the whole reason it is exported: an unattended machine that has been
+ * offered an update must not act on it while it is in the middle of a job.
+ *
+ * Counts what is actually moving. A queued run has not started and a blocked
+ * one is waiting on a human with its clock stopped: neither loses work, and
+ * counting them would mean a run parked on a question nobody will answer
+ * blocks every future update.
+ */
+export function runsInFlight(): number {
+  let n = 0;
+  for (const run of live.values()) {
+    if (run.driving || run.run.getState() === "running") n++;
+  }
+  return n;
+}
+
 /** Flush every pending write now. Called on the same checkpoint as store.flushAll. */
 export function flushRuns(): void {
   for (const id of [...saveTimers.keys()]) {
