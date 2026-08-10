@@ -3,6 +3,13 @@
 # dumps integraux de la couche choisie, PPL des deux cotes. La premiere
 # empreinte divergente nomme l'operation coupable.
 #   GALACTUS_COUCHE=3 ./lanceurs/differentiel/LANCER-DIFFERENTIEL-GPTOSS.command
+# CORPUS, READ THIS BEFORE QUOTING THE PPL THIS PRINTS.
+# This launcher reads coding-repobench-p-e-0048.txt. scripts/certify.py reads
+# long-context-multifieldqa-zh-0029.txt, and on the same model the two differ
+# by more than a factor of three. The perplexity printed below is therefore NOT
+# comparable to certified_ppl in scripts/models-registry.json and must never be
+# copied into it: the registry is written by certify.py, which records the
+# corpus, its sha256, the seed and the batch shape alongside the number.
 set -u
 export LC_ALL=C
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -20,7 +27,7 @@ COMMUN=(--model "${MODEL}" --file "${ROOT}/corpus/materialized/stage1/coding-rep
         --n-gpu-layers "${GALACTUS_NGL:-99}" --no-repack --fit off
         --batch-size 512 --ubatch-size 2 --seed 42 --log-colors off)
 {
-echo "=== differentiel qwen3-next-80b couche ${COUCHE} — ${STAMP} (ngl ${GALACTUS_NGL:-99}) ==="
+echo "=== differentiel qwen3-next-80b couche ${COUCHE}, ${STAMP} (ngl ${GALACTUS_NGL:-99}) ==="
 cd third_party/llama.cpp && cmake --build build --target llama-perplexity -j 2>&1 | grep -E "error|Built target" | tail -2
 cd "${ROOT}"
 echo ""

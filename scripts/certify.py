@@ -19,14 +19,31 @@ file and editing six constants, which is how the two most recent models ended
 up with no differential at all. Everything here comes from the registry and
 from what is on disk.
 
-THE TRAP THIS SCRIPT REFUSES TO WALK INTO
+THE TRAP THIS SCRIPT WALKS AROUND
 
 llama.cpp offloads an operation to the GPU once the batch reaches
 op_offload_min_batch_size, which is 32. Above that, `--n-cpu-moe` stops being
 a CPU reference: the "stock" run is then partly on Metal and the comparison
 measures nothing. That mistake already invalidated a whole perplexity table in
-this project. The batch shape is therefore checked before anything runs, and a
-request outside the safe regime is refused rather than answered.
+this project. The batch shape is therefore not a caller argument at all: it is
+frozen in SAFE_UBATCH and no flag can raise it, so there is nothing to refuse
+at run time. The one check left compares the two constants, and the only
+person it can ever stop is whoever edits SAFE_UBATCH in this file. That is who
+it is for, and it is written down that way rather than described as a check on
+input, which it never was.
+
+WHAT A STORED PERPLEXITY MUST CARRY
+
+A perplexity means nothing without the text it was measured on. The registry
+used to hold `certified_ppl` as a bare number, and four of those numbers were
+taken on a corpus file nobody wrote down: the per-model launchers in
+lanceurs/differentiel/ read coding-repobench-p-e-0048.txt, this script reads
+its own file, and on the same model the two disagree by more than a factor of
+three. A number nobody can reproduce looks like evidence and is not. So the
+field is an object now, and this script fills it in from what it actually ran:
+corpus path, sha256 of the corpus bytes, seed, context, batch shape, regime,
+date and run stamp. None of it is typed in by hand, which is the only way it
+stays true.
 
 DUAL PACKS
 
@@ -41,6 +58,7 @@ that ratio, exercising the cross-check that refuses to start on a mismatch.
 Usage:
   python3 scripts/certify.py --model qwen3-30b-a3b
   python3 scripts/certify.py --model qwen3-30b-a3b --layer 3 --json
+  python3 scripts/certify.py --model qwen3-30b-a3b --no-registry
   python3 scripts/certify.py --model olmoe-1b-7b \
       --internal-pack /a/m-internal.pack --external-pack /b/m-external.pack \
       --ratio 0.5
@@ -48,6 +66,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import pathlib
@@ -58,8 +77,17 @@ import time
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 REGISTRY = ROOT / "scripts" / "models-registry.json"
+PACKAGED_REGISTRY = ROOT / "app" / "src-tauri" / "packaged" / "scripts" / "models-registry.json"
 PERPLEXITY = ROOT / "third_party" / "llama.cpp" / "build" / "bin" / "llama-perplexity"
 OUT_DIR = ROOT / "artifacts" / "h4" / "certification"
+CORPUS_DIR = ROOT / "corpus" / "materialized" / "stage1"
+
+# The reference text, pinned by name rather than by position. corpus/ is not
+# versioned, so an index into the sorted directory changes meaning the day a
+# file is added or removed, and every perplexity taken after that silently
+# refers to another text. This is the file every stored certified_ppl that
+# carries a corpus was measured on.
+CORPUS_NAME = "long-context-multifieldqa-zh-0029.txt"
 
 # Above this batch size llama.cpp offloads to the GPU and --n-cpu-moe is no
 # longer a CPU reference. See the module docstring.
@@ -68,6 +96,11 @@ SAFE_UBATCH = 2
 SAFE_BATCH = 512
 SEED = 42
 CTX = 512
+
+# The flags that make the two runs comparable, stored beside the number so a
+# reader knows what regime it belongs to without opening this file.
+REGIME = ("llama-perplexity, CPU expert reference: --n-cpu-moe 99 --no-repack --fit off "
+          "--chunks 1, stock against wired (GALACTUS_H4=1, --no-mmap)")
 
 
 def die(msg: str) -> "None":
@@ -118,17 +151,79 @@ def resolve_paths(model_id: str) -> tuple[pathlib.Path, pathlib.Path, pathlib.Pa
 
 
 def pick_corpus() -> pathlib.Path:
-    """One fixed corpus file, chosen deterministically.
+    """The one reference text, pinned by name.
 
-    Sorted and index-picked rather than random: two runs of this script on the
-    same model must be comparable, and a verdict that depends on which text
-    happened to be drawn is not a verdict.
+    This used to be files[len(files) // 2] of the sorted directory. That is
+    deterministic only for a fixed directory, and corpus/ is not versioned:
+    one added file shifts the median and every later perplexity refers to
+    another text without saying so. The name is explicit now, and the fallback
+    says out loud that the number it is about to produce is not comparable to
+    the stored ones.
     """
-    d = ROOT / "corpus" / "materialized" / "stage1"
-    files = sorted(d.glob("*.txt"))
+    pinned = CORPUS_DIR / CORPUS_NAME
+    if pinned.is_file():
+        return pinned
+    files = sorted(CORPUS_DIR.glob("*.txt"))
     if not files:
-        die(f"no corpus under {d}")
-    return files[len(files) // 2]
+        die(f"no corpus under {CORPUS_DIR}")
+    chosen = files[len(files) // 2]
+    print(f"  WARNING: {CORPUS_NAME} is missing from {CORPUS_DIR}, falling back to "
+          f"{chosen.name}: this perplexity is not comparable to the stored ones", flush=True)
+    return chosen
+
+
+def sha256_of(path: pathlib.Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def ppl_record(corpus: pathlib.Path, stock: float, wired: float, stamp: str,
+               day: str) -> dict:
+    """Everything needed to reproduce this perplexity, and nothing hand-typed.
+
+    The sha256 is here because the filename alone does not pin the bytes: the
+    corpus directory is generated by scripts/materialize-stage1-corpus.py and
+    is not under version control, so the same name on another checkout can be
+    another text.
+    """
+    return {
+        "stock": stock,
+        "wired": wired,
+        "corpus": str(corpus.relative_to(ROOT)),
+        "corpus_sha256": sha256_of(corpus),
+        "corpus_bytes": corpus.stat().st_size,
+        "seed": SEED,
+        "ctx": CTX,
+        "batch": SAFE_BATCH,
+        "ubatch": SAFE_UBATCH,
+        "regime": REGIME,
+        "date": day,
+        "run": stamp,
+        "recorded_by": "scripts/certify.py",
+    }
+
+
+def update_registry(model_id: str, record: dict, day: str) -> None:
+    """Write the perplexity and its provenance into both copies of the registry.
+
+    app/src-tauri/packaged/scripts/models-registry.json is a build input copied
+    verbatim from scripts/models-registry.json by app/tools/sync-packaged.mjs.
+    The same copy is done here so the two never drift between two app builds.
+    """
+    data = json.loads(REGISTRY.read_text(encoding="utf-8"))
+    for entry in data["models"]:
+        if entry.get("id") == model_id:
+            entry["certified_ppl"] = record
+            entry["certified_date"] = day
+            break
+    else:
+        die(f"{model_id} vanished from the registry between read and write")
+    REGISTRY.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    if PACKAGED_REGISTRY.is_file():
+        PACKAGED_REGISTRY.write_text(REGISTRY.read_text(encoding="utf-8"), encoding="utf-8")
 
 
 def run_pass(label: str, gguf: pathlib.Path, layer: int, env_extra: dict[str, str],
@@ -181,11 +276,20 @@ def final_ppl(raw: str) -> float | None:
 
 
 def certify(model_id: str, layer: int, internal_pack: str | None = None,
-            external_pack: str | None = None, ratio: str | None = None) -> dict:
+            external_pack: str | None = None, ratio: str | None = None,
+            write_registry: bool = True) -> dict:
+    # Not an input check: no argument of this function and no flag of this
+    # script can move SAFE_UBATCH. It is an invariant on the two constants, and
+    # it fires for exactly one reader, whoever raises SAFE_UBATCH in this file
+    # without knowing what op_offload_min_batch_size does to --n-cpu-moe.
+    # Written as if/raise and not as assert, because python -O drops asserts and
+    # a check that can be compiled away is not a check.
     if SAFE_UBATCH >= OP_OFFLOAD_MIN_BATCH:
-        die("the reference batch is at or above op_offload_min_batch_size: "
-            "--n-cpu-moe would not be a CPU reference and the comparison would "
-            "measure nothing")
+        raise RuntimeError(
+            f"SAFE_UBATCH={SAFE_UBATCH} is at or above op_offload_min_batch_size="
+            f"{OP_OFFLOAD_MIN_BATCH}: llama.cpp would offload the expert matmul to the "
+            f"GPU, --n-cpu-moe would stop being a CPU reference and the comparison would "
+            f"measure nothing. Lower SAFE_UBATCH, do not raise OP_OFFLOAD_MIN_BATCH.")
     if not PERPLEXITY.is_file():
         die(f"{PERPLEXITY} is missing: build the engine first")
 
@@ -206,7 +310,15 @@ def certify(model_id: str, layer: int, internal_pack: str | None = None,
     corpus = pick_corpus()
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-    base = OUT_DIR / f"{stamp}-{model_id}"
+    day = time.strftime("%Y-%m-%d", time.gmtime())
+    # Suffixes are appended, not substituted. base.with_suffix(".stock.out")
+    # replaces everything after the first dot of the name, so glm-4.5-air wrote
+    # its logs as "<stamp>-glm-4.stock.out": the model id was truncated and any
+    # two ids sharing a prefix before their first dot would overwrite each
+    # other's evidence.
+    stock_log = OUT_DIR / f"{stamp}-{model_id}.stock.out"
+    wired_log = OUT_DIR / f"{stamp}-{model_id}.wired.out"
+    verdict_path = OUT_DIR / f"{stamp}-{model_id}.verdict.json"
 
     print(f"certifying {model_id} ({entry.get('arch', 'unknown arch')})")
     print(f"  gguf   {gguf.name}")
@@ -219,7 +331,7 @@ def certify(model_id: str, layer: int, internal_pack: str | None = None,
     print(f"  corpus {corpus.name}")
     print(f"  layer  {layer}, ubatch {SAFE_UBATCH}, seed {SEED}")
 
-    stock_raw = run_pass("stock ", gguf, layer, {}, [], base.with_suffix(".stock.out"), corpus)
+    stock_raw = run_pass("stock ", gguf, layer, {}, [], stock_log, corpus)
     wired_env = {
         "GALACTUS_H4": "1",
         "GALACTUS_H4_INTERNAL": pack_internal,
@@ -231,8 +343,7 @@ def certify(model_id: str, layer: int, internal_pack: str | None = None,
         wired_env["GALACTUS_PROFILE"] = str(profile)
     if ratio:
         wired_env["GALACTUS_H4_RATIO"] = ratio
-    wired_raw = run_pass("wired ", gguf, layer, wired_env, ["--no-mmap"],
-                         base.with_suffix(".wired.out"), corpus)
+    wired_raw = run_pass("wired ", gguf, layer, wired_env, ["--no-mmap"], wired_log, corpus)
 
     a, b = fingerprints(stock_raw), fingerprints(wired_raw)
     # An empty comparison is not a pass. If neither run dumped anything the
@@ -249,8 +360,28 @@ def certify(model_id: str, layer: int, internal_pack: str | None = None,
         "wired_lines": len(b),
         "stock_ppl": final_ppl(stock_raw),
         "wired_ppl": final_ppl(wired_raw),
-        "logs": [str(base.with_suffix(".stock.out")), str(base.with_suffix(".wired.out"))],
+        "ppl": ppl_record(corpus, final_ppl(stock_raw), final_ppl(wired_raw), stamp, day),
+        "logs": [str(stock_log), str(wired_log)],
     }
+
+    def finish(v: dict) -> dict:
+        """Land the verdict on disk, then the registry if there is one to write.
+
+        The sidecar is written whatever the outcome, because a failed run is
+        also evidence and the two .out files alone never said which corpus they
+        read: llama-perplexity does not echo --file. The registry is only
+        touched by a run that certified and produced a perplexity on both
+        sides, so a crashed run can never overwrite a good number.
+        """
+        v["verdict_file"] = str(verdict_path)
+        verdict_path.write_text(json.dumps(v, indent=2, ensure_ascii=False) + "\n",
+                                encoding="utf-8")
+        if (write_registry and v.get("certified")
+                and v["ppl"]["stock"] is not None and v["ppl"]["wired"] is not None):
+            update_registry(model_id, v["ppl"], day)
+            v["registry_written"] = True
+        return v
+
     if not a or not b:
         # Naming the side matters. "nothing was dumped" sent the last
         # investigation to the probe, when the truth was that the wired run had
@@ -259,21 +390,21 @@ def certify(model_id: str, layer: int, internal_pack: str | None = None,
         verdict.update(certified=False,
                        reason=f"{side} dumped any fingerprint: it likely failed to start, "
                               f"see the logs listed above")
-        return verdict
+        return finish(verdict)
     if len(a) != len(b):
         verdict.update(certified=False,
                        reason=f"different number of dumped tensors: {len(a)} vs {len(b)}")
-        return verdict
+        return finish(verdict)
     diffs = [(i, x, y) for i, (x, y) in enumerate(zip(a, b)) if x != y]
     if diffs:
         i, x, y = diffs[0]
         verdict.update(certified=False, divergences=len(diffs), first_divergence=i,
                        reason=f"{len(diffs)} of {len(a)} tensors differ; first at index {i}",
                        stock_line=x[:200], wired_line=y[:200])
-        return verdict
+        return finish(verdict)
     verdict.update(certified=True, divergences=0,
                    reason=f"{len(a)} tensors identical, zero divergence")
-    return verdict
+    return finish(verdict)
 
 
 def main() -> int:
@@ -284,17 +415,28 @@ def main() -> int:
     ap.add_argument("--external-pack", help="dual pack: external half")
     ap.add_argument("--ratio", help="pass this ratio to the engine as GALACTUS_H4_RATIO "
                                     "(cross-check against the pack's own .split record)")
+    ap.add_argument("--no-registry", action="store_true",
+                    help="do not write certified_ppl and its provenance into the registry "
+                         "(the run still writes its .verdict.json sidecar)")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
-    v = certify(args.model, args.layer, args.internal_pack, args.external_pack, args.ratio)
+    v = certify(args.model, args.layer, args.internal_pack, args.external_pack, args.ratio,
+                write_registry=not args.no_registry)
     if args.json:
-        print(json.dumps(v, indent=2))
+        print(json.dumps(v, indent=2, ensure_ascii=False))
     else:
         print()
         print("CERTIFIED" if v["certified"] else "NOT CERTIFIED")
         print(f"  {v['reason']}")
         if v.get("stock_ppl") is not None:
             print(f"  ppl stock {v['stock_ppl']}  wired {v['wired_ppl']}")
+            print(f"  on {v['ppl']['corpus']} (sha256 {v['ppl']['corpus_sha256'][:16]}), "
+                  f"seed {v['ppl']['seed']}, ctx {v['ppl']['ctx']}, "
+                  f"batch {v['ppl']['batch']}/{v['ppl']['ubatch']}")
+        print(f"  verdict {v['verdict_file']}")
+        if v.get("registry_written"):
+            print(f"  registry {REGISTRY}")
+            print(f"  packaged {PACKAGED_REGISTRY}")
     return 0 if v["certified"] else 1
 
 

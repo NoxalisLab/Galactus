@@ -24,7 +24,7 @@ fn print_models(root: &Path) -> Result<(), String> {
     let raw = std::fs::read_to_string(root.join("scripts/models-registry.json"))
         .map_err(|e| e.to_string())?;
     let parsed: Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
-    println!("{:<20} {:>8} {:>10}  {}", "modele", "taille", "installe", "statut");
+    println!("{:<20} {:>8} {:>10}  statut", "modele", "taille", "installe");
     for m in parsed["models"].as_array().cloned().unwrap_or_default() {
         let id = m["id"].as_str().unwrap_or("?");
         let (dir, _pack, _) = model_paths(root, id);

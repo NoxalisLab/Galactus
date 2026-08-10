@@ -466,7 +466,7 @@ fn git_status_blocking(root: String) -> Result<Vec<GitChange>, String> {
             from,
         });
     }
-    rows.sort_by(|a, b| a.path.to_lowercase().cmp(&b.path.to_lowercase()));
+    rows.sort_by_key(|r| r.path.to_lowercase());
     Ok(rows)
 }
 

@@ -116,17 +116,24 @@ const MUTATIONS = [
     to: "                    if (false)",
     test: "a blockable step parks the run instead of guessing",
   },
-  // agent.stop() on a block is NOT mutated, and that is a finding.
-  //
-  // Deleting the call leaves the whole rundrive suite green. The nearest test,
-  // "only the first blockable step is recorded, even if the agent ignores the
-  // stop", drives an agent built to IGNORE stop precisely so it can check the
-  // recording rule, so it cannot also be the test that checks stop is called.
-  // No other test asserts it. The consequence of the call going missing is a
-  // model that keeps working after the run has parked, which costs tokens and
-  // writes nothing anyone approved, so it is worth a test; writing that test is
-  // reported as open rather than papered over with a mutation aimed at a test
-  // that cannot catch it.
+  {
+    // This one was reported as an open finding for a while, on the grounds
+    // that no test owned it. The test that owns it now asserts the
+    // CONSEQUENCE rather than the call: a run that has parked has stopped
+    // spending, so the tool result and the text the model produces after the
+    // block reach neither the sink nor the transcript.
+    //
+    // It is not, and cannot be, the test named "only the first blockable step
+    // is recorded": that one drives an agent built to IGNORE stop, on purpose,
+    // so the recording rule is exercised instead of being hidden behind an
+    // obedient fake.
+    group: "rundrive: the model is cut off at the block",
+    suite: "rundrive",
+    file: "out/src/rundrive.js",
+    from: "                    agent.stop();\n",
+    to: "",
+    test: "the model is cut off at the block, not left working past it",
+  },
   // ------------------------------------------------------------- updater
   {
     group: "update: 0.1.10 is newer than 0.1.9",

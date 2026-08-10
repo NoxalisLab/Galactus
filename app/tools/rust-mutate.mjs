@@ -90,19 +90,20 @@ const MUTATIONS = [
     tests: ["scheduler::tests::definitions_and_state_survive_a_round_trip_in_two_separate_files"],
   },
   // ------------------------------------------------------------------ cron
-  // NOT MUTATED, and the reason is a finding rather than an omission.
-  //
-  // `if t > after` in next_cron_after guards the case where unix_at collapses a
-  // local time onto an instant that is not in the future: a daylight saving gap
-  // or the first hour of a fall back. Weakening it to `>=` survives all 256
-  // Rust tests, cron and scheduler alike, so no test owns that guard. The test
-  // named the_next_fire_is_strictly_after_the_instant_asked_about does not
-  // cover it either: next_cron_after rounds `start` up to the following minute
-  // boundary before it walks, so `>` and `>=` agree on every input that test
-  // supplies. Writing the test that would own it means constructing a schedule
-  // whose match lands inside a transition, which is a real piece of work and is
-  // reported as open rather than faked with a mutation aimed at a test that
-  // cannot catch it.
+  {
+    // Reported as an open finding for a while: `>` and `>=` agree on every
+    // input the rest of the suite supplies, because next_cron_after rounds
+    // `start` up to the following minute before it walks. They disagree on
+    // exactly one shape of input, and the test named below constructs it: at a
+    // fall back the local clock goes backwards, so the walk restarts behind the
+    // reading it was asked about and the candidate for local 02:59 maps, via
+    // unix_at's first-of-the-two rule, to the very instant asked about.
+    group: "cron: a fall back does not hand back the fire that just happened",
+    file: `${SRC}/cron.rs`,
+    from: "        if t > after {",
+    to: "        if t >= after {",
+    tests: ["cron::tests::the_repeated_hour_never_hands_back_the_fire_that_just_happened"],
+  },
   {
     group: "cron: a saturated count still carries an exact last fire",
     file: `${SRC}/cron.rs`,
@@ -153,6 +154,19 @@ const MUTATIONS = [
     from: "        diff |= a[i] ^ b[i];",
     to: "        diff |= 0;",
     tests: ["relay::tests::comparison_is_length_safe_and_correct"],
+  },
+  {
+    // Constant time, made structural. A comparison that returns at the first
+    // differing byte is still CORRECT, so no assertion on a boolean can see it
+    // and the only thing that could is a stopwatch, which is flaky and does not
+    // belong here. secret_diff hands back the accumulated difference instead,
+    // and a value that carries a bit from the last byte cannot come from a loop
+    // that stopped at the first.
+    group: "relay: the key comparison does not stop at the first difference",
+    file: `${SRC}/relay.rs`,
+    from: "        diff |= a[i] ^ b[i];\n",
+    to: "        diff |= a[i] ^ b[i];\n        if diff != 0 {\n            return diff;\n        }\n",
+    tests: ["relay::tests::secret_diff_folds_in_every_byte_and_not_only_the_first_difference"],
   },
   {
     group: "relay: listening without a key is refused",

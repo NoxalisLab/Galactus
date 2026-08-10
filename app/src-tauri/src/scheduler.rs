@@ -140,18 +140,13 @@ pub fn now_secs() -> i64 {
 /// Where a job's output goes when it finishes. `None` is the default and the
 /// only one that needs no configuration, which is deliberate: an automation
 /// that posts somewhere by accident is worse than one that posts nowhere.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
 #[serde(tag = "mode", rename_all = "lowercase")]
 pub enum Delivery {
+    #[default]
     None,
     Webhook { url: String },
     File { path: String },
-}
-
-impl Default for Delivery {
-    fn default() -> Self {
-        Delivery::None
-    }
 }
 
 /// A job is a run template plus a schedule, and nothing else. Every field

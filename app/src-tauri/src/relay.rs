@@ -99,21 +99,46 @@ pub fn generate_key() -> Result<String, String> {
     Ok(out)
 }
 
+/// The bits by which two equal-length secrets differ, over ALL of their bytes.
+///
+/// This exists as its own function so the property that matters can be
+/// observed instead of timed. A comparison that returned early would still
+/// answer `true`/`false` correctly, and no assertion on a boolean can tell the
+/// two apart; an accumulator that has folded in every byte cannot be produced
+/// by a loop that stopped at the first difference, so a test can simply read
+/// the value back. See the test named after this function.
+fn secret_diff(a: &[u8], b: &[u8]) -> u8 {
+    let mut diff = 0u8;
+    for i in 0..a.len() {
+        diff |= a[i] ^ b[i];
+    }
+    diff
+}
+
 /// Constant-time comparison, so a wrong key cannot be found byte by byte.
 ///
 /// The relay answers 401 in a fixed shape, but a naive `==` still returns
 /// faster on a key that shares a prefix. Over a local network that difference
 /// is measurable, and the cost of not caring is a bearer token.
+///
+/// WHAT IS PINNED AND WHAT IS NOT, because the difference is the whole point:
+///
+///   pinned, by `secret_diff` reading every byte: no short circuit in this
+///     source. A rewrite to `a == b` cannot pass the test on that accumulator,
+///     and it cannot quietly stay either, because `secret_diff` would then have
+///     no caller outside the tests and a non-test build stops compiling clean;
+///   NOT pinned: what the optimiser emits. Nothing in a unit test can assert
+///     that the machine code carries no branch, and the timing measurement that
+///     could is flaky by nature and does not belong in a suite that has to be
+///     believed. The length check above is itself a deliberate early return: it
+///     leaks the length of the expected key, which is a fixed 67 characters and
+///     public in this file.
 fn secret_eq(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
     if a.len() != b.len() {
         return false;
     }
-    let mut diff = 0u8;
-    for i in 0..a.len() {
-        diff |= a[i] ^ b[i];
-    }
-    diff == 0
+    secret_diff(a, b) == 0
 }
 
 /// Pull the bearer token out of a request head, case-insensitively.
@@ -392,6 +417,38 @@ Content-Length: 13\r\nConnection: close\r\n\r\n{\"data\":[{}]}",
     }
 
     #[test]
+    fn secret_diff_folds_in_every_byte_and_not_only_the_first_difference() {
+        // The structural stand-in for a stopwatch.
+        //
+        // These two differ in the FIRST byte, where a short circuit would stop,
+        // and again in the LAST, which only a full scan can reach. The bits
+        // 0x01 and 0x20 therefore appear together in the answer if and only if
+        // every byte was read: 0x01 alone is a comparison that returned at the
+        // first difference, and that comparison is the timing oracle this
+        // function exists to not be.
+        assert_eq!(b'a' ^ b'`', 0x01, "the first byte differs");
+        assert_eq!(b'd' ^ b'D', 0x20, "and so does the last");
+        assert_eq!(
+            secret_diff(b"abcd", b"`bcD"),
+            0x21,
+            "0x01 alone means the scan stopped where an attacker could measure"
+        );
+        // Nothing is claimed about the bits when the secrets agree, only that
+        // there are none.
+        assert_eq!(secret_diff(b"gx_abc", b"gx_abc"), 0);
+        assert_eq!(secret_diff(b"", b""), 0);
+        // And the wiring: `secret_eq` is this accumulator, not a second
+        // comparison that happens to agree with it on these inputs.
+        for (a, b) in [("gx_abc", "gx_abc"), ("gx_abc", "gx_abd"), ("abcd", "`bcD")] {
+            assert_eq!(
+                secret_eq(a, b),
+                secret_diff(a.as_bytes(), b.as_bytes()) == 0,
+                "{a} vs {b}"
+            );
+        }
+    }
+
+    #[test]
     fn a_generated_key_is_long_prefixed_and_never_repeats() {
         let a = generate_key().expect("key");
         let b = generate_key().expect("key");
@@ -470,10 +527,8 @@ Content-Length: 13\r\nConnection: close\r\n\r\n{\"data\":[{}]}",
 
         // Preflight must pass WITHOUT a key, or every browser client breaks.
         let mut s = TcpStream::connect(("127.0.0.1", port)).expect("connect");
-        s.write_all(
-            format!("OPTIONS /v1/models HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").as_bytes(),
-        )
-        .expect("write");
+        s.write_all(b"OPTIONS /v1/models HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+            .expect("write");
         let mut line = String::new();
         BufReader::new(s).read_line(&mut line).expect("status");
         assert!(line.contains("204"), "preflight must be answered, got {line}");

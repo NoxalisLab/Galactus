@@ -311,10 +311,14 @@ the whole time, and the probe now reads exactly those.
 **Certification is not optional and not a formality.** `certify.py` runs the
 same corpus, the same seed and the same batch shape twice, once wired and once
 stock, and compares the fingerprint of every MoE tensor of one layer byte for
-byte. One differing line fails. It also refuses to run above
+byte. One differing line fails. It never runs above
 `op_offload_min_batch_size`, which is 32: past that llama.cpp offloads to the
 GPU, `--n-cpu-moe` stops being a CPU reference, and the comparison measures
-nothing. That mistake invalidated a whole perplexity table here once.
+nothing. That mistake invalidated a whole perplexity table here once, so the
+micro-batch is a constant in the script with no flag to raise it, rather than a
+value checked at run time. The perplexity it produces is stored with the corpus
+file it read, that file's sha256, the seed and the batch shape, because a
+perplexity without the text behind it is not evidence.
 
 The economics still move. This approach pays when expert bytes dwarf RAM and
 your storage is fast relative to `(model_bytes_per_token x miss_rate)`. The

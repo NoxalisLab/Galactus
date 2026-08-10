@@ -5,6 +5,13 @@
 # deterministe : la premiere ligne divergente nomme l'operation et le
 # micro-lot ou nait la corruption.
 #   GALACTUS_COUCHE=6 ./lanceurs/LANCER-DIFFERENTIEL-ETENDU.command
+# CORPUS, READ THIS BEFORE QUOTING THE PPL THIS PRINTS.
+# This launcher reads coding-repobench-p-e-0048.txt. scripts/certify.py reads
+# long-context-multifieldqa-zh-0029.txt, and on the same model the two differ
+# by more than a factor of three. The perplexity printed below is therefore NOT
+# comparable to certified_ppl in scripts/models-registry.json and must never be
+# copied into it: the registry is written by certify.py, which records the
+# corpus, its sha256, the seed and the batch shape alongside the number.
 set -u
 export LC_ALL=C
 export LANG=C
@@ -25,7 +32,7 @@ COMMUN=(--model "${MODEL}" --file "${ROOT}/corpus/materialized/stage1/coding-rep
         --n-gpu-layers 12 --n-cpu-moe 78 --no-repack --fit off
         --batch-size 512 --ubatch-size 2 --seed 42 --log-colors off)
 {
-echo "=== differentiel etendu couche ${COUCHE} — ${STAMP} ==="
+echo "=== differentiel etendu couche ${COUCHE}, ${STAMP} ==="
 cd third_party/llama.cpp && cmake --build build --target llama-perplexity -j 2>&1 | grep -E "error|Built target" | tail -2
 cd "${ROOT}"
 
@@ -60,7 +67,7 @@ diff <(grep -av "topk_galactus" "${OUT}/${STAMP}-etendu-stock.txt") \
   || true
 diff <(grep -av "topk_galactus" "${OUT}/${STAMP}-etendu-stock.txt") \
      <(grep -av "topk_galactus" "${OUT}/${STAMP}-etendu-cablage.txt") > /dev/null \
-  && echo "AUCUNE DIVERGENCE sur ${COUCHE} (!) — chercher hors MoE" \
+  && echo "AUCUNE DIVERGENCE sur ${COUCHE} (!), chercher hors MoE" \
   || echo "(diff complet dans les .txt du dossier integration)"
 } 2>&1 | tee "${OUT}/${STAMP}-differentiel-etendu-${COUCHE}.log"
 echo ""

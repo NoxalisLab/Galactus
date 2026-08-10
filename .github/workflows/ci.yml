@@ -164,12 +164,11 @@ jobs:
 
       - name: Clippy
         working-directory: app/src-tauri
-        # Advisory, not a gate. The tree currently carries 21 clippy warnings
-        # across the lib and its tests, all style level. Turning this into a
-        # gate is a one line change (drop continue-on-error, add
-        # `-- -D warnings`) and should be done once that backlog is at zero.
-        continue-on-error: true
-        run: cargo clippy --offline --all-targets
+        # A gate. The backlog it used to wave through is at zero, so the next
+        # warning to appear is a new one and there is no reason to let it land.
+        # `--all-targets` covers the tests as well as the lib, which is where
+        # half the old backlog lived.
+        run: cargo clippy --offline --all-targets -- -D warnings
 
       - name: Format check
         working-directory: app/src-tauri

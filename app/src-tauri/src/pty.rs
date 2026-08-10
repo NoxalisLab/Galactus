@@ -1230,7 +1230,9 @@ mod tests {
         kill_group(0);
         kill_group(1);
         kill_group(-1);
-        // Reaching here at all is the assertion: the test process is alive.
-        assert!(true);
+        // Returning at all IS the assertion: had the guard let any of those
+        // three through, this process would have taken SIGKILL and there would
+        // be no verdict to report. So there is deliberately no assert! here;
+        // an `assert!(true)` would only look like one.
     }
 }

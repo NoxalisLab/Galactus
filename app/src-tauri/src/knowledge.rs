@@ -556,7 +556,7 @@ fn snippet_centered(text: &str, terms: &[String], max: usize) -> String {
         };
         let start = map[f];
         let end = map[(f + term.len()).min(map.len() - 1)];
-        if hit.map_or(true, |(s, _)| start < s) {
+        if hit.is_none_or(|(s, _)| start < s) {
             hit = Some((start, end));
         }
     }

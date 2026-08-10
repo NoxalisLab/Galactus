@@ -130,6 +130,39 @@ test("blocked beats the text the model was still streaming", async () => {
   assert.equal(run.finalResult(), null, "a blocked run has no final result");
 });
 
+test("the model is cut off at the block, not left working past it", async () => {
+  // What the stop() call on the block branch is actually for. Denying the step
+  // and recording the question belong to other tests; this one owns the third
+  // thing that has to happen, and owns it by its consequence rather than by a
+  // flag: a parked run is a run that has stopped spending, so nothing the model
+  // does after the park may be delivered, recorded, or counted as its answer.
+  //
+  // The test named "only the first blockable step is recorded" cannot be this
+  // test. It drives an agent built to IGNORE stop, on purpose, so that the
+  // recording rule is exercised rather than hidden by an obedient fake. The
+  // fake here obeys, which is what makes the work after the block absent.
+  const run = newRun("read_only");
+  const s = scripted([
+    { ask: WRITE },
+    { tool: ["fs_read", "/w/b.ts", "contents of b"] },
+    { say: "and here is what I found" },
+  ]);
+  const delivered: string[] = [];
+  await driveTurn(run, s.agent, "go", s.bind, {
+    delta: (text) => delivered.push(`delta ${text}`),
+    toolResult: (name) => delivered.push(`tool ${name}`),
+  });
+  assert.deepEqual(delivered, [], "no work after the park reaches the sink");
+  assert.deepEqual(
+    run.transcript().filter((e) => e.type === "tool"),
+    [],
+    "and none of it reaches the transcript either",
+  );
+  assert.ok(s.stopped, "which is true only because the agent was told to stop");
+  assert.equal(run.finalResult(), null, "a parked run has no answer to report");
+  assert.equal(run.getState(), "blocked");
+});
+
 test("a shown-every-time step blocks and says why", async () => {
   // git push carries noAlways because the user must see the branch and the
   // count. An unattended run cannot show it to anyone, so it stops.

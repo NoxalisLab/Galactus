@@ -138,9 +138,17 @@ pub trait Zone {
     fn offset(&self, unix: i64) -> i32;
 }
 
-/// No offset, ever. Used by the CLI-ish paths and by tests that do not care.
+/// No offset, ever. For tests that do not care which zone they are in.
+///
+/// Test-only, and marked so rather than left as a public struct nothing
+/// constructs: every shipping path goes through `Local`, because a schedule a
+/// user typed is a statement about the clock on their wall. A zone helper that
+/// silently reached production would turn "09:00" into "09:00 UTC" for
+/// everyone east or west of Greenwich.
+#[cfg(test)]
 pub struct Utc;
 
+#[cfg(test)]
 impl Zone for Utc {
     fn offset(&self, _unix: i64) -> i32 {
         0
@@ -148,8 +156,11 @@ impl Zone for Utc {
 }
 
 /// A zone that never changes. Enough for most of the world and for most tests.
+/// Test-only for the same reason as `Utc` above.
+#[cfg(test)]
 pub struct Fixed(pub i32);
 
+#[cfg(test)]
 impl Zone for Fixed {
     fn offset(&self, _unix: i64) -> i32 {
         self.0
@@ -780,7 +791,7 @@ mod tests {
 
     impl Zone for Europe {
         fn offset(&self, unix: i64) -> i32 {
-            if unix >= SPRING && unix < FALL {
+            if (SPRING..FALL).contains(&unix) {
                 7200
             } else {
                 3600
@@ -1128,6 +1139,49 @@ mod tests {
                 utc("2024-10-27T03:00:00Z"), // local 04:00 +1
             ],
             "local 02:00 +1 is the same wall clock reading and is not fired again"
+        );
+    }
+
+    #[test]
+    fn the_repeated_hour_never_hands_back_the_fire_that_just_happened() {
+        // The one input on which `t > after` and `t >= after` disagree, and the
+        // reason the strict form is the correct one.
+        //
+        // The walk is over LOCAL minutes, and at a fall back the local clock
+        // goes BACKWARDS: the minute after 00:59:00Z reads 02:00, an hour
+        // earlier than the 02:59 that same instant had just been. So the walk
+        // restarts BEHIND the reading it was asked about, and every candidate
+        // it then finds inside the repeated hour maps, through unix_at, to an
+        // instant that has already passed.
+        //
+        // 02:59 is the candidate that maps to exactly `after`, because unix_at
+        // answers a doubled reading with the FIRST of its two occurrences.
+        // Accepting it would fire the job a second time on a wall clock reading
+        // it has already fired on, and a scheduler that stores its last fire and
+        // asks again would be handed that same instant forever.
+        let after = FALL - 60; // 00:59:00Z, local 02:59, the first of the two
+        assert_eq!(civil_at(&Europe, after).hour, 2, "local 02:59, before the jump");
+        assert_eq!(civil_at(&Europe, FALL).hour, 2, "and 02:00 again, after it");
+        assert_eq!(
+            unix_at(&Europe, &civil_at(&Europe, after)),
+            after,
+            "the walk's candidate for local 02:59 is this very instant"
+        );
+
+        let daily = cron("59 2 * * *");
+        assert_eq!(
+            next_cron_after(&daily, after, &Europe),
+            Some(utc("2024-10-28T01:59:00Z")),
+            "the next 02:59 is tomorrow's, not this one handed back"
+        );
+
+        // The same trap for a job that matches every minute, where the whole
+        // repeated hour is candidates and the last of them is the one that ties.
+        let each = cron("* * * * *");
+        assert_eq!(
+            next_cron_after(&each, after, &Europe),
+            Some(utc("2024-10-27T02:00:00Z")),
+            "local 03:00, the first minute the clock has not already served"
         );
     }
 

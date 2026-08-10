@@ -1564,7 +1564,7 @@ fn plan_cache(
     };
     cache = cache.min(max_cache).min(expert_total);
 
-    let quota = ((cache / (layers * record)).min(experts)) as u64;
+    let quota = (cache / (layers * record)).min(experts);
     if quota < 2 {
         return Err("machine too small for this model (quota < 2)".into());
     }
@@ -1598,7 +1598,7 @@ fn plan_cache(
             let ubatch = if cache >= expert_total && !cpu_moe_regime {
                 512u32
             } else {
-                ((probation / used).max(1)).min(8) as u32
+                (probation / used).clamp(1, 8) as u32
             };
             return Ok((cache, f, ubatch));
         }
@@ -2139,7 +2139,7 @@ fn delete_model_impl(model_id: &str) -> Result<String, String> {
     {
         return Err("an install is running for this model, cancel it first".into());
     }
-    let entry = registry_entry(&root, &model_id)?;
+    let entry = registry_entry(&root, model_id)?;
     let mut removed: Vec<String> = Vec::new();
     let mut spared: Vec<String> = Vec::new();
 
@@ -2167,7 +2167,7 @@ fn delete_model_impl(model_id: &str) -> Result<String, String> {
 
     // The model folder. A symlinked models/<id> (the GLM convention points at
     // a shared GGUF directory) loses the link, never the target.
-    let model_dir = root.join("models").join(&model_id);
+    let model_dir = root.join("models").join(model_id);
     if let Ok(meta) = std::fs::symlink_metadata(&model_dir) {
         if meta.file_type().is_symlink() {
             std::fs::remove_file(&model_dir).map_err(|e| e.to_string())?;
@@ -2288,6 +2288,13 @@ async fn install_model(app: AppHandle, model_id: String, volumes: Option<Value>)
     Ok(())
 }
 
+// Eight arguments, one over clippy's threshold, and allowed rather than
+// bundled into a struct. The eight are genuinely independent: five say what to
+// install and three say how to run it, and the only grouping that would satisfy
+// the lint is a struct invented for the lint, built at the single call site and
+// destructured here. That is more code and one more place for a field to go
+// stale, in exchange for nothing a reader gains.
+#[allow(clippy::too_many_arguments)]
 fn install_pipeline_with(
     root: &Path,
     id: &str,
@@ -2544,7 +2551,13 @@ fn install_pipeline_with(
     let err_h = drain_pipe(child.stderr.take());
     if let Some(stdout) = child.stdout.take() {
         let reader = BufReader::new(stdout);
-        for line in reader.lines().flatten() {
+        for line in reader.lines() {
+            // A line that does not decode is skipped, not fatal: this is a
+            // child process's output, and one odd byte must not silence the
+            // rest of it. Spelled out rather than written `.flatten()`, which
+            // says the same thing and spins forever on a reader that fails
+            // forever; a pipe reports EOF instead, so this loop ends.
+            let Ok(line) = line else { continue };
             if cancel.load(Ordering::SeqCst) {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -3168,7 +3181,13 @@ fn mcp_start_server(name: &str, cfg: &Value) -> Result<(McpServerProc, Vec<McpTo
     let pending_reader = pending.clone();
     std::thread::spawn(move || {
         let reader = BufReader::new(stdout);
-        for line in reader.lines().flatten() {
+        for line in reader.lines() {
+            // A line that does not decode is skipped, not fatal: this is a
+            // child process's output, and one odd byte must not silence the
+            // rest of it. Spelled out rather than written `.flatten()`, which
+            // says the same thing and spins forever on a reader that fails
+            // forever; a pipe reports EOF instead, so this loop ends.
+            let Ok(line) = line else { continue };
             if let Ok(v) = serde_json::from_str::<Value>(&line) {
                 if let Some(id) = v["id"].as_u64() {
                     if let Some(tx) = pending_reader.lock().unwrap_or_else(|e| e.into_inner()).remove(&id) {
@@ -3505,7 +3524,6 @@ mod bundled_vault_tests {
 /// Copy the skills shipped in the bundle into the global skills folder, so a
 /// fresh install starts with a curated set. User-modified or user-deleted
 /// skills are left alone (copy only when the skill folder does not exist).
-
 fn seed_bundled_skills() {
     let Some(res) = resource_dir() else { return };
     let src = res.join("packaged/skills");
@@ -3649,8 +3667,8 @@ async fn obsidian_graph() -> Result<Value, String> {
     for f in &files {
         let stem = f.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
         let key = stem.to_lowercase();
-        if !index.contains_key(&key) {
-            index.insert(key, names.len());
+        if let std::collections::hash_map::Entry::Vacant(slot) = index.entry(key) {
+            slot.insert(names.len());
             names.push(stem);
             rels.push(
                 f.strip_prefix(&root)
@@ -4669,7 +4687,13 @@ fn voice_start(app: AppHandle, locale: Option<String>) -> Result<(), String> {
     std::thread::spawn(move || {
         let reader = BufReader::new(stdout);
         let mut terminal_sent = false;
-        for line in reader.lines().flatten() {
+        for line in reader.lines() {
+            // A line that does not decode is skipped, not fatal: this is a
+            // child process's output, and one odd byte must not silence the
+            // rest of it. Spelled out rather than written `.flatten()`, which
+            // says the same thing and spins forever on a reader that fails
+            // forever; a pipe reports EOF instead, so this loop ends.
+            let Ok(line) = line else { continue };
             let (kind, text) = if let Some(t) = line.strip_prefix("PARTIAL ") {
                 ("partial", t.to_string())
             } else if let Some(t) = line.strip_prefix("FINAL ") {

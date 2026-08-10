@@ -21,3 +21,15 @@ repository root, never from a path baked into a script.
 | `app/` | build or develop the desktop app |
 
 `archive/` holds superseded scripts and is not versioned.
+
+## Perplexity and where it may be quoted
+
+The launchers in `differentiel/` and `scripts/certify.py` do not read the same
+corpus file: the launchers read `coding-repobench-p-e-0048.txt`, the certifier
+reads `long-context-multifieldqa-zh-0029.txt`, and on the same model the two
+differ by more than a factor of three. Only `certify.py` writes into
+`scripts/models-registry.json`, and it stores the corpus path, that file's
+sha256, the seed, the context and the batch shape next to the number. A
+perplexity read off a launcher's console is a local check, not a registry
+value, and copying one into the registry by hand is how four entries there
+ended up with no provenance at all.

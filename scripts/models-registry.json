@@ -1,5 +1,6 @@
 {
-  "registry_version": 1,
+  "registry_version": 2,
+  "certified_ppl_schema": "certified_ppl is an object, never a bare number. A reproducible one carries stock, wired, corpus, corpus_sha256, corpus_bytes, seed, ctx, batch, ubatch, regime, date, run and recorded_by, and is written by scripts/certify.py from the run it just did. One whose corpus was never recorded carries value_unverified instead of stock and wired, corpus null and unreproducible true: the number is kept because deleting evidence is not honesty, and the key is named so that a reader expecting a certified pair fails instead of quoting it. A re-certification replaces the whole object.",
   "reference_machine": "MacBook Pro M5 Max, 128 GB, internal SSD",
   "models": [
     {
@@ -148,7 +149,13 @@
         }
       ],
       "certified_date": "2026-08-05",
-      "certified_ppl": 4.5839,
+      "certified_ppl": {
+        "value_unverified": 4.5839,
+        "corpus": null,
+        "date": "2026-08-05",
+        "unreproducible": true,
+        "note": "Corpus not recorded. This number predates scripts/certify.py: it was taken by a per-model launcher in lanceurs/differentiel/, which reads corpus/materialized/stage1/coding-repobench-p-e-0048.txt, but nothing wrote that down at the time and llama-perplexity does not echo --file into its log, so the text behind the number cannot be established from the evidence that exists. What is established is that it is not the corpus scripts/certify.py reads: on 2026-08-10 that corpus gave 7.0202 for this model, see artifacts/h4/certification/20260810T110630Z-qwen3-30b-a3b.stock.out. The certification itself is unaffected and was re-confirmed on 2026-08-10 with zero divergence; it is this number alone that is ambiguous. Do not quote it and do not compare it to any other perplexity in this file. Re-running scripts/certify.py on this model replaces this whole object with a recorded one."
+      },
       "expert_bytes_total": 30802968576,
       "non_expert_bytes": 1700000000,
       "record_bytes": 5013504,
@@ -183,7 +190,13 @@
       "min_cache_bytes": 7313917632,
       "status": "certified_bit_transparent",
       "certified_date": "2026-08-05",
-      "certified_ppl": 6.1562,
+      "certified_ppl": {
+        "value_unverified": 6.1562,
+        "corpus": null,
+        "date": "2026-08-05",
+        "unreproducible": true,
+        "note": "Corpus not recorded. This number predates scripts/certify.py: it was taken by a per-model launcher in lanceurs/differentiel/, which reads corpus/materialized/stage1/coding-repobench-p-e-0048.txt, but nothing wrote that down at the time and llama-perplexity does not echo --file into its log, so the text behind the number cannot be established from the evidence that exists. What is established is that it is not the corpus scripts/certify.py reads: on 2026-08-10 that corpus gave 15.6224 for this model, see artifacts/h4/certification/20260810T111029Z-llama4-scout.stock.out. The certification itself is unaffected and was re-confirmed on 2026-08-10 with zero divergence; it is this number alone that is ambiguous. Do not quote it and do not compare it to any other perplexity in this file. Re-running scripts/certify.py on this model replaces this whole object with a recorded one."
+      },
       "native_fit_ram_gb": 80,
       "measured": [
         {
@@ -251,7 +264,13 @@
       "record_classes": 2,
       "status": "certified_by_composition",
       "certified_date": "2026-08-05",
-      "certified_ppl": 3.6605,
+      "certified_ppl": {
+        "value_unverified": 3.6605,
+        "corpus": null,
+        "date": "2026-08-05",
+        "unreproducible": true,
+        "note": "Corpus not recorded. This number predates scripts/certify.py: it was taken by a per-model launcher in lanceurs/differentiel/, which reads corpus/materialized/stage1/coding-repobench-p-e-0048.txt, but nothing wrote that down at the time and llama-perplexity does not echo --file into its log, so the text behind the number cannot be established from the evidence that exists. Its four siblings from the same batch were each measured against the current corpus on 2026-08-10 and none of the four matched, so this one is treated the same way. The certification_chain above is unaffected; it is this number alone that is ambiguous. Do not quote it and do not compare it to any other perplexity in this file. This model has no native stock reference on any Mac, so the object is cleared only by a certify.py run on hardware that can hold it."
+      },
       "certification_chain": "GGUF->pack: fixture+manifest sha256; arch qwen3moe: bit-certified on 30B (same code path); pack->arena: in-situ autoverif 48/48 IDENTIQUE on this model. Native stock reference impossible on any Mac (142 GB > 128 GB max, Bus error confirmed).",
       "native_fit_ram_gb": null,
       "runs_nowhere_natively": true,
@@ -319,7 +338,13 @@
       "record_classes": 2,
       "status": "certified_bit_transparent",
       "certified_date": "2026-08-06",
-      "certified_ppl": 3.6481,
+      "certified_ppl": {
+        "value_unverified": 3.6481,
+        "corpus": null,
+        "date": "2026-08-06",
+        "unreproducible": true,
+        "note": "Corpus not recorded. This number predates scripts/certify.py: it was taken by a per-model launcher in lanceurs/differentiel/, which reads corpus/materialized/stage1/coding-repobench-p-e-0048.txt, but nothing wrote that down at the time and llama-perplexity does not echo --file into its log, so the text behind the number cannot be established from the evidence that exists. What is established is that it is not the corpus scripts/certify.py reads: on 2026-08-10 that corpus gave 16.5228 for this model, see artifacts/h4/certification/20260810T110847Z-glm-4.stock.out. The certification itself is unaffected and was re-confirmed on 2026-08-10 with zero divergence; it is this number alone that is ambiguous. Do not quote it and do not compare it to any other perplexity in this file. Re-running scripts/certify.py on this model replaces this whole object with a recorded one."
+      },
       "native_fit_ram_gb": 96,
       "min_ram_gb": 32,
       "measured": [
@@ -387,7 +412,13 @@
       "record_classes": 2,
       "status": "certified_bit_transparent",
       "certified_date": "2026-08-06",
-      "certified_ppl": 4.0523,
+      "certified_ppl": {
+        "value_unverified": 4.0523,
+        "corpus": null,
+        "date": "2026-08-06",
+        "unreproducible": true,
+        "note": "Corpus not recorded. This number predates scripts/certify.py: it was taken by a per-model launcher in lanceurs/differentiel/, which reads corpus/materialized/stage1/coding-repobench-p-e-0048.txt, but nothing wrote that down at the time and llama-perplexity does not echo --file into its log, so the text behind the number cannot be established from the evidence that exists. What is established is that it is not the corpus scripts/certify.py reads: on 2026-08-10 that corpus gave 5.9467 for this model, see artifacts/h4/certification/20260810T110748Z-qwen3-next-80b.stock.out. The certification itself is unaffected and was re-confirmed on 2026-08-10 with zero divergence; it is this number alone that is ambiguous. Do not quote it and do not compare it to any other perplexity in this file. Re-running scripts/certify.py on this model replaces this whole object with a recorded one."
+      },
       "native_fit_ram_gb": 64,
       "min_ram_gb": 16,
       "measured": [
@@ -524,7 +555,22 @@
         "general"
       ],
       "certified_date": "2026-08-09",
-      "certified_ppl": 3.988,
+      "certified_ppl": {
+        "stock": 3.988,
+        "wired": 3.988,
+        "corpus": "corpus/materialized/stage1/long-context-multifieldqa-zh-0029.txt",
+        "corpus_sha256": "2baf18f90cd4b6e09411f3e870e5d734943fc07828d5a0e3b6d8b527f485aa33",
+        "corpus_bytes": 20737,
+        "seed": 42,
+        "ctx": 512,
+        "batch": 512,
+        "ubatch": 2,
+        "regime": "llama-perplexity, CPU expert reference: --n-cpu-moe 99 --no-repack --fit off --chunks 1, stock against wired (GALACTUS_H4=1, --no-mmap)",
+        "date": "2026-08-09",
+        "run": "20260809T183027Z",
+        "recorded_by": "scripts/certify.py",
+        "note": "Provenance backfilled on 2026-08-10; it was not recorded when the number was taken. Verified rather than assumed: the closing audit re-ran this model on this corpus and both sides returned the same value again, see artifacts/h4/certification/20260810T110518Z-olmoe-1b-7b.stock.out"
+      },
       "measured": [
         {
           "cache_gb": 0.98,
@@ -573,7 +619,22 @@
         "writing"
       ],
       "certified_date": "2026-08-09",
-      "certified_ppl": 1.4584,
+      "certified_ppl": {
+        "stock": 1.4584,
+        "wired": 1.4584,
+        "corpus": "corpus/materialized/stage1/long-context-multifieldqa-zh-0029.txt",
+        "corpus_sha256": "2baf18f90cd4b6e09411f3e870e5d734943fc07828d5a0e3b6d8b527f485aa33",
+        "corpus_bytes": 20737,
+        "seed": 42,
+        "ctx": 512,
+        "batch": 512,
+        "ubatch": 2,
+        "regime": "llama-perplexity, CPU expert reference: --n-cpu-moe 99 --no-repack --fit off --chunks 1, stock against wired (GALACTUS_H4=1, --no-mmap)",
+        "date": "2026-08-09",
+        "run": "20260809T191045Z",
+        "recorded_by": "scripts/certify.py",
+        "note": "Provenance backfilled on 2026-08-10; it was not recorded when the number was taken. Verified rather than assumed: the closing audit re-ran this model on this corpus and both sides returned the same value again, see artifacts/h4/certification/20260810T110546Z-phi35-moe.stock.out"
+      },
       "measured": [
         {
           "cache_gb": 10.1,
