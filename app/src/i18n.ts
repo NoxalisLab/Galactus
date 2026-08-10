@@ -411,6 +411,38 @@ const dict: Record<string, { en: string; fr: string }> = {
   "srvfail.logTitle": { en: "Server log", fr: "Journal du serveur" },
   "srvfail.loading": { en: "Loading…", fr: "Chargement…" },
   "srvfail.emptyLog": { en: "The log is empty.", fr: "Le journal est vide." },
+  "srvfail.memoryTitle": {
+    en: "The local server ran out of memory while loading",
+    fr: "Le serveur local a manqué de mémoire pendant le chargement",
+  },
+  "srvfail.memoryBody": {
+    en: "Quit a few applications to free memory, then start the model again. If it keeps happening, set the memory footprint to Eco in Settings.",
+    fr: "Quittez quelques applications pour libérer de la mémoire, puis redémarrez le modèle. Si cela se reproduit, réglez l'empreinte mémoire sur Éco dans les Réglages.",
+  },
+
+  // What replaces the engine's own "Compute error.", which names no cause and
+  // sends the user guessing. %s is the footprint mode the engine is running in.
+  "engfail.memoryStepDown": {
+    en: "The engine ran out of memory while answering. It is running in %s; other applications have taken the memory it needed. Free some memory, or set the memory footprint to Eco in Settings and start the model again.",
+    fr: "Le moteur a manqué de mémoire pendant la réponse. Il tourne en mode %s ; d'autres applications ont pris la mémoire dont il avait besoin. Libérez de la mémoire, ou réglez l'empreinte mémoire sur Éco dans les Réglages puis redémarrez le modèle.",
+  },
+  "engfail.memoryAtFloor": {
+    en: "The engine ran out of memory while answering, and it is already running in its smallest footprint. Quit a few applications to free memory, then start the model again.",
+    fr: "Le moteur a manqué de mémoire pendant la réponse, et il tourne déjà dans son empreinte la plus petite. Quittez quelques applications pour libérer de la mémoire, puis redémarrez le modèle.",
+  },
+  "engfail.context": {
+    en: "This conversation has outgrown the model's context window. Start a new conversation, or remove some of the files and long outputs it is carrying.",
+    fr: "Cette conversation a dépassé la fenêtre de contexte du modèle. Ouvrez une nouvelle conversation, ou retirez une partie des fichiers et des longues sorties qu'elle transporte.",
+  },
+  "engfail.evidence": { en: "Engine log: %s", fr: "Journal du moteur : %s" },
+
+  // Said out loud at start: a user who picked Performance and silently got Eco
+  // would rightly call that a bug. %a is the mode asked for, %m the one used,
+  // %g the memory this Mac could actually spare.
+  "footprint.steppedDown": {
+    en: "Started in %m instead of %a: this Mac can spare %g GB right now, not enough for %a.",
+    fr: "Démarré en %m au lieu de %a : ce Mac peut céder %g Go en ce moment, pas assez pour %a.",
+  },
 
   "perm.newFile": { en: "new file", fr: "nouveau fichier" },
   "perm.changes": { en: "Proposed change", fr: "Modification proposée" },

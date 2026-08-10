@@ -27,6 +27,7 @@ import { exportConversationMarkdown, formatStats, searchConversations, wireDropZ
 import * as store from "./store";
 import type { ChatItem, Conversation, ConvMeta, SubAgent, ThreadData } from "./store";
 import { hasVerifiedDownload, modelAvailability, modelCertification } from "./model-policy";
+import { engineAdvice, isEngineDecodeFailure, modeLabelKey } from "./engine-error";
 import * as runsview from "./runsview";
 import { learnedView } from "./learnedview";
 import { configurePanePreferences, wirePaneResizer } from "./layout/pane-resize";
@@ -66,7 +67,13 @@ let autonomy: Autonomy = "assisted";
 let ramMode: "eco" | "balanced" | "perf" = "balanced";
 let autoTabOn = true;
 let skillsOff: Set<string> = new Set();
-let serverFail: { kind: "failed" | "timeout"; code?: number; log: string } | null = null;
+let serverFail: {
+  kind: "failed" | "timeout";
+  code?: number;
+  log: string;
+  /** The engine's own verdict on the log: memory | context | unknown. */
+  cause?: string;
+} | null = null;
 /**
  * True when the running model was MEASURED unable to emit tool calls.
  *
@@ -583,12 +590,28 @@ function expectedTps(m: ModelEntry): number | null {
   // then a reserve so the machine can still run macOS. A flat constant used to
   // stand for the middle term and understated it, so the shown estimate
   // assumed a cache the engine would never get.
+  //
+  // Installed RAM on purpose, NOT the live free memory. This is plan_cache's
+  // HARDWARE ceiling, the one the three modes are defined against: an estimate
+  // that moved every time the user opened a browser tab would describe the
+  // weather rather than the model. What a machine under pressure changes is
+  // which mode the planner starts in, and that is announced separately.
   const nonExpert = (m.non_expert_bytes ?? 5e9) / 1e9;
   // Keep the UI estimate identical to Rust: 2 GB through 32 GB, then 6.25%
   // of unified memory on larger Macs.
   const systemReserve = Math.max(2, hw.ram_gb / 16);
-  const overhead = nonExpert + (2.5 + nonExpert * 0.45) + systemReserve;
-  const maxCache = Math.min(hw.ram_gb - overhead, hw.ram_gb * 0.7, (m.expert_bytes_total ?? Infinity) / 1e9);
+  // Everything the engine pays before a single expert byte is cached, INCLUDING
+  // the KV cache of every decode slot past the first (0.8 GB each, measured).
+  // Rust pays it too; an estimate that skipped it would promise a cache 0.8 GB
+  // larger than a default two-slot start actually gets.
+  const fixed = nonExpert + (2.5 + nonExpert * 0.45) + (engineSlots() - 1) * 0.8;
+  // The 70 percent cap bounds the TOTAL, exactly as engine_budget_bytes does.
+  // It used to bound this arena alone, with `fixed` added on top, so the
+  // estimate assumed a cache 5 GB larger than any start would ever plan and
+  // promised a throughput the engine could not reach. Same defect as the one
+  // fixed in plan_cache, and it had been copied here.
+  const budget = Math.min(hw.ram_gb - systemReserve, hw.ram_gb * 0.7);
+  const maxCache = Math.min(budget - fixed, (m.expert_bytes_total ?? Infinity) / 1e9);
   const pts = [...m.measured].sort((a, b) => a.cache_gb - b.cache_gb);
   // Mirror the backend's memory-footprint policy so the shown estimate
   // matches what a start would actually plan.
@@ -885,11 +908,64 @@ async function showServerLogModal() {
   });
 }
 
+/**
+ * Replace an unexplained engine failure with something a person can act on.
+ *
+ * A user met "Compute error." mid-conversation on a 24 GB Mac and found his
+ * way out by trying eco mode at random. The three words come from llama-server
+ * when llama_decode returns below -1, and they carry no cause: memory is one
+ * of several things that produce them. The backend reads the engine's own log
+ * (llama-server.log and the .1 beside it) and returns a verdict, and only a
+ * verdict that says something replaces the text. An `unknown` keeps the
+ * engine's words, because a message that blames memory for every failure would
+ * send users to free memory that was never the problem.
+ *
+ * Runs after the turn has already ended: nothing here may delay the UI going
+ * back to idle, and a backend that does not answer costs nothing but the
+ * original message staying as it was.
+ */
+async function explainEngineFailure(th: store.ThreadTarget, raw: string): Promise<void> {
+  let verdict;
+  try {
+    verdict = await api.engineDiagnose(raw);
+  } catch {
+    return;
+  }
+  const advice = engineAdvice(verdict);
+  if (!advice) return;
+  let text = advice.modeKey ? t(advice.key).replace("%s", t(advice.modeKey)) : t(advice.key);
+  // The engine's own line, so the diagnosis can be checked rather than trusted.
+  if (verdict.evidence) text += " " + t("engfail.evidence").replace("%s", verdict.evidence);
+  // Rewrite the error already in the thread rather than appending a second
+  // one: two messages about one failure read as two failures.
+  const items = th.data.items;
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i];
+    if (it.kind === "error" && it.text === raw) {
+      it.text = text;
+      break;
+    }
+  }
+  store.save(th.conv, true);
+  if (view === "chat" || view === "code") {
+    paintChat();
+    scrollChatDown();
+  }
+}
+
 function serverFailCard(): HTMLElement {
   const f = serverFail!;
   const tail = f.log.trim().split("\n").slice(-12).join("\n");
+  // A load that died for want of memory says so, instead of handing the user
+  // twelve lines of Metal log to interpret. The verdict comes from the engine's
+  // own log, decided in Rust, not from the exit code.
+  const memory = f.kind === "failed" && f.cause === "memory";
+  const title = f.kind === "timeout"
+    ? t("srvfail.timeoutTitle")
+    : memory ? t("srvfail.memoryTitle") : t("srvfail.title");
   const card = el(`<div class="errcard">
-    <div class="eh"><span class="edot"></span><b>${esc(f.kind === "timeout" ? t("srvfail.timeoutTitle") : t("srvfail.title"))}</b>${f.code != null ? `<span class="code">exit ${f.code}</span>` : ""}</div>
+    <div class="eh"><span class="edot"></span><b>${esc(title)}</b>${f.code != null ? `<span class="code">exit ${f.code}</span>` : ""}</div>
+    ${memory ? `<span class="eb">${esc(t("srvfail.memoryBody"))}</span>` : ""}
     ${tail ? `<span class="eb">${esc(t("srvfail.body"))}</span><pre class="etail">${esc(tail)}</pre>` : ""}
     <div class="ea">
       <button class="bs" data-copy>${esc(t("srvfail.copy"))}</button>
@@ -1885,6 +1961,11 @@ async function ensureAgent(sess: Thread): Promise<void> {
       onError: (err) => {
         if (!mine()) return;
         store.pushError(sess, err);
+        // "Compute error." is what the engine says when the graph did not run,
+        // and it names no cause. Ask the backend what the engine's own log
+        // says, then replace the three words in place. Asynchronous on
+        // purpose: the turn must end now, whatever the log turns out to say.
+        if (isEngineDecodeFailure(err)) explainEngineFailure(sess, err).catch(() => undefined);
         // Persist what the model context really holds, or reopening the
         // thread would replay a history missing the last exchange.
         store.syncHistory(sess, inst.history(), inst.summary());
@@ -3762,7 +3843,39 @@ async function setRoot(p: string) {
 }
 
 // ---------- shell ----------
-async function refreshServer() { try { server = await api.serverStatus(); } catch {} }
+/**
+ * The last footprint decision this UI has already told the user about.
+ *
+ * refreshServer runs on every server tick, and a start emits dozens of them.
+ * Keyed on the model and the pair of modes, so the notice appears once per
+ * start and reappears if the same model is later started differently.
+ */
+let footprintNoticed = "";
+
+async function refreshServer() {
+  try {
+    server = await api.serverStatus();
+  } catch {
+    return;
+  }
+  // A step-down is said out loud. A user who picked Performance and silently
+  // got Eco would rightly call that a bug, and a user who is never told why
+  // learns nothing about his own machine.
+  const f = server.footprint;
+  if (!f || f.mode === f.requested) {
+    if (!f) footprintNoticed = "";
+    return;
+  }
+  const key = `${server.model_id ?? ""}:${f.requested}>${f.mode}`;
+  if (key === footprintNoticed) return;
+  footprintNoticed = key;
+  toast(
+    t("footprint.steppedDown")
+      .replace(/%m/g, t(modeLabelKey(f.mode)))
+      .replace(/%a/g, t(modeLabelKey(f.requested)))
+      .replace("%g", (f.budget_bytes / 1e9).toFixed(1))
+  );
+}
 
 let composerDraft = "";
 
@@ -4302,6 +4415,7 @@ async function boot() {
         kind: p.phase,
         code: typeof p.code === "number" ? p.code : undefined,
         log: String(p.log ?? ""),
+        cause: typeof p.kind === "string" ? p.kind : undefined,
       };
     } else if (p && typeof p.phase === "string") {
       serverFail = null;

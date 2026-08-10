@@ -31,7 +31,10 @@ for (const name of CASES) {
   const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
   // A case whose only test skipped itself would exit 0 and prove nothing, so
   // the pass count is checked rather than the exit code alone.
-  const passed = /^ℹ pass 1$/m.test(output);
+  // Stripped as well as suppressed: NO_COLOR is a convention, not a
+  // guarantee, and the belt costs one regex.
+  const plain = output.replace(/\u001b\[[0-9;]*m/g, "");
+  const passed = /^ℹ pass 1$/m.test(plain);
   if (result.status === 0 && passed) {
     console.log(`  ok    ${name}`);
     continue;

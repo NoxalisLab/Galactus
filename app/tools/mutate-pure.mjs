@@ -335,6 +335,39 @@ const MUTATIONS = [
     to: "export function jobLimits(",
     skip: "clamping is several lines; covered by the budget mutation below",
   },
+  // ------------------------------------------------ engine failure messages
+  {
+    group: "engine-error: an out of memory decode is not left as three words",
+    suite: "engine-error",
+    file: "out/src/engine-error.js",
+    from: '    if (v.kind !== "memory")\n        return null;',
+    to: "    return null;",
+    test: "an out of memory decode names memory, the mode, and the way out",
+  },
+  {
+    group: "engine-error: a user already in eco is not told to switch to eco",
+    suite: "engine-error",
+    file: "out/src/engine-error.js",
+    from: '    if (!v.can_step_down)\n        return { key: "engfail.memoryAtFloor", modeKey: "" };',
+    to: "    if (false)\n        return { key: \"engfail.memoryAtFloor\", modeKey: \"\" };",
+    test: "in eco there is no mode left, so the advice changes",
+  },
+  {
+    group: "engine-error: an exceeded context is not a memory problem",
+    suite: "engine-error",
+    file: "out/src/engine-error.js",
+    from: '    if (v.kind === "context")\n        return { key: "engfail.context", modeKey: "" };',
+    to: "    if (false)\n        return { key: \"engfail.context\", modeKey: \"\" };",
+    test: "an exceeded context is never dressed up as a memory problem",
+  },
+  {
+    group: "engine-error: only the engine's own decode messages are rewritten",
+    suite: "engine-error",
+    file: "out/src/engine-error.js",
+    from: "    return DECODE_MESSAGES.some((m) => low.includes(m));",
+    to: "    return low.includes(\"error\");",
+    test: "a failure that already explains itself is left alone",
+  },
 ];
 
 const FILTER = process.argv[2] ?? "";

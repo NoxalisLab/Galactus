@@ -324,6 +324,76 @@ async fn hw_info() -> HwInfo {
     hw_info_impl()
 }
 
+/// Memory this Mac can actually hand over right now, not the memory it was sold
+/// with.
+///
+/// The planner budgeted against `hw.memsize` and subtracted a fixed reserve for
+/// "macOS and whatever the user is doing". That reserve is a guess about
+/// somebody else's machine: it was right on the machine this was written on and
+/// wrong on a colleague's 24 GB Mac with a browser open, where the engine came
+/// back with "Compute error." and nothing pointing at memory.
+///
+/// Free plus inactive plus speculative, because macOS counts as inactive the
+/// pages it will hand over without hesitating, and counting only `free` would
+/// make a healthy Mac look full. Purgeable is deliberately NOT counted: it is
+/// reclaimable, but reclaiming it costs the app that owns it.
+///
+/// Returns None when vm_stat cannot be read or parsed, and the caller then
+/// falls back to the installed-RAM budget: a missing measurement must not make
+/// the planner refuse everything.
+fn available_memory_bytes() -> Option<u64> {
+    let out = run_capture("vm_stat", &[]);
+    if out.is_empty() {
+        return None;
+    }
+    let mut page = 0u64;
+    if let Some(i) = out.find("page size of ") {
+        page = out[i + 13..]
+            .split_whitespace()
+            .next()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+    }
+    if page == 0 {
+        return None;
+    }
+    let mut pages = 0u64;
+    let mut seen = 0;
+    for line in out.lines() {
+        let want = line.starts_with("Pages free:")
+            || line.starts_with("Pages inactive:")
+            || line.starts_with("Pages speculative:");
+        if !want {
+            continue;
+        }
+        if let Some(v) = line.rsplit(':').next() {
+            if let Ok(n) = v.trim().trim_end_matches('.').parse::<u64>() {
+                pages += n;
+                seen += 1;
+            }
+        }
+    }
+    if seen == 0 {
+        return None;
+    }
+    Some(pages.saturating_mul(page))
+}
+
+#[cfg(test)]
+mod available_memory_tests {
+    use super::available_memory_bytes;
+
+    #[test]
+    fn it_reads_a_plausible_figure_from_this_machine() {
+        // Not a fixed value: the point is that it parses vm_stat and lands in a
+        // range no parsing bug would land in. A misread page size or a dropped
+        // decimal point leaves this by orders of magnitude.
+        let got = available_memory_bytes().expect("vm_stat is readable on macOS");
+        assert!(got > 100_000_000, "suspiciously small: {got}");
+        assert!(got < 2_000_000_000_000, "suspiciously large: {got}");
+    }
+}
+
 fn hw_info_impl() -> HwInfo {
     let ram: u64 = run_capture("sysctl", &["-n", "hw.memsize"])
         .parse()
@@ -1154,6 +1224,9 @@ struct ServerState {
     slots: u32,
     /// Measured tool-calling verdict for the running model (see ServerStatus).
     tools_ok: Option<bool>,
+    /// The footprint mode this server was actually started in, and why. None
+    /// while stopped.
+    footprint: Option<ModeDecision>,
 }
 
 static SERVER: OnceLock<Mutex<ServerState>> = OnceLock::new();
@@ -1170,6 +1243,7 @@ fn server_state() -> &'static Mutex<ServerState> {
             mode: String::new(),
             slots: 1,
             tools_ok: None,
+            footprint: None,
         })
     })
 }
@@ -1193,6 +1267,10 @@ const CTX_PER_SLOT: u32 = 8192;
 /// Hard ceiling on slots: past this the KV cache stops being free and a Mac
 /// with a big model would pay it in evictions.
 const MAX_SLOTS: u32 = 4;
+/// Resident cost of one decode slot beyond the first, from the measurements
+/// above: 29.6 GB at one slot, 30.4 at two, 32.0 at four. The planner has to
+/// pay it, or a two-slot default silently spends 0.8 GB it never budgeted.
+const KV_BYTES_PER_EXTRA_SLOT: u64 = 800_000_000;
 
 /// Decode slots to start the engine with (setting "engine_slots", default 2).
 ///
@@ -1226,6 +1304,11 @@ struct ServerStatus {
     /// have been cheaper and would have been wrong: it depends on the build,
     /// the chat template and the quantization, not on the model name.
     tools_ok: Option<bool>,
+    /// The memory-footprint decision this engine was started with: the mode
+    /// asked for, the mode actually used, and the two numbers that separate
+    /// them. The UI says so out loud when they differ, because a user who
+    /// picked Performance and silently got Eco would rightly call that a bug.
+    footprint: Option<ModeDecision>,
 }
 
 #[tauri::command]
@@ -1241,6 +1324,7 @@ fn server_status() -> ServerStatus {
         // promises a concurrency the engine will not have.
         slots: if s.child.is_some() { s.slots } else { engine_slots() },
         tools_ok: s.tools_ok,
+        footprint: s.footprint.clone(),
     }
 }
 
@@ -1414,8 +1498,11 @@ fn measured_geometry(entry: &Value) -> Option<(u64, u64, u64, u64, u64, u64)> {
 /// Two decimal GB is enough on 16/24/32 GB machines where every cache byte
 /// matters. Above that, Macs also tend to run a larger working set (IDE,
 /// browser, build tools), so the reserve scales to 6.25% of unified memory:
-/// 4 GB on a 64 GB Mac and 8 GB on a 128 GB Mac. The independent 70% cache
-/// ceiling still applies after this subtraction.
+/// 4 GB on a 64 GB Mac and 8 GB on a 128 GB Mac.
+///
+/// A guess about a machine nobody has measured, and it is only half the
+/// answer: see engine_budget_bytes, where the reserve is one of two bounds and
+/// the other one reads what the Mac can actually give right now.
 fn system_reserve_bytes(ram: u64) -> u64 {
     2_000_000_000u64.max(ram / 16)
 }
@@ -1433,13 +1520,264 @@ mod system_reserve_tests {
     }
 }
 
+// ------------------------------------------------ what this Mac can give NOW
+//
+// Two numbers were being confused with each other, and the confusion is what a
+// colleague on a 24 GB Mac read as "Compute error.":
+//
+//   - the memory the Mac was SOLD with (`sysctl hw.memsize`), minus a fixed
+//     reserve. A constant guessed on somebody else's machine.
+//   - the memory the Mac can hand over RIGHT NOW (`vm_stat`), which is the
+//     only number the allocator answers to.
+//
+// The planner used the first and never looked at the second.
+
+/// Share of the measured free pool the engine may claim: four fifths.
+///
+/// The reading is a snapshot taken seconds before llama-server starts
+/// allocating, and the machine does not hold still in between: a tab opens,
+/// Spotlight indexes, this app's own webview grows. One fifth of the pool is
+/// what absorbs that drift, and it is also the honest price of counting
+/// inactive pages as available, since macOS hands them over readily but
+/// neither instantly nor always in full.
+///
+/// A FRACTION of the measured pool, not a constant, and that is the whole
+/// point: a constant is exactly the mistake being replaced here. A fifth of
+/// 4 GB free is a 0.8 GB cushion on a machine with nothing to spare, and a
+/// fifth of 100 GB free is 20 GB on a machine that has plenty. The cushion has
+/// to scale with the thing it is cushioning.
+const AVAILABLE_CLAIM_NUM: u64 = 4;
+const AVAILABLE_CLAIM_DEN: u64 = 5;
+
+/// Total resident bytes the engine may occupy: non-expert weights, runtime
+/// overhead and expert arena TOGETHER, not one of the three.
+///
+/// `available` is what `available_memory_bytes()` measured, and None when
+/// vm_stat could not be read or parsed. A missing measurement falls back to
+/// the hardware bound instead of refusing everything: no worse than the
+/// behaviour this replaces, and a broken probe must never make the app
+/// unusable.
+///
+/// `installed` reaches this from `ram_gb * 1e9`, which understates a machine
+/// sold in GiB by about 7 percent, while `available` is real bytes from
+/// vm_stat. The mismatch only ever makes the hardware bound smaller than the
+/// truth, and a bound that errs toward leaving memory free is the one to keep.
+fn engine_budget_bytes(installed: u64, available: Option<u64>) -> u64 {
+    // Properties of the hardware, so they stay on installed RAM: never more
+    // than 70 percent of the Mac, and never so much that the system reserve is
+    // eaten. Both bound the TOTAL, which is the fix in defect 1.
+    let hardware_bound =
+        (installed * 7 / 10).min(installed.saturating_sub(system_reserve_bytes(installed)));
+    match available {
+        None => hardware_bound,
+        Some(free) => hardware_bound
+            .min(free.saturating_mul(AVAILABLE_CLAIM_NUM) / AVAILABLE_CLAIM_DEN),
+    }
+}
+
+#[cfg(test)]
+mod engine_budget_tests {
+    use super::engine_budget_bytes;
+
+    const GB: u64 = 1_000_000_000;
+
+    #[test]
+    fn without_a_reading_the_budget_is_the_hardware_bound() {
+        // 70 percent of the Mac, and it bounds the TOTAL resident footprint.
+        assert_eq!(engine_budget_bytes(24 * GB, None), 16_800_000_000);
+        assert_eq!(engine_budget_bytes(128 * GB, None), 89_600_000_000);
+    }
+
+    #[test]
+    fn a_busy_mac_gets_a_budget_from_what_is_free_not_from_what_it_was_sold_with() {
+        // The colleague's 24 GB Mac with a browser open: 9 GB actually free.
+        // The old planner offered 16.8 GB anyway; four fifths of 9 is 7.2.
+        assert_eq!(engine_budget_bytes(24 * GB, Some(9 * GB)), 7_200_000_000);
+    }
+
+    #[test]
+    fn an_idle_mac_is_still_bounded_by_its_hardware() {
+        // 22 GB free of 24 installed. Four fifths would be 17.6, more than the
+        // 70 percent bound: the hardware bound must still win, or the engine
+        // would fill a freshly booted Mac to the brim.
+        assert_eq!(engine_budget_bytes(24 * GB, Some(22 * GB)), 16_800_000_000);
+    }
+
+    #[test]
+    fn a_machine_with_nothing_free_offers_nothing() {
+        assert_eq!(engine_budget_bytes(24 * GB, Some(0)), 0);
+    }
+}
+
+/// The footprint modes, from the hungriest to the leanest. The step-down walks
+/// this array, so its order IS the policy.
+const MODE_LADDER: [&str; 3] = ["perf", "balanced", "eco"];
+
+/// What the engine would hold resident in each mode, for one model on one
+/// machine. Bytes, weights and runtime overhead included, not just the arena.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ModeFootprints {
+    eco: u64,
+    balanced: u64,
+    perf: u64,
+}
+
+impl ModeFootprints {
+    fn resident(&self, mode: &str) -> u64 {
+        match mode {
+            "eco" => self.eco,
+            "perf" => self.perf,
+            _ => self.balanced,
+        }
+    }
+}
+
+/// The mode a start will actually use, and the numbers that justify it.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+struct ModeDecision {
+    /// The mode the engine is started in.
+    mode: String,
+    /// The mode the user asked for. Different from `mode` after a step-down.
+    requested: String,
+    /// True when not even eco fits. The start is then refused with a sentence
+    /// about memory, rather than spawning an engine that will die mid-graph.
+    impossible: bool,
+    /// What the engine will hold, all three terms together.
+    resident_bytes: u64,
+    /// What the machine can give right now.
+    budget_bytes: u64,
+}
+
+/// Choose the footprint mode to START in.
+///
+/// Pure: (budget in bytes, model geometry, requested mode) in, decision out.
+/// No clock, no filesystem, no machine, so every shape that matters can be
+/// tested instead of only the shape the developer's Mac happens to have.
+///
+/// A DECISION, not a retry. The engine cannot be asked politely whether a
+/// graph will fit: llama_decode either runs it or returns below -1 and the
+/// user reads "Compute error." with nothing pointing at memory. So the
+/// comparison happens before anything is spawned.
+///
+/// The ladder is walked DOWNWARDS from what the user asked for, never upwards.
+/// A user who chose eco gets eco on every machine: the automatic part of this
+/// is a safety net, not an opinion about what the user wanted.
+fn choose_start_mode(budget: u64, footprints: ModeFootprints, requested: &str) -> ModeDecision {
+    // An unrecognised mode is treated as balanced, which is what the settings
+    // reader already defaults to.
+    let start = MODE_LADDER.iter().position(|m| *m == requested).unwrap_or(1);
+    let requested = MODE_LADDER[start];
+    for mode in &MODE_LADDER[start..] {
+        let resident = footprints.resident(mode);
+        if resident <= budget {
+            return ModeDecision {
+                mode: (*mode).to_string(),
+                requested: requested.to_string(),
+                impossible: false,
+                resident_bytes: resident,
+                budget_bytes: budget,
+            };
+        }
+    }
+    ModeDecision {
+        mode: "eco".to_string(),
+        requested: requested.to_string(),
+        impossible: true,
+        resident_bytes: footprints.eco,
+        budget_bytes: budget,
+    }
+}
+
+#[cfg(test)]
+mod choose_start_mode_tests {
+    use super::{choose_start_mode, ModeFootprints};
+
+    const GB: u64 = 1_000_000_000;
+
+    /// Roughly GLM-4.5-Air on a 24 GB Mac: 6 GB of non-expert weights plus
+    /// overhead, then an arena that grows with the mode.
+    fn footprints() -> ModeFootprints {
+        ModeFootprints { eco: 8 * GB, balanced: 13 * GB, perf: 17 * GB }
+    }
+
+    #[test]
+    fn an_idle_mac_starts_in_the_mode_the_user_asked_for() {
+        let d = choose_start_mode(17 * GB, footprints(), "perf");
+        assert_eq!(d.mode, "perf");
+        assert_eq!(d.requested, "perf");
+        assert!(!d.impossible);
+        assert_eq!(d.resident_bytes, 17 * GB);
+    }
+
+    #[test]
+    fn a_busy_mac_steps_down_to_the_mode_that_fits_and_says_which() {
+        // 12 GB to give: perf does not fit, balanced does not fit, eco does.
+        let d = choose_start_mode(12 * GB, footprints(), "perf");
+        assert_eq!(d.mode, "eco");
+        assert_eq!(d.requested, "perf");
+        assert!(!d.impossible);
+        assert_eq!(d.resident_bytes, 8 * GB);
+        assert_eq!(d.budget_bytes, 12 * GB);
+    }
+
+    #[test]
+    fn the_step_is_one_rung_when_one_rung_is_enough() {
+        // The whole point of a ladder rather than a straight fall to eco: a
+        // machine that can afford balanced is not punished with eco.
+        let d = choose_start_mode(13 * GB, footprints(), "perf");
+        assert_eq!(d.mode, "balanced");
+    }
+
+    #[test]
+    fn the_ladder_never_climbs() {
+        // A user who chose eco keeps eco on a machine that could hold perf.
+        let d = choose_start_mode(64 * GB, footprints(), "eco");
+        assert_eq!(d.mode, "eco");
+        assert_eq!(d.resident_bytes, 8 * GB);
+    }
+
+    #[test]
+    fn nothing_fitting_is_reported_as_impossible_rather_than_started_anyway() {
+        // This is the case that used to become "Compute error." after the
+        // user had already typed a message and waited.
+        let d = choose_start_mode(5 * GB, footprints(), "balanced");
+        assert!(d.impossible);
+        assert_eq!(d.mode, "eco");
+        assert_eq!(d.resident_bytes, 8 * GB);
+        assert_eq!(d.budget_bytes, 5 * GB);
+    }
+
+    #[test]
+    fn an_unknown_mode_is_read_as_balanced() {
+        let d = choose_start_mode(64 * GB, footprints(), "turbo");
+        assert_eq!(d.mode, "balanced");
+        assert_eq!(d.requested, "balanced");
+    }
+}
+
+/// Everything a start needs from the planner: the numbers the engine is given,
+/// and the mode decision that produced them.
+#[derive(Clone, Debug)]
+struct CachePlan {
+    cache_bytes: u64,
+    /// SLRU protected fraction.
+    protected: f64,
+    /// Physical micro-batch.
+    ubatch: u32,
+    decision: ModeDecision,
+}
+
 fn plan_cache(
     entry: &Value,
     ram_gb: u64,
+    available: Option<u64>,
     override_gb: Option<u64>,
     ram_mode: &str,
     cpu_moe_regime: bool,
-) -> Result<(u64, f64, u32), String> {
+    // Decode slots the engine will be started with. Each one past the first is
+    // a whole extra KV cache, and the planner used to ignore them.
+    slots: u32,
+) -> Result<CachePlan, String> {
     // Hard gate, mirrored by the UI card: below the registry minimum the
     // engine cannot hold the non-expert weights plus a viable cache, so the
     // model is refused everywhere (app start, CLI serve), not just greyed out.
@@ -1486,12 +1824,40 @@ fn plan_cache(
     // is doing. Without that reserve the planner filled the machine to the
     // brim: GLM-4.5-Air on a 24 GB Mac reached 23.5 GB resident and generated
     // at 1.5 tok/s, Llama-4 Scout on the same Mac exceeded it outright.
-    let runtime_overhead = 2_500_000_000 + non_expert * 45 / 100;
-    let system_reserve = system_reserve_bytes(ram);
-    let max_cache = ram
-        .saturating_sub(non_expert + runtime_overhead + system_reserve)
-        .min(ram * 7 / 10)
-        .min(expert_total);
+    //
+    // The fit was measured at ctx 8192, which is ONE decode slot, and the
+    // engine is started with --ctx-size CTX_PER_SLOT * slots. The extra slots
+    // are KV cache and nothing else: 0.8 GB each, measured on Qwen3-30B-A3B
+    // (29.6 GB resident at 1 slot, 30.4 at 2, 32.0 at 4). The default is two
+    // slots, so the ceiling was quietly 0.8 GB optimistic on every machine,
+    // and 2.4 GB on a user who asked for four.
+    let runtime_overhead = 2_500_000_000
+        + non_expert * 45 / 100
+        + u64::from(slots.saturating_sub(1)) * KV_BYTES_PER_EXTRA_SLOT;
+    // Everything the engine pays before a single expert byte is cached.
+    let fixed = non_expert + runtime_overhead;
+
+    // TWO ceilings, and they answer two different questions.
+    //
+    // The HARDWARE ceiling is what this Mac could give if nothing else were
+    // running, and it is what the three modes are DEFINED against: eco has to
+    // mean the same footprint whether or not a browser is open, otherwise the
+    // mode names would describe the weather rather than a policy.
+    //
+    // The 70 percent cap inside it used to bound the ARENA, with the weights
+    // and the runtime overhead added on top, so a bound that reads "never take
+    // more than 70 percent of this Mac" delivered 90. On a 24 GB Mac five of
+    // the seven eligible models planned about 22 GB resident, leaving two for
+    // macOS, for this app and its webview, and for everything the user had
+    // open. It now bounds what it claims to bound, the TOTAL, and the arena is
+    // what is left of the budget once the weights and the overhead are paid.
+    let hardware_budget = engine_budget_bytes(ram, None);
+    let ceiling_cache = hardware_budget.saturating_sub(fixed).min(expert_total);
+
+    // The LIVE budget is what the machine can give right now, and it is the one
+    // the decision is taken against. Before this, nothing in the planner ever
+    // looked at a number that could change after the Mac left the factory.
+    let live_budget = engine_budget_bytes(ram, available);
 
     // Memory-footprint policy over the registry's MEASURED curve. The point
     // of Galactus on a machine where the model would fit natively is to run
@@ -1514,18 +1880,22 @@ fn plan_cache(
             v
         })
         .unwrap_or_default();
-    let policy_cache = |mode: &str| -> u64 {
+    // `ceiling` is the largest cache the mode may reach. It is the HARDWARE
+    // ceiling, not the live one: the three modes have to keep meaning the same
+    // thing from one minute to the next, and it is the step-down, not a silent
+    // shrinking of every mode, that answers a machine under pressure.
+    let policy_cache = |mode: &str, ceiling: u64| -> u64 {
         if measured.is_empty() {
             // No benchmark curve for this entry: eco/balanced would silently
             // become "take the whole ceiling", the exact opposite of the
             // footprint promise. Fall back to the registry's minimum viable
             // cache, and only perf climbs to the ceiling.
             let floor = entry["min_cache_bytes"].as_u64().unwrap_or(0);
-            return if mode == "perf" || floor == 0 { max_cache } else { floor.min(max_cache) };
+            return if mode == "perf" || floor == 0 { ceiling } else { floor.min(ceiling) };
         }
         match mode {
             "eco" => (measured[0].0 * 1e9) as u64,
-            "perf" => max_cache,
+            "perf" => ceiling,
             _ => {
                 // Full residency first, when the ceiling already reaches every
                 // routed expert byte. The knee optimizes GENERATION throughput
@@ -1538,14 +1908,14 @@ fn plan_cache(
                 // eco stays the explicit minimum-footprint mode, and a machine
                 // that cannot hold the experts still falls through to the knee
                 // below, streamed regime untouched.
-                if max_cache >= expert_total {
-                    return max_cache;
+                if ceiling >= expert_total {
+                    return ceiling;
                 }
                 // Best throughput reachable within the ceiling, then the
                 // smallest cache reaching 90% of it.
                 let reachable = measured
                     .iter()
-                    .filter(|(c, _)| (*c * 1e9) as u64 <= max_cache)
+                    .filter(|(c, _)| (*c * 1e9) as u64 <= ceiling)
                     .map(|(_, t)| *t)
                     .fold(measured[0].1, f64::max);
                 for (c, t) in &measured {
@@ -1553,20 +1923,70 @@ fn plan_cache(
                         return (*c * 1e9) as u64;
                     }
                 }
-                max_cache
+                ceiling
             }
         }
     };
 
+    // THE DECISION, taken before anything is spawned. What each mode would
+    // hold, against what the machine can actually give right now.
+    let footprints = ModeFootprints {
+        eco: fixed + policy_cache("eco", ceiling_cache),
+        balanced: fixed + policy_cache("balanced", ceiling_cache),
+        perf: fixed + policy_cache("perf", ceiling_cache),
+    };
+    let mut decision = choose_start_mode(hardware_budget, footprints, ram_mode);
+    if decision.impossible {
+        if override_gb.is_none() {
+            // The missing figure, named. "Not enough memory" without a number
+            // leaves a user guessing how much to close, which is the same
+            // helplessness as "Compute error." wearing better clothes.
+            return Err(format!(
+                "not enough free memory to start this model right now: its smallest footprint \
+                 (eco) needs {:.1} GB, this Mac can spare {:.1} GB, short by {:.1} GB. Quit an \
+                 application, or close some browser tabs, then start it again.",
+                footprints.eco as f64 / 1e9,
+                live_budget as f64 / 1e9,
+                footprints.eco.saturating_sub(live_budget) as f64 / 1e9,
+            ));
+        }
+        // An explicit cache size is the user overruling the policy. The clamp
+        // below and the quota gate are then the only guards left, which is
+        // what an override is for.
+        decision.impossible = false;
+    }
+
+    // The arena this start actually gets: the chosen mode's cache, never more
+    // than the live budget leaves free.
+    let max_cache = live_budget.saturating_sub(fixed).min(expert_total);
     let mut cache = match override_gb {
         Some(gb) => gb * 1_000_000_000,
-        None => policy_cache(ram_mode),
+        None => policy_cache(&decision.mode, ceiling_cache),
     };
     cache = cache.min(max_cache).min(expert_total);
+    // `decision.resident_bytes` deliberately keeps the CHOSEN MODE's own
+    // footprint, not `fixed + cache`. The two are equal whenever the decision
+    // was sound, since a mode that fits the budget has a cache that fits
+    // `max_cache`; overwriting it would make the clamp above silently repair a
+    // wrong decision and hide it from every assertion. The clamp stays as a
+    // belt, never as the thing that makes the number true.
+    //
+    // An explicit override is the one case where the decision did not pick the
+    // size, so there the reported figure is what the engine will really hold.
+    if override_gb.is_some() {
+        decision.resident_bytes = fixed + cache;
+    }
 
     let quota = (cache / (layers * record)).min(experts);
     if quota < 2 {
-        return Err("machine too small for this model (quota < 2)".into());
+        return Err(format!(
+            "not enough memory for this model right now: the arena would be {:.1} GB, too small \
+             to hold two experts per layer. This Mac can spare {:.1} GB in total and the weights \
+             alone need {:.1} GB.",
+            cache as f64 / 1e9,
+            live_budget as f64 / 1e9,
+            fixed as f64 / 1e9,
+        ));
     }
     for f in [0.75f64, 0.50, 0.25] {
         let mut protected = (quota as f64 * f) as u64;
@@ -1600,10 +2020,330 @@ fn plan_cache(
             } else {
                 (probation / used).clamp(1, 8) as u32
             };
-            return Ok((cache, f, ubatch));
+            return Ok(CachePlan { cache_bytes: cache, protected: f, ubatch, decision });
         }
     }
-    Err("machine too small for this model (probation < active experts)".into())
+    Err(format!(
+        "not enough memory for this model right now: the arena would be {:.1} GB, too small to \
+         keep one token's active experts on probation. This Mac can spare {:.1} GB in total.",
+        cache as f64 / 1e9,
+        live_budget as f64 / 1e9,
+    ))
+}
+
+#[cfg(test)]
+mod plan_cache_tests {
+    use super::plan_cache;
+    use serde_json::json;
+
+    const GB: u64 = 1_000_000_000;
+
+    /// A MoE model shaped like GLM-4.5-Air: 3 GB of non-expert weights, 40 GB
+    /// of routed experts. The id is deliberately not a real one, so
+    /// measured_geometry cannot find a profile.json and reads these fields.
+    fn entry(measured: serde_json::Value) -> serde_json::Value {
+        json!({
+            "id": "plan-cache-test-fixture",
+            "min_ram_gb": 16,
+            "non_expert_bytes": 3_000_000_000u64,
+            "expert_bytes_total": 40_000_000_000u64,
+            "layers_moe": 46,
+            "experts": 128,
+            "experts_used": 8,
+            "record_bytes": 4_000_000u64,
+            "measured": measured,
+        })
+    }
+
+    /// The three terms the engine pays before a single expert byte is cached:
+    /// weights, then the affine runtime-overhead fit plan_cache uses.
+    const FIXED: u64 = 3_000_000_000 + (2_500_000_000 + 3_000_000_000 * 45 / 100);
+
+    #[test]
+    fn the_seventy_percent_cap_bounds_the_whole_footprint_not_just_the_arena() {
+        // DEFECT 1, pinned. The cap used to bound the ARENA and the weights and
+        // the runtime overhead were added on top, so on this 24 GB Mac the
+        // planner handed the engine a 15.1 GB arena and 22.0 GB resident: 92
+        // percent of the machine, under a bound that reads "70 percent".
+        //
+        // Against that old shape this assertion is 15_150_000_000 and goes red.
+        let plan = plan_cache(&entry(json!([])), 24, None, None, "perf", false, 1).unwrap();
+        assert_eq!(plan.cache_bytes, 24 * GB * 7 / 10 - FIXED);
+        assert_eq!(
+            plan.cache_bytes + FIXED,
+            16_800_000_000,
+            "everything the engine holds must fit under 70 percent of 24 GB"
+        );
+        assert_eq!(plan.decision.mode, "perf");
+    }
+
+    /// A measured curve, so the three modes are three different sizes.
+    fn curve() -> serde_json::Value {
+        json!([
+            {"cache_gb": 4.0, "gen_tps": 20.0},
+            {"cache_gb": 8.0, "gen_tps": 30.0},
+            {"cache_gb": 10.0, "gen_tps": 31.0},
+        ])
+    }
+
+    #[test]
+    fn an_idle_mac_still_gets_the_mode_it_asked_for() {
+        // No reading available: the planner falls back to installed RAM, which
+        // is exactly the behaviour that existed before, so a broken vm_stat
+        // cannot make the app refuse to work.
+        let plan = plan_cache(&entry(curve()), 24, None, None, "perf", false, 1).unwrap();
+        assert_eq!(plan.decision.mode, "perf");
+        assert_eq!(plan.decision.requested, "perf");
+    }
+
+    #[test]
+    fn a_mac_with_a_browser_open_starts_in_eco_instead_of_dying_mid_graph() {
+        // DEFECT 2, pinned. 24 GB installed, 16 GB actually free, so 12.8 GB to
+        // spare. perf wants 16.8 and balanced 14.85; eco needs 10.85 and fits.
+        // This is the case that reached the user as "Compute error.".
+        let plan = plan_cache(&entry(curve()), 24, Some(16 * GB), None, "perf", false, 1).unwrap();
+        assert_eq!(plan.decision.mode, "eco");
+        assert_eq!(plan.decision.requested, "perf");
+        assert_eq!(plan.cache_bytes, 4 * GB);
+        assert!(plan.decision.resident_bytes <= plan.decision.budget_bytes);
+    }
+
+    #[test]
+    fn the_step_down_stops_at_the_first_mode_that_fits() {
+        // 19 GB free of 24, so 15.2 GB to spare: perf does not fit, balanced
+        // does. Falling straight to eco here would cost the user a working
+        // mode for nothing.
+        let plan = plan_cache(&entry(curve()), 24, Some(19 * GB), None, "perf", false, 1).unwrap();
+        assert_eq!(plan.decision.mode, "balanced");
+        assert_eq!(plan.cache_bytes, 8 * GB);
+    }
+
+    #[test]
+    fn a_machine_with_nothing_to_spare_is_told_so_before_anything_is_spawned() {
+        let err = plan_cache(&entry(curve()), 24, Some(2 * GB), None, "balanced", false, 1)
+            .expect_err("2 GB free cannot hold a 3 GB model plus its arena");
+        assert!(err.contains("memory"), "the refusal must name memory: {err}");
+        assert!(err.contains("eco"), "and name the footprint it tried: {err}");
+        assert!(err.contains("short by"), "and the figure that is missing: {err}");
+    }
+
+    #[test]
+    fn every_decode_slot_past_the_first_is_paid_for_out_of_the_arena() {
+        // Third instance of the same class of defect. The overhead fit was
+        // measured at ctx 8192, which is ONE slot, while the engine is started
+        // with --parallel 2 by default: 0.8 GB of KV cache the ceiling never
+        // budgeted. Nothing about the resident total changes here, because in
+        // perf the total IS the budget; what changes is that the arena stops
+        // being handed memory the KV cache has already taken.
+        let one = plan_cache(&entry(json!([])), 24, None, None, "perf", false, 1).unwrap();
+        let two = plan_cache(&entry(json!([])), 24, None, None, "perf", false, 2).unwrap();
+        let four = plan_cache(&entry(json!([])), 24, None, None, "perf", false, 4).unwrap();
+        assert_eq!(one.cache_bytes - two.cache_bytes, 800_000_000);
+        assert_eq!(one.cache_bytes - four.cache_bytes, 2_400_000_000);
+    }
+
+    #[test]
+    fn an_explicit_cache_size_still_overrules_the_policy() {
+        // The override is the escape hatch for someone who knows their machine.
+        // It must not be silently replaced by a step-down decision.
+        let plan = plan_cache(&entry(curve()), 24, Some(19 * GB), Some(6), "perf", false, 1).unwrap();
+        assert_eq!(plan.cache_bytes, 6 * GB);
+    }
+}
+
+/// A user's report, turned into arithmetic.
+///
+/// A colleague on an M5 Mac with 24 GB started a chat in BALANCED, the default,
+/// and got `Compute error.` He reproduced it with phi35-moe and with
+/// gpt-oss-120b, and both times eco got him out, which he found by trying.
+///
+/// These are those two machines, those two models, that mode. They are written
+/// as fixtures rather than read from the registry on purpose: the registry is
+/// edited, and the point of these cases is that somebody breaking the fix in
+/// six months sees THIS USER's case go red, not a number that drifted.
+#[cfg(test)]
+mod user_report_24gb_tests {
+    use super::plan_cache;
+    use serde_json::json;
+
+    const GB: u64 = 1_000_000_000;
+
+    /// phi35-moe, from scripts/models-registry.json. `record_bytes` is absent
+    /// from the registry entry (it comes from the install profile), so it is
+    /// derived here the way the pack writer does: routed bytes over layers
+    /// times experts, 24.38 GB / (32 * 16).
+    fn phi35_moe() -> serde_json::Value {
+        json!({
+            "id": "user-report-phi35-moe",
+            "min_ram_gb": 16,
+            "non_expert_bytes": 900_000_000u64,
+            "expert_bytes_total": 24_381_489_152u64,
+            "layers_moe": 32,
+            "experts": 16,
+            "experts_used": 2,
+            "record_bytes": 47_620_096u64,
+            "measured": [
+                {"cache_gb": 10.1,  "gen_tps": 13.2},
+                {"cache_gb": 16.8,  "gen_tps": 20.4},
+                {"cache_gb": 22.4,  "gen_tps": 22.7},
+                {"cache_gb": 24.38, "gen_tps": 23.8},
+            ],
+        })
+    }
+
+    /// gpt-oss-120b, from scripts/models-registry.json, geometry unmodified.
+    fn gpt_oss_120b() -> serde_json::Value {
+        json!({
+            "id": "user-report-gpt-oss-120b",
+            "min_ram_gb": 16,
+            "non_expert_bytes": 4_500_000_000u64,
+            "expert_bytes_total": 60_926_459_904u64,
+            "layers_moe": 36,
+            "experts": 128,
+            "experts_used": 4,
+            "record_bytes": 13_221_888u64,
+            "min_cache_bytes": 7_616_207_616u64,
+            "measured": [
+                {"cache_gb": 5.06,  "gen_tps": 2.1},
+                {"cache_gb": 13.06, "gen_tps": 4.3},
+                {"cache_gb": 21.06, "gen_tps": 6.9},
+                {"cache_gb": 24.81, "gen_tps": 7.7},
+                {"cache_gb": 33.6,  "gen_tps": 13.1},
+                {"cache_gb": 44.8,  "gen_tps": 19.2},
+                {"cache_gb": 60.93, "gen_tps": 21.8},
+            ],
+        })
+    }
+
+    // What the OLD planner handed the engine on this 24 GB Mac, in balanced,
+    // recomputed from the shape it had:
+    //
+    //   fixed     = non_expert + 2.5 GB + non_expert * 0.45   (slots ignored)
+    //   max_cache = min(ram - fixed - reserve, ram * 7/10, expert_total)
+    //   resident  = fixed + cache chosen on that ceiling
+    //
+    // phi35-moe:     fixed 3.805, ceiling 16.80, knee 16.80 -> 20.61 GB resident
+    // gpt-oss-120b:  fixed 9.025, ceiling 12.98, knee  5.06 -> 14.09 GB resident
+    //
+    // On a 24 GB Mac running macOS, this app, its webview and a browser, the
+    // first is 86 percent of the machine and the second 59, and NEITHER was
+    // ever compared against what the machine actually had free.
+    const OLD_PHI35_BALANCED_RESIDENT: u64 = 20_605_000_000;
+    const OLD_GPT_OSS_BALANCED_RESIDENT: u64 = 14_085_000_000;
+
+    #[test]
+    fn phi35_moe_on_a_24gb_mac_in_balanced_no_longer_plans_twenty_gigabytes() {
+        // The ceiling fix alone, with no reading of free memory: balanced falls
+        // from 20.6 GB resident to 13.9, because the 70 percent cap now bounds
+        // the whole footprint and the knee is recomputed under it.
+        let plan = plan_cache(&phi35_moe(), 24, None, None, "balanced", false, 1).unwrap();
+        assert_eq!(plan.cache_bytes, 10_100_000_000);
+        assert_eq!(plan.decision.resident_bytes, 13_905_000_000);
+        // And it gets there WITHOUT stepping down: on an idle 24 GB Mac
+        // balanced is affordable, so the ladder must not be doing this work.
+        // A ceiling that still overcommits would show up here as a step-down.
+        assert_eq!(plan.decision.mode, "balanced");
+        assert!(
+            plan.decision.resident_bytes < OLD_PHI35_BALANCED_RESIDENT,
+            "the ceiling fix must strictly improve this user's case"
+        );
+    }
+
+    #[test]
+    fn phi35_moe_balanced_now_holds_what_the_user_had_to_find_by_trying_eco() {
+        // The user's machine as he described it: 24 GB, a working session open,
+        // 18 GB actually free, so 14.4 claimable.
+        //
+        // Balanced held 20.6 GB before, which is 6.2 GB more than this machine
+        // had to give: that gap IS the "Compute error." he read. It now holds
+        // 13.9, the same footprint he reached by switching to eco himself, and
+        // the request never has to change mode to get there.
+        let plan = plan_cache(&phi35_moe(), 24, Some(18 * GB), None, "balanced", false, 1).unwrap();
+        assert_eq!(plan.decision.requested, "balanced");
+        assert_eq!(plan.decision.mode, "balanced");
+        assert_eq!(plan.decision.budget_bytes, 14_400_000_000);
+        assert_eq!(plan.decision.resident_bytes, 13_905_000_000);
+        assert!(
+            OLD_PHI35_BALANCED_RESIDENT > plan.decision.budget_bytes,
+            "and this is why he met Compute error.: the old plan did not fit, by {} bytes",
+            OLD_PHI35_BALANCED_RESIDENT - plan.decision.budget_bytes
+        );
+    }
+
+    #[test]
+    fn phi35_moe_in_performance_steps_down_on_that_same_machine() {
+        // Same Mac, same 18 GB free. Performance would hold the full 16.8 GB
+        // ceiling, which does not fit in 14.4, so the ladder takes one rung and
+        // says which. The user is told; nothing is decided behind his back.
+        let plan = plan_cache(&phi35_moe(), 24, Some(18 * GB), None, "perf", false, 1).unwrap();
+        assert_eq!(plan.decision.requested, "perf");
+        assert_eq!(plan.decision.mode, "balanced");
+        assert!(plan.decision.resident_bytes <= plan.decision.budget_bytes);
+    }
+
+    #[test]
+    fn gpt_oss_120b_shows_the_ceiling_fix_alone_would_not_have_saved_him() {
+        // THE POINT WORTH KEEPING. For this model the 70 percent cap was never
+        // the binding constraint: `ram - fixed - reserve` was, at 12.98 GB. So
+        // the ceiling fix changes NOTHING here, and a report that stopped at
+        // "the cap is fixed" would have declared the user's bug closed while
+        // one of his two models still planned 14.1 GB resident with nobody
+        // asking whether the machine had 14.1 GB to give.
+        let plan = plan_cache(&gpt_oss_120b(), 24, None, None, "balanced", false, 1).unwrap();
+        assert_eq!(plan.decision.resident_bytes, OLD_GPT_OSS_BALANCED_RESIDENT);
+    }
+
+    #[test]
+    fn gpt_oss_120b_is_refused_with_the_missing_figure_instead_of_crashing() {
+        // Same 24 GB Mac with a browser open: 12 GB free, so 9.6 GB claimable.
+        // Even eco needs 14.1. There is no mode that fits, and the honest
+        // answer is a number and a refusal, not an engine that dies mid-graph.
+        let err = plan_cache(&gpt_oss_120b(), 24, Some(12 * GB), None, "balanced", false, 1)
+            .expect_err("14.1 GB cannot come out of 9.6");
+        assert!(err.contains("9.6 GB"), "name what the machine can give: {err}");
+        assert!(err.contains("short by 4.5 GB"), "and what is missing: {err}");
+    }
+
+    #[test]
+    fn gpt_oss_120b_runs_again_once_the_machine_has_room() {
+        // The same Mac after the user quits a few things: 18 GB free, 14.4
+        // claimable, and eco's 14.085 fits. Nothing here refuses out of
+        // caution; the gate is arithmetic, and it opens when the memory is
+        // really there.
+        let plan = plan_cache(&gpt_oss_120b(), 24, Some(18 * GB), None, "balanced", false, 1)
+            .expect("14.085 GB fits in 14.4");
+        assert!(plan.decision.resident_bytes <= plan.decision.budget_bytes);
+    }
+
+    #[test]
+    fn the_ladder_always_lands_on_a_mode_that_fits_or_refuses_outright() {
+        // The step-down cannot loop: it walks a three-element array once. What
+        // is worth proving is the other half, that it never hands back a mode
+        // that does not fit either, which is the failure mode a retry loop
+        // would have had. Swept across every budget from nothing to 32 GB, on
+        // both of this user's models, in all three modes.
+        for entry in [phi35_moe(), gpt_oss_120b()] {
+            for mode in ["eco", "balanced", "perf"] {
+                for step in 0..=64u64 {
+                    let available = step * 500_000_000;
+                    match plan_cache(&entry, 24, Some(available), None, mode, false, 2) {
+                        Ok(plan) => assert!(
+                            plan.decision.resident_bytes <= plan.decision.budget_bytes,
+                            "{mode} at {available} bytes free planned {} over a budget of {}",
+                            plan.decision.resident_bytes,
+                            plan.decision.budget_bytes
+                        ),
+                        // A refusal is a legitimate answer, and the only other
+                        // one. It must always carry the figure that is missing.
+                        Err(e) => assert!(
+                            e.contains("memory"),
+                            "a refusal must explain itself: {e}"
+                        ),
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Pick a port we can actually bind. A crashed run can leave an orphan holding
@@ -1671,6 +2411,210 @@ fn server_log_tail(lines: usize) -> String {
                 .join("\n")
         })
         .unwrap_or_default()
+}
+
+// ------------------------------------------- reading the engine's own words
+//
+// "Compute error." is what llama-server says when llama_decode returns below
+// -1: the graph did not run. The message names no cause, and memory is only
+// one of the things that can produce it, so the string alone cannot be turned
+// into advice without guessing.
+//
+// The engine does say more, one line earlier, in its own log. That is what is
+// read here instead.
+
+/// Substrings that mean an allocator refused. Matched lowercase, against the
+/// log, never against the API message.
+///
+/// Where each one comes from, so a llama.cpp bump can be checked against this
+/// list rather than trusted:
+///   ggml-alloc.c        "not enough space in the buffer to allocate ..."
+///   ggml-backend.cpp    "failed to allocate buffer, size = ..."
+///   ggml-metal-device.m "failed to allocate context", "greater than the
+///                        recommended max working set size"
+///   Metal itself        the command buffer's localizedDescription, which for
+///                        a GPU allocation failure reads "Insufficient Memory
+///                        (00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory)"
+///   libc                strerror(ENOMEM), "Cannot allocate memory"
+const OOM_MARKERS: [&str; 8] = [
+    "failed to allocate",
+    "unable to allocate",
+    "cannot allocate memory",
+    "not enough space in the buffer",
+    "out of memory",
+    "outofmemory",
+    "insufficient memory",
+    "greater than the recommended max working set size",
+];
+
+/// Substrings that prove the log line came from a decode that gave up, so the
+/// current log can be told apart from one that simply has nothing to say.
+const DECODE_FAILURE_MARKERS: [&str; 4] = [
+    "compute error",
+    "invalid input batch",
+    "command buffer",
+    "context size has been exceeded",
+];
+
+/// What the engine's words say about a failure the user just met.
+///
+/// `memory`  the allocator refused, and the one action that works is to give
+///           the engine less to hold.
+/// `context` the conversation outgrew the window. Not a memory problem, and
+///           telling the user to switch to Eco would send them the wrong way.
+/// `unknown` the log names neither. Say so rather than invent a cause.
+fn classify_engine_failure(api_message: &str, log: &str) -> &'static str {
+    let msg = api_message.to_lowercase();
+    // Checked FIRST: an exceeded context can happen on a machine with memory
+    // to spare, and the two remedies point in opposite directions.
+    if msg.contains("context size has been exceeded")
+        || msg.contains("exceed the available context")
+        || msg.contains("context shift")
+    {
+        return "context";
+    }
+    let low = log.to_lowercase();
+    if OOM_MARKERS.iter().any(|m| low.contains(m)) {
+        return "memory";
+    }
+    "unknown"
+}
+
+/// The engine log worth classifying.
+///
+/// llama-server.log is the running engine; the `.1` beside it is the previous
+/// run, kept because a failed start is usually reported after the user has
+/// already retried. When the current log holds no trace of a decode giving up,
+/// the evidence is in the older one, and reading only the current file would
+/// report "unknown" on the exact case this exists for.
+fn engine_log_evidence() -> String {
+    let current = read_log_tail("llama-server.log");
+    let low = current.to_lowercase();
+    let speaks = DECODE_FAILURE_MARKERS.iter().any(|m| low.contains(m))
+        || OOM_MARKERS.iter().any(|m| low.contains(m));
+    if speaks {
+        return current;
+    }
+    let previous = read_log_tail("llama-server.log.1");
+    if previous.is_empty() { current } else { previous }
+}
+
+/// Last quarter of a megabyte of an engine log.
+///
+/// A long session writes a log measured in tens of megabytes, and the verdict
+/// is always in its last handful of lines. Reading the whole file to look at
+/// its tail would make diagnosing a failure cost more than the failure.
+fn read_log_tail(name: &str) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    const WINDOW: u64 = 256 * 1024;
+    let Ok(mut f) = std::fs::File::open(app_support().join(name)) else {
+        return String::new();
+    };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    if len > WINDOW && f.seek(SeekFrom::Start(len - WINDOW)).is_err() {
+        return String::new();
+    }
+    let mut buf = Vec::new();
+    if f.read_to_end(&mut buf).is_err() {
+        return String::new();
+    }
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
+/// The engine's own line that carries the verdict, so what the UI shows is
+/// evidence rather than a claim. Empty when the log names nothing.
+fn engine_failure_evidence(log: &str) -> String {
+    log.lines()
+        .rev()
+        .find(|l| {
+            let low = l.to_lowercase();
+            OOM_MARKERS.iter().any(|m| low.contains(m))
+        })
+        .map(|l| l.trim().chars().take(240).collect())
+        .unwrap_or_default()
+}
+
+/// What the UI needs to replace "Compute error." with a sentence.
+#[derive(Serialize, Clone, Debug)]
+struct EngineDiagnosis {
+    /// memory | context | unknown
+    kind: String,
+    /// The footprint mode the running engine was started in ("" when stopped).
+    mode: String,
+    /// Whether there is a leaner mode left to fall back to. False in eco,
+    /// where the honest advice is to free memory instead.
+    can_step_down: bool,
+    /// The engine's own line, shown so the diagnosis can be checked.
+    evidence: String,
+    /// The raw engine message, passed through for the unknown case.
+    message: String,
+}
+
+/// Diagnose a failure the user just met in a conversation.
+///
+/// Called from the chat error path with the message llama-server sent. The
+/// classification reads the engine log rather than pattern-matching the
+/// message, because the message is the same three words whatever happened.
+///
+/// Async so the log read never runs on the main thread: this is called at the
+/// exact moment the machine is short of memory and the UI must stay alive.
+#[tauri::command]
+async fn engine_diagnose(message: String) -> EngineDiagnosis {
+    let log = engine_log_evidence();
+    let kind = classify_engine_failure(&message, &log);
+    let mode = {
+        let s = server_state().lock().unwrap_or_else(|e| e.into_inner());
+        s.footprint.as_ref().map(|f| f.mode.clone()).unwrap_or_default()
+    };
+    EngineDiagnosis {
+        can_step_down: !mode.is_empty() && mode != "eco",
+        kind: kind.to_string(),
+        mode,
+        evidence: if kind == "memory" { engine_failure_evidence(&log) } else { String::new() },
+        message,
+    }
+}
+
+#[cfg(test)]
+mod engine_failure_tests {
+    use super::classify_engine_failure;
+
+    /// What a real Metal allocation failure leaves behind, trimmed.
+    const METAL_OOM: &str = "\
+ggml_metal_synchronize: error: command buffer 0 failed with status 5
+error: Insufficient Memory (00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory)
+srv  update_slots: Compute error. off = 0, n_batch = 512, ret = -3";
+
+    #[test]
+    fn the_allocator_refusing_is_named_memory() {
+        assert_eq!(classify_engine_failure("Compute error.", METAL_OOM), "memory");
+    }
+
+    #[test]
+    fn the_ggml_allocator_message_counts_too() {
+        let log = "ggml_gallocr_reserve_n: not enough space in the buffer to allocate 1073741824 bytes";
+        assert_eq!(classify_engine_failure("Compute error.", log), "memory");
+    }
+
+    #[test]
+    fn an_exceeded_context_is_never_reported_as_memory() {
+        // The remedies point opposite ways: this one is answered by a shorter
+        // conversation, not by a smaller footprint. Even with an old memory
+        // line still sitting in the log, the message decides.
+        assert_eq!(
+            classify_engine_failure("Context size has been exceeded.", METAL_OOM),
+            "context"
+        );
+    }
+
+    #[test]
+    fn a_failure_the_log_does_not_explain_stays_unknown() {
+        // Inventing a memory story here would send the user to Settings for
+        // nothing, and would hide the real fault.
+        let log = "srv  update_slots: Compute error. off = 0, n_batch = 512, ret = -3";
+        assert_eq!(classify_engine_failure("Compute error.", log), "unknown");
+        assert_eq!(classify_engine_failure("Compute error.", ""), "unknown");
+    }
 }
 
 // Async: pack resolution and the port scan touch disks and sockets, which
@@ -1743,8 +2687,15 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
     // Needed before planning: the cross-check regime keeps a small micro-batch.
     let cpu_moe = entry["cpu_moe"].as_bool().unwrap_or(false)
         || settings.get("cpu_moe").map(|v| v == "1").unwrap_or(false);
-    let (cache_bytes, fraction, ubatch) =
-        plan_cache(&entry, ram_gb, override_gb, &ram_mode, cpu_moe)?;
+    // What the Mac can hand over RIGHT NOW, measured a moment before the
+    // engine starts allocating. The whole reason the planner can step down.
+    let available = available_memory_bytes();
+    // Resolved BEFORE planning: every slot past the first is a whole extra KV
+    // cache, and the plan has to pay for the slots this start will really ask
+    // llama-server for.
+    let slots = engine_slots();
+    let plan = plan_cache(&entry, ram_gb, available, override_gb, &ram_mode, cpu_moe, slots)?;
+    let (cache_bytes, fraction, ubatch) = (plan.cache_bytes, plan.protected, plan.ubatch);
 
     // Engine resolution: a developer checkout build wins (always freshest);
     // otherwise the fully relocated llama-server shipped INSIDE the app
@@ -1864,7 +2815,9 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
     // divides it by --parallel, so it is scaled with the slot count. Splitting
     // a fixed 8192 instead would silently give a two-conversation user a
     // 4096-token window per thread.
-    let slots = engine_slots();
+    //
+    // `slots` was resolved before planning, and must stay the same number: the
+    // engine has to be started with exactly the slot count the ceiling paid for.
     let ctx_total = CTX_PER_SLOT * slots;
     cmd.arg("--model")
         .arg(&gguf)
@@ -1941,8 +2894,12 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
         s.generation = generation;
         s.port = port;
         s.slots = slots;
+        s.footprint = Some(plan.decision.clone());
     }
-    let _ = app.emit("galactus://server", json!({"phase": "starting"}));
+    let _ = app.emit(
+        "galactus://server",
+        json!({"phase": "starting", "footprint": plan.decision}),
+    );
 
     // Health poller: big models can take minutes to warm the arena. It also
     // watches for the process dying, so a broken server surfaces its error
@@ -1963,6 +2920,10 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
                 if let Some(child) = s.child.as_mut() {
                     if let Ok(Some(status)) = child.try_wait() {
                         let tail = server_log_tail(12);
+                        // The engine's own verdict, so a start that died for
+                        // want of memory says so instead of handing the user
+                        // twelve lines of log to interpret.
+                        let kind = classify_engine_failure("", &engine_log_evidence());
                         s.child = None;
                         s.phase = "failed".into();
                         drop(s);
@@ -1970,6 +2931,7 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
                             "galactus://server",
                             json!({"phase": "failed",
                                    "code": status.code(),
+                                   "kind": kind,
                                    "log": tail}),
                         );
                         return;
@@ -2026,6 +2988,10 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
                 if let Some(child) = s.child.as_mut() {
                     if let Ok(Some(status)) = child.try_wait() {
                         let tail = server_log_tail(12);
+                        // The engine's own verdict, so a start that died for
+                        // want of memory says so instead of handing the user
+                        // twelve lines of log to interpret.
+                        let kind = classify_engine_failure("", &engine_log_evidence());
                         s.child = None;
                         s.phase = "failed".into();
                         drop(s);
@@ -2033,6 +2999,7 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
                             "galactus://server",
                             json!({"phase": "failed",
                                    "code": status.code(),
+                                   "kind": kind,
                                    "log": tail}),
                         );
                         return;
@@ -2094,6 +3061,9 @@ fn server_stop_impl() -> Result<(), String> {
     s.mode = String::new();
     s.phase = "stopped".into();
     s.port = 0;
+    // The decision described a process that no longer exists: keeping it would
+    // let the UI report a footprint for nothing.
+    s.footprint = None;
     Ok(())
 }
 
@@ -5084,6 +6054,7 @@ pub fn run() {
             server_status,
             server_start,
             server_stop,
+            engine_diagnose,
             install_model,
             cancel_install,
             delete_model,

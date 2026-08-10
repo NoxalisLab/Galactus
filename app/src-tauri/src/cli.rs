@@ -66,7 +66,25 @@ fn serve(root: &Path, model_id: &str, args: &[String]) -> Result<(), String> {
     let cpu_moe = args.iter().any(|a| a == "--cpu-moe")
         || entry["cpu_moe"].as_bool().unwrap_or(false)
         || settings_load().get("cpu_moe").map(|v| v == "1").unwrap_or(false);
-    let (cache_bytes, fraction, ubatch) = plan_cache(&entry, ram_gb, None, &ram_mode, cpu_moe)?;
+    // Memes creneaux que l'app : --parallel N avec une fenetre CTX_PER_SLOT
+    // par creneau, pilote par le reglage partage "engine_slots". Un `serve` en
+    // ligne de commande qui offrirait une concurrence differente de celle de
+    // l'app mesurerait autre chose que ce que l'utilisateur execute.
+    //
+    // Resolu AVANT la planification : chaque creneau au-dela du premier est un
+    // cache KV entier, et le plafond doit le payer.
+    let slots = args
+        .windows(2)
+        .find(|w| w[0] == "--slots")
+        .and_then(|w| w[1].parse::<u32>().ok())
+        .map(|n| n.clamp(1, MAX_SLOTS))
+        .unwrap_or_else(engine_slots);
+    // Meme decision que l'app : la memoire REELLEMENT disponible (vm_stat), pas
+    // celle marquee sur la boite. Un `serve` qui planifierait sur la RAM
+    // installee pendant que l'app se rabat sur eco mesurerait autre chose que
+    // ce que l'utilisateur execute.
+    let plan = plan_cache(&entry, ram_gb, available_memory_bytes(), None, &ram_mode, cpu_moe, slots)?;
+    let (cache_bytes, fraction, ubatch) = (plan.cache_bytes, plan.protected, plan.ubatch);
     let port: u16 = args
         .windows(2)
         .find(|w| w[0] == "--port")
@@ -80,22 +98,21 @@ fn serve(root: &Path, model_id: &str, args: &[String]) -> Result<(), String> {
     // cablage avant de lancer quoi que ce soit.
     engine_is_wired(&bin)?;
 
-    // Memes creneaux que l'app : --parallel N avec une fenetre CTX_PER_SLOT
-    // par creneau, pilote par le reglage partage "engine_slots". Un `serve` en
-    // ligne de commande qui offrirait une concurrence differente de celle de
-    // l'app mesurerait autre chose que ce que l'utilisateur execute.
-    let slots = args
-        .windows(2)
-        .find(|w| w[0] == "--slots")
-        .and_then(|w| w[1].parse::<u32>().ok())
-        .map(|n| n.clamp(1, MAX_SLOTS))
-        .unwrap_or_else(engine_slots);
     let ctx_total = CTX_PER_SLOT * slots;
     let expert_total = entry["expert_bytes_total"].as_u64().unwrap_or(u64::MAX);
     let regime = if cpu_moe { "cpu-bit-exact" } else if cache_bytes >= expert_total { "resident-bit-exact" } else { "streamed-bit-exact" };
     let dual = pack_internal != pack_external;
     println!("galactus serve {model_id}");
-    println!("  regime  : {regime} (empreinte {ram_mode}, cache {:.1} Go, ubatch {ubatch})", cache_bytes as f64 / 1e9);
+    let chosen = &plan.decision.mode;
+    println!("  regime  : {regime} (empreinte {chosen}, cache {:.1} Go, ubatch {ubatch})", cache_bytes as f64 / 1e9);
+    if *chosen != ram_mode {
+        // Le repli est annonce, jamais silencieux : un utilisateur qui demande
+        // perf et obtient eco sans un mot appellera cela un bug.
+        println!(
+            "  memoire : repli {ram_mode} -> {chosen}, ce Mac peut ceder {:.1} Go et {ram_mode} en demandait plus",
+            plan.decision.budget_bytes as f64 / 1e9
+        );
+    }
     println!("  creneaux: {slots} (fenetre {CTX_PER_SLOT} par creneau, contexte total {ctx_total})");
     println!("  packs   : {}", if dual { "double (deux SSD en parallele)" } else { "mono-volume" });
     println!("    interne : {}", pack_internal.display());

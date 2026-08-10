@@ -86,6 +86,40 @@ export interface ServerStatus {
    * without tool calls the agent reads no file and runs no command.
    */
   tools_ok?: boolean;
+  /**
+   * The memory-footprint decision the running engine was started with.
+   * Undefined while stopped.
+   */
+  footprint?: ModeDecision;
+}
+
+/**
+ * Which memory footprint the engine actually started in, and why.
+ *
+ * `mode` differs from `requested` when the planner stepped down: the machine
+ * could not give what the requested mode would have held, and the alternative
+ * was llama_decode failing mid-graph with "Compute error.".
+ */
+export interface ModeDecision {
+  mode: string;
+  requested: string;
+  impossible: boolean;
+  resident_bytes: number;
+  budget_bytes: number;
+}
+
+/**
+ * What the engine's own log says about a failure the user just met.
+ *
+ * `kind` is "memory", "context" or "unknown". It comes from the log, not from
+ * the API message: llama-server says the same three words whatever happened.
+ */
+export interface EngineDiagnosis {
+  kind: string;
+  mode: string;
+  can_step_down: boolean;
+  evidence: string;
+  message: string;
 }
 
 /** One excerpt found in a stored conversation. */
@@ -235,6 +269,13 @@ export const api = {
   serverStart: (modelId: string, cacheGb: number | null) =>
     invoke<void>("server_start", { modelId, cacheGb }),
   serverStop: () => invoke<void>("server_stop"),
+  /**
+   * Ask the backend what the engine's own log says about a failure.
+   *
+   * Never called speculatively: only when a turn ended on one of the engine's
+   * decode messages, which are the ones that carry no cause of their own.
+   */
+  engineDiagnose: (message: string) => invoke<EngineDiagnosis>("engine_diagnose", { message }),
   installModel: (modelId: string, volumes?: InstallVolumes | null) =>
     invoke<void>("install_model", { modelId, volumes: volumes ?? null }),
   cancelInstall: (modelId: string) => invoke<void>("cancel_install", { modelId }),

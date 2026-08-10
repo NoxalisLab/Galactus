@@ -147,6 +147,134 @@ const MUTATIONS = [
     to: "fn is_protected_write(path: &Path) -> bool {\n    if true { let _ = path; return true; }",
     tests: ["protected_write_tests::an_ordinary_user_path_is_still_writable"],
   },
+  // ------------------------------------------------- the memory the Mac has
+  {
+    // The defect a user met as "Compute error.". The cap read "never take more
+    // than 70 percent of this Mac" and bounded the ARENA, with the weights and
+    // the runtime overhead added on top, so it delivered 90.
+    group: "lib: the 70 percent cap bounds the whole footprint, not the arena",
+    file: `${SRC}/lib.rs`,
+    from: "    let ceiling_cache = hardware_budget.saturating_sub(fixed).min(expert_total);",
+    to: "    let ceiling_cache = hardware_budget.min(expert_total);",
+    tests: [
+      "plan_cache_tests::the_seventy_percent_cap_bounds_the_whole_footprint_not_just_the_arena",
+    ],
+  },
+  {
+    // The second defect: nothing ever looked at a number that could change
+    // after the Mac left the factory. Ignoring the reading is precisely the
+    // old behaviour, so this mutation restores the bug.
+    group: "lib: the budget comes from free memory, not from installed memory",
+    file: `${SRC}/lib.rs`,
+    from: "    let live_budget = engine_budget_bytes(ram, available);",
+    to: "    let live_budget = engine_budget_bytes(ram, None);",
+    tests: [
+      "plan_cache_tests::a_mac_with_a_browser_open_starts_in_eco_instead_of_dying_mid_graph",
+      "plan_cache_tests::the_step_down_stops_at_the_first_mode_that_fits",
+    ],
+  },
+  {
+    group: "lib: the safety margin on the free pool is really applied",
+    file: `${SRC}/lib.rs`,
+    from: "const AVAILABLE_CLAIM_NUM: u64 = 4;",
+    to: "const AVAILABLE_CLAIM_NUM: u64 = 5;",
+    tests: [
+      "engine_budget_tests::a_busy_mac_gets_a_budget_from_what_is_free_not_from_what_it_was_sold_with",
+    ],
+  },
+  {
+    // A ladder that falls straight to eco would "work" on every machine and
+    // would quietly cost a user the mode his Mac could actually afford, which
+    // is the kind of regression no assertion about starting successfully sees.
+    group: "lib: the step-down stops at the first mode that fits",
+    file: `${SRC}/lib.rs`,
+    from: "    for mode in &MODE_LADDER[start..] {",
+    to: "    for mode in &MODE_LADDER[2..] {",
+    tests: ["plan_cache_tests::the_step_down_stops_at_the_first_mode_that_fits"],
+  },
+  {
+    group: "lib: a machine that fits nothing is refused before anything is spawned",
+    file: `${SRC}/lib.rs`,
+    from: "    let mut decision = choose_start_mode(live_budget, footprints, ram_mode);",
+    to: "    let mut decision = choose_start_mode(u64::MAX, footprints, ram_mode);",
+    tests: [
+      "plan_cache_tests::a_machine_with_nothing_to_spare_is_told_so_before_anything_is_spawned",
+      "plan_cache_tests::a_mac_with_a_browser_open_starts_in_eco_instead_of_dying_mid_graph",
+    ],
+  },
+  {
+    // The user's own two cases. Restoring the old ceiling shape is the exact
+    // regression that produced "Compute error." on his 24 GB Mac, and both
+    // named tests must see it.
+    group: "lib: this user's 24 GB Mac, phi35-moe and gpt-oss-120b in balanced",
+    file: `${SRC}/lib.rs`,
+    from: "    let ceiling_cache = hardware_budget.saturating_sub(fixed).min(expert_total);",
+    to: "    let ceiling_cache = ram.saturating_sub(fixed + system_reserve_bytes(ram)).min(expert_total);",
+    tests: [
+      "user_report_24gb_tests::phi35_moe_on_a_24gb_mac_in_balanced_no_longer_plans_twenty_gigabytes",
+      "user_report_24gb_tests::phi35_moe_balanced_now_holds_what_the_user_had_to_find_by_trying_eco",
+    ],
+  },
+  {
+    // The half the ceiling fix does not cover: without the live reading,
+    // gpt-oss-120b plans 14.1 GB on a machine with 9.6 to give and nothing
+    // notices. His second model is the one that proves it.
+    group: "lib: this user's gpt-oss-120b is refused rather than left to crash",
+    file: `${SRC}/lib.rs`,
+    from: "    let mut decision = choose_start_mode(live_budget, footprints, ram_mode);",
+    to: "    let mut decision = choose_start_mode(hardware_budget, footprints, ram_mode);",
+    tests: [
+      "user_report_24gb_tests::gpt_oss_120b_is_refused_with_the_missing_figure_instead_of_crashing",
+    ],
+  },
+  {
+    // The failure mode a retry loop would have had, made impossible instead of
+    // hoped for: a ladder that hands back a mode which does not fit either.
+    group: "lib: the ladder never returns a mode the machine cannot hold",
+    file: `${SRC}/lib.rs`,
+    from: "        if resident <= budget {",
+    to: "        if true {",
+    tests: [
+      "user_report_24gb_tests::the_ladder_always_lands_on_a_mode_that_fits_or_refuses_outright",
+      "choose_start_mode_tests::a_busy_mac_steps_down_to_the_mode_that_fits_and_says_which",
+    ],
+  },
+  {
+    group: "lib: a refusal carries the figure that is missing",
+    file: `${SRC}/lib.rs`,
+    from: "                 (eco) needs {:.1} GB, this Mac can spare {:.1} GB, short by {:.1} GB. Quit an \\",
+    to: "                 (eco) needs {:.1} GB, this Mac can spare {:.1} GB, {:.1}. Quit an \\",
+    tests: [
+      "user_report_24gb_tests::gpt_oss_120b_is_refused_with_the_missing_figure_instead_of_crashing",
+      "plan_cache_tests::a_machine_with_nothing_to_spare_is_told_so_before_anything_is_spawned",
+    ],
+  },
+  {
+    // Third instance of the same class of defect: the overhead fit was
+    // measured at one decode slot while the engine is started with two.
+    group: "lib: the plan pays for the decode slots the engine is given",
+    file: `${SRC}/lib.rs`,
+    from: "        + u64::from(slots.saturating_sub(1)) * KV_BYTES_PER_EXTRA_SLOT;",
+    to: "        + 0 * KV_BYTES_PER_EXTRA_SLOT * u64::from(slots);",
+    tests: ["plan_cache_tests::every_decode_slot_past_the_first_is_paid_for_out_of_the_arena"],
+  },
+  {
+    // The whole point of reading the log: "Compute error." is the same three
+    // words whatever happened, so a classifier that answers "memory" to
+    // everything would send users to free memory that was never the problem.
+    group: "lib: a failure the log does not explain is not blamed on memory",
+    file: `${SRC}/lib.rs`,
+    from: '    if OOM_MARKERS.iter().any(|m| low.contains(m)) {\n        return "memory";\n    }\n    "unknown"',
+    to: '    let _ = low;\n    "memory"',
+    tests: ["engine_failure_tests::a_failure_the_log_does_not_explain_stays_unknown"],
+  },
+  {
+    group: "lib: an exceeded context is decided before the log is read",
+    file: `${SRC}/lib.rs`,
+    from: '    if msg.contains("context size has been exceeded")',
+    to: "    if false && msg.contains(\"context size has been exceeded\")",
+    tests: ["engine_failure_tests::an_exceeded_context_is_never_reported_as_memory"],
+  },
   // ------------------------------------------------------------------ relay
   {
     group: "relay: the key comparison actually compares",
