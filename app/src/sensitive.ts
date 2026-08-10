@@ -66,3 +66,62 @@ export function isElevatedWrite(path: string): boolean {
     SENSITIVE_WRITE_PATTERNS.some((re) => re.test(path))
   );
 }
+
+// ---------------------------------------------------------------- commands
+//
+// `isElevatedCommand` lived in agent.ts, which the Node runner cannot load.
+// It moved here, unchanged, the day a second caller appeared that also has to
+// be testable: learned.ts refuses to persist a self-authored skill whose
+// commands are elevated, and a copy of this list inside that module would be
+// a list that drifts. agent.ts re-exports it, so every existing import keeps
+// working and there is still exactly one definition.
+
+const ELEVATED_PATTERNS = [
+  /\bsudo\b/,
+  /\bdiskutil\b/,
+  /\bkillall\b/,
+  /\blaunchctl\b/,
+  /\bcsrutil\b/,
+  /\/System\//,
+  /\/Library\/(?!Caches)/,
+  /\bchmod\s+[0-7]*7[0-7]*\s+\//,
+  // Symbolic execute grants (+x, u+x, a+rx…): the octal pattern above only
+  // catches a 7 digit, and making a dropped file executable IS the payload.
+  /\bchmod\b[^|;&\n]*\+\w*[xX]/,
+  /\bmkfs\b/,
+  /\bshred\b/,
+  /\bdd\s+.*of=\/dev\//,
+  /\bfind\b.*\s-delete\b/,
+  /\bgit\s+reset\s+--hard\b/,
+  /\bgit\s+clean\b/,
+  /\bgit\s+checkout\s+--\s/,
+];
+
+export function isElevatedCommand(cmd: string): boolean {
+  if (ELEVATED_PATTERNS.some((re) => re.test(cmd))) return true;
+  // Destructive rm in ANY flag layout: `rm -rf`, `rm -r -f`, `rm --recursive`,
+  // `rm -f x` … Split on every separator that can chain commands, newlines,
+  // subshell parens, backticks and `$` included, so `$(rm …)` and `` `rm …` ``
+  // substitutions are scanned as their own segments, and scan EVERY `rm`
+  // token by BASENAME: `/bin/rm` must not slip past a whole-token compare,
+  // and an indexOf of the first occurrence misses `echo ok && rm …`,
+  // `for …; do rm …; done`, and `VAR=1 rm …`. Over-matching (a quoted
+  // "rm -rf" in an echo) only costs an extra confirmation, under-matching
+  // costs the user's files.
+  for (const seg of cmd.split(/[|;&\n()$`]+/)) {
+    const toks = seg.trim().split(/\s+/);
+    for (let i = 0; i < toks.length; i++) {
+      if ((toks[i].split("/").pop() ?? "") !== "rm") continue;
+      const flags = toks.slice(i + 1).filter((tk) => tk.startsWith("-"));
+      if (flags.some((tk) => /^-[a-zA-Z]*[rRf]/.test(tk) || tk === "--recursive" || tk === "--force")) {
+        return true;
+      }
+    }
+  }
+  // A nested shell (`sh -c '…'`, `zsh -lc "…"`, `/bin/sh -c '…'`) makes the
+  // real command opaque to this filter: treat it as elevated rather than
+  // guess. The prefix class includes "/", "$" and backtick so path-qualified
+  // shells and substitutions are caught too.
+  if (/(?:^|[\s|;&($`\/])(?:sh|bash|zsh|dash|ksh)\b[^|;&\n]*\s-\w*c\b/.test(cmd)) return true;
+  return false;
+}

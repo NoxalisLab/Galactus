@@ -1600,3 +1600,66 @@ html.pane-dragging .pvw-frame { pointer-events: none; }
 .runs-line.tone-good .rl-x { color: var(--good); }
 .runs-line.tone-ask .rl-t, .runs-line.tone-ask .rl-x { color: var(--acc-tx); }
 .runs-line.tone-stream .rl-x { color: var(--tx2); }
+
+/* ---- scheduled jobs (runsview.ts, schedule.ts) ----
+   A job card is a run card that has not run yet, so it borrows the run card's
+   geometry outright. The one difference that carries meaning: a disabled job
+   is dimmed rather than hidden, because a schedule someone switched off is
+   still part of what this machine is set up to do. */
+.schedwrap { display: flex; flex-direction: column; gap: 12px; }
+.sched-note {
+  background: var(--card); padding: 13px 15px;
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+}
+.sched-note-t { flex: 1; min-width: 220px; display: flex; flex-direction: column; gap: 4px; }
+.sched-note-t b { font-size: 12px; font-weight: 600; color: var(--warn); line-height: 1.5; }
+.sched-note-t span { font-size: 11px; color: var(--dim3); line-height: 1.5; }
+
+.jobcard {
+  background: var(--card); padding: 15px 16px;
+  display: flex; flex-direction: column; gap: 10px;
+  --bk: 12px; --bkc: rgba(138, 124, 255, 0.30);
+}
+.jobcard:hover { --bk: 20px; --bkc: rgba(138, 124, 255, 0.5); }
+.jobcard.is-off { opacity: 0.55; }
+
+.sched-foot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.sched-last { font-size: 11.5px; }
+.sched-last.tone-good { color: var(--good); }
+.sched-last.tone-bad { color: var(--bad); }
+.sched-last.tone-block { color: var(--warn); }
+.sched-last.tone-plain { color: var(--dim3); }
+.sched-tag {
+  font-size: 10.5px; padding: 2px 7px; color: var(--dim2);
+  border: 1px solid var(--bd3); word-break: break-all;
+}
+.sched-tag.bad { color: var(--bad); border-color: rgba(209, 107, 111, 0.35); }
+.sched-bad { font-size: 11.5px; color: var(--bad); display: flex; flex-direction: column; gap: 4px; }
+.sched-bad.plate { background: var(--card); padding: 13px 15px; }
+.sched-preview { font-size: 11px; color: var(--dim2); min-height: 14px; }
+.sched-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+/* ---- procedural memory (learnedview.ts) ----
+   The one visual rule that carries meaning: an entry the agent wrote during an
+   unattended run is bordered in the warning tone until a human has approved
+   it, so the two provenances never look alike in a list. */
+.card.learned { display: flex; flex-direction: column; gap: 10px; }
+.card.learned.pending { border-color: rgba(214, 168, 96, 0.4); }
+.learned-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.learned-tags .tag {
+  font-size: 10.5px; letter-spacing: 0.02em; padding: 2px 7px; border-radius: 0;
+  border: 1px solid var(--bd3); color: var(--dim); background: rgba(255, 255, 255, 0.03);
+}
+.learned-tags .tag.self { color: var(--acc-tx); border-color: rgba(138, 124, 255, 0.35); background: rgba(138, 124, 255, 0.1); }
+.learned-tags .tag.warn { color: var(--warn); border-color: rgba(214, 168, 96, 0.35); background: rgba(214, 168, 96, 0.08); }
+.learned-tags .tag.dim { font-family: var(--mono); }
+.learned-note { font-size: 11.5px; line-height: 1.5; color: var(--dim); }
+.learned-body {
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.6; color: var(--tx2);
+  background: var(--inset); border: 1px solid var(--bd2); padding: 12px 13px;
+  max-height: 340px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+}
+.learned-path { font-size: 11.5px; color: var(--dim); word-break: break-all; }
+.bs.danger { color: var(--bad); border-color: rgba(209, 107, 111, 0.35); }
+.learned-sheet { width: 720px; max-height: 82vh; overflow: auto; }
+.learned-sheet .hold { display: flex; flex-direction: column; gap: 12px; }

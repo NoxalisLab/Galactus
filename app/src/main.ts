@@ -25,6 +25,7 @@ import * as store from "./store";
 import type { ChatItem, Conversation, ConvMeta, SubAgent, ThreadData } from "./store";
 import { hasVerifiedDownload, modelAvailability, modelCertification } from "./model-policy";
 import * as runsview from "./runsview";
+import { learnedView } from "./learnedview";
 import { configurePanePreferences, wirePaneResizer } from "./layout/pane-resize";
 import {
   applyMention,
@@ -37,7 +38,7 @@ import {
 const app = document.getElementById("app")!;
 const LOGO = "/galactus-mark.svg";
 
-type View = "chat" | "code" | "models" | "connectors" | "runs" | "memory" | "agent" | "settings";
+type View = "chat" | "code" | "models" | "connectors" | "runs" | "memory" | "agent" | "learned" | "settings";
 type Autonomy = "manual" | "assisted" | "autonomous";
 
 let view: View = "chat";
@@ -135,6 +136,20 @@ let modeAskAlways = false;
  * available in assistant mode too, like the other three.
  */
 const SERVER_MODE_VIEWS: View[] = ["models", "connectors", "runs", "settings"];
+
+/**
+ * Put Galactus in the menu bar, or take it out.
+ *
+ * Server mode runs scheduled jobs, and the agent loop that runs them lives in
+ * this webview: destroying the window would destroy the loop, so the red
+ * button hides the window instead (see on_window_event in lib.rs). An app that
+ * is working with no window and no icon anywhere is an app people force quit,
+ * so server mode also gets a menu bar item, which is the one place that both
+ * says "still here" and offers the action that genuinely stops the work.
+ */
+function syncTray(): void {
+  api.traySet(appMode === "server").catch(() => {});
+}
 
 /** Port the relay listens on. Distinct from the engine's, which stays local. */
 const RELAY_PORT = 8788;
@@ -1895,6 +1910,11 @@ async function ensureAgent(sess: Thread): Promise<void> {
     sess.sub ? sess.sub.id : sess.conv.id,
     sess.sub ? sess.sub.name : t("team.parentName")
   );
+  // Procedural memory: this Agent runs in front of a human who answers the
+  // permission dialogs. See learned.ts, section ORIGIN. Without this line the
+  // Agent keeps its strict default and every skill it writes is described as
+  // unattended, which is the safe way to be wrong.
+  inst.setOrigin("conversation");
   applyAutonomy();
   if (sess.sub) {
     // A teammate's persona IS its brief: it never inherits the conversation's
@@ -3247,6 +3267,7 @@ function settingsView(): HTMLElement {
       // Server mode hides the assistant surfaces, so a view that no longer has
       // a nav entry must not stay on screen.
       if (appMode === "server" && !SERVER_MODE_VIEWS.includes(view)) view = "models";
+      syncTray();
       render();
     })
   );
@@ -3349,8 +3370,10 @@ function modeChoiceView(): HTMLElement {
     b.addEventListener("click", () => {
       appMode = b.dataset.m === "server" ? "server" : "app";
       void api.settingsSet("app_mode", appMode);
+      void api.settingsSet("app_mode_chosen", "1");
       if (appMode === "server" && !SERVER_MODE_VIEWS.includes(view)) view = "models";
       modePending = false;
+      syncTray();
       render();
     });
   });
@@ -3506,6 +3529,7 @@ function render() {
         ${nav("runs", I.runs, t("nav.runs"))}
         ${appMode === "server" ? "" : nav("memory", I.mem, t("nav.memory"))}
         ${appMode === "server" ? "" : nav("agent", I.agent, t("nav.agent"))}
+        ${nav("learned", I.mem, t("learned.title"))}
         ${nav("settings", I.set, t("nav.settings"))}
       </div>
       <div class="convslot"></div>
@@ -3528,6 +3552,7 @@ function render() {
     : view === "runs" ? runsview.runsView()
     : view === "memory" ? memoryView()
     : view === "agent" ? agentView()
+    : view === "learned" ? learnedView()
     : settingsView()
   );
   app.appendChild(layout);
@@ -3834,10 +3859,14 @@ async function boot() {
   if (s["ram_mode"] === "eco" || s["ram_mode"] === "perf") ramMode = s["ram_mode"];
   if (s["app_mode"] === "server") appMode = "server";
   modeAskAlways = s["app_mode_ask"] === "1";
-  // Asked when nothing was ever chosen, and on every start if that was asked
-  // for. A stored answer is honoured silently: a question already answered is
-  // not a choice, it is a toll.
-  modePending = modeAskAlways || s["app_mode"] === undefined;
+  // Keyed on "was the question ever PUT", not on "is there a value".
+  //
+  // app_mode has existed for two releases, written by a settings row nobody
+  // could find, so plenty of installs already hold one. Reading it as an answer
+  // would mean the people this screen exists for, the ones who have a stored
+  // mode they never deliberately chose, are exactly the ones who never see it.
+  // A separate key is the only thing that can tell a choice from a leftover.
+  modePending = modeAskAlways || s["app_mode_chosen"] !== "1";
   if (s["relay_bind"] === "0.0.0.0") relayBind = "0.0.0.0";
   // The relay never survives a restart: the key lived in memory only, so there
   // is nothing to reopen with. Its status is read anyway, since a previous
@@ -3873,6 +3902,16 @@ async function boot() {
   await refreshServer();
   if (server.running && server.phase === "starting") loadStartMs = Date.now();
   render();
+  syncTray();
+  // A job came due. Rust owns the clock and has already decided this is the
+  // one fire to honour (see the catch-up rule in scheduler.rs); all that is
+  // left here is to declare the run and drive it. Subscribed at the app shell
+  // rather than inside the Runs view, because a job must fire whether or not
+  // anyone is looking at that screen.
+  await onEvent("galactus://job-due", (p: any) => {
+    runsview.runScheduledJob(p);
+    if (view === "runs") render();
+  });
   await onEvent("galactus://install-progress", (p: any) => {
     if (p.done) {
       installProgress.delete(p.model_id);
@@ -3991,7 +4030,7 @@ async function boot() {
 
   // Keyboard shortcuts: ⌘N new chat, ⌘1..8 navigation, and inside the Code
   // view ⌘P (file palette), ⇧⌘O (symbol palette), ⇧⌘F (project search).
-  const NAV_ORDER: View[] = ["chat", "code", "models", "connectors", "runs", "memory", "agent", "settings"];
+  const NAV_ORDER: View[] = ["chat", "code", "models", "connectors", "runs", "memory", "agent", "learned", "settings"];
   window.addEventListener("keydown", (e) => {
     if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
     if (!root) return;

@@ -69,6 +69,17 @@ export interface RunRecord {
   snapshot: RunSnapshot;
   /** JSON Lines, exactly what Run.toJsonl produced. */
   transcript: string;
+  /**
+   * The scheduled job that declared this run, when one did.
+   *
+   * Stored rather than held in memory because the report back to the scheduler
+   * happens when the run ENDS, and a run can outlive the process that started
+   * it: without this, a run restarted after a crash would finish and the job
+   * would never learn what became of it. Absent for a run a human declared,
+   * which is the common case and must stay indistinguishable from an older
+   * record that predates the field.
+   */
+  job?: string;
 }
 
 export function encodeRun(record: RunRecord): string {
@@ -107,6 +118,10 @@ export function decodeRun(raw: unknown): RunRecord | null {
     updated: Number.isFinite(Number(v.updated)) ? Number(v.updated) : 0,
     snapshot: snap as RunSnapshot,
     transcript: v.transcript,
+    // A job id that is not a string is not a job id. Dropping it costs one
+    // report to the scheduler; trusting it would put a run's output on a
+    // delivery target belonging to a different job.
+    ...(typeof v.job === "string" && v.job ? { job: v.job } : {}),
   };
 }
 

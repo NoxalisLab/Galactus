@@ -289,6 +289,17 @@ export const api = {
     invoke<{ nodes: { n: string; p: string; d: number }[]; edges: [number, number][] }>("obsidian_graph"),
   skillsList: () => invoke<SkillInfo[]>("skills_list"),
   skillRead: (name: string) => invoke<string>("skill_read", { name }),
+
+  // The agent's own procedural memory. Deliberately NOT reachable through
+  // skillsList / skillRead: the thirty shipped skills and the notes the agent
+  // wrote for itself must never share a listing or a read path. See
+  // learned.ts, section GOVERNANCE, G5.
+  learnedList: () => invoke<{ slug: string; body: string }[]>("learned_list"),
+  learnedWrite: (slug: string, body: string) =>
+    invoke<string>("learned_write", { slug, body }),
+  /** No slug empties the whole bank. */
+  learnedDelete: (slug?: string) => invoke<void>("learned_delete", { slug: slug ?? null }),
+  learnedFolder: () => invoke<string>("learned_folder"),
   convList: () => invoke<unknown[]>("conv_list"),
   convLoad: (id: string) => invoke<unknown>("conv_load", { id }),
   convSave: (id: string, data: string) => invoke<void>("conv_save", { id, data }),
@@ -317,6 +328,33 @@ export const api = {
     invoke<RelayStatus>("relay_start", { bind, port, key }),
   relayStop: () => invoke<RelayStatus>("relay_stop"),
   relayAddresses: () => invoke<string[]>("relay_addresses"),
+
+  // ---- scheduled jobs (scheduler.rs, cron.rs) ----
+  //
+  // Rust owns the clock, the definitions, the runtime state and the catch-up
+  // decision, because the agent loop lives in this webview and a schedule that
+  // lived here too would stop the moment a window closed. Everything below
+  // returns the whole view rather than an acknowledgement: a save that changed
+  // one job also changed the next fire of that job, and a second round trip to
+  // learn that would be a second chance to be out of date.
+  //
+  // Every value ending in `_at` is unix SECONDS, not milliseconds.
+  jobsList: () => invoke<unknown>("jobs_list"),
+  jobsSave: (job: Record<string, unknown>) => invoke<unknown>("jobs_save", { job }),
+  jobsDelete: (id: string) => invoke<unknown>("jobs_delete", { id }),
+  jobsEnable: (id: string, enabled: boolean) => invoke<unknown>("jobs_enable", { id, enabled }),
+  jobsRunNow: (id: string) => invoke<unknown>("jobs_run_now", { id }),
+  /** What became of a dispatched job. Also the only trigger for delivery. */
+  jobsReport: (id: string, runId: string, outcome: string, detail: string) =>
+    invoke<unknown>("jobs_report", { id, runId, outcome, detail }),
+  /** The next few fires of a schedule that has not been saved yet. Seconds. */
+  jobsPreview: (schedule: string, count?: number) =>
+    invoke<number[]>("jobs_preview", { schedule, count }),
+  /**
+   * Show or hide the menu bar item. Server mode hides its window on close
+   * rather than destroying it, so something has to say the app is still there.
+   */
+  traySet: (on: boolean) => invoke<void>("tray_set", { on }),
 
   kbStats: () =>
     invoke<{ files: number; chunks: number; folders: string[]; indexed_at: number } | null>("kb_stats"),

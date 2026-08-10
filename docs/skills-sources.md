@@ -100,3 +100,27 @@ Twenty skills were added on 2026-08-08:
 
 Last run over all 30 skills: 0 unknown tools, 0 foreign tool names, 0 dashes,
 0 frontmatter problems.
+
+## Skills the agent writes for itself are NOT covered by this document
+
+Galactus can also write a skill on its own, from the transcript of a task it
+just carried out (`app/src/learned.ts`, `app/src/learnedbank.ts`). Those files
+have nothing to do with anything recorded above and must never be confused with
+it. Concretely:
+
+* They are not in `app/skills/`, they are not copied by
+  `tools/sync-packaged.mjs`, and they are not in the app bundle. They are
+  written at runtime to `~/Library/Application Support/Galactus/skills-learned/`,
+  a directory the thirty shipped skills never occupy.
+* They are unreachable through `skills_list` and `skill_read`. The four
+  `learned_*` Tauri commands are the only way to them, so no surface that shows
+  a shipped skill can accidentally show one of these.
+* Every one of them carries `authored_by: galactus-agent`, its origin
+  (`conversation` or `run`), its state, and a first line in the body saying it
+  was not shipped and nobody reviewed it. A name that collides with any of the
+  thirty is refused rather than renamed.
+* The feature is off by default, and one switch in the panel removes the whole
+  bank.
+
+There is no licence question attached to them: they are produced on the user's
+machine, from the user's own session, and they are never redistributed.

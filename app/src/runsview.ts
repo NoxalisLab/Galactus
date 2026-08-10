@@ -45,6 +45,26 @@ import {
   type RunTurnHooks,
 } from "./rundrive";
 import {
+  clockLabel,
+  decodeJobDue,
+  decodeJobsView,
+  draftError,
+  draftOf,
+  draftToInput,
+  emptyDraft,
+  jobLimits,
+  jobReport,
+  jobRunName,
+  jobTask,
+  outcomeTone,
+  relativeLabel,
+  type DeliveryMode,
+  type JobDraft,
+  type JobDue,
+  type JobRow,
+  type JobsView,
+} from "./schedule";
+import {
   RunGrants,
   decodeRun,
   encodeRun,
@@ -110,6 +130,12 @@ interface LiveRun {
   open: boolean;
   /** Draft of the note a human may attach to an answer, kept across repaints. */
   note: string;
+  /**
+   * The scheduled job this run came from, or null for one a human declared.
+   * Kept on the record too, so a run that outlives its process still reports
+   * back when it ends.
+   */
+  jobId: string | null;
 }
 
 const live = new Map<string, LiveRun>();
@@ -178,6 +204,7 @@ function recordOf(run: LiveRun): RunRecord {
     updated: Date.now(),
     snapshot: run.run.snapshot(),
     transcript: run.run.toJsonl(),
+    ...(run.jobId ? { job: run.jobId } : {}),
   };
 }
 
@@ -270,9 +297,17 @@ async function loadStored(): Promise<void> {
         driving: false,
         open: false,
         note: "",
+        jobId: record.job ?? null,
       };
       live.set(id, entry);
-      if (run.getState() === "cancelled") persist(entry, true);
+      if (run.getState() === "cancelled") {
+        persist(entry, true);
+        // A scheduled run whose process died owes its job an answer. Without
+        // this the job would show "running" until its flight deadline expired
+        // and then simply fire again with no record of what happened to the
+        // one before it.
+        if (entry.jobId) void reportJob(entry, "interrupted");
+      }
     }
     loaded = true;
   } finally {
@@ -438,6 +473,11 @@ async function drive(run: LiveRun, prompt: string): Promise<void> {
     run.streaming = "";
     persist(run, true);
     announce(run);
+    // The loop has stopped, whatever the reason, so the scheduler can be told.
+    // Reporting here rather than only on `finished` is what makes a blocked or
+    // exhausted job visible on its row instead of looking like a job that is
+    // still going.
+    if (run.jobId) void reportJob(run);
     schedulePaint();
   }
 }
@@ -592,6 +632,7 @@ function declareRun(): void {
     driving: false,
     open: true,
     note: "",
+    jobId: null,
   };
   live.set(id, entry);
   persist(entry, true);
@@ -606,6 +647,543 @@ function clampInt(value: number, min: number, max: number): number {
   const n = Math.round(Number(value));
   if (!Number.isFinite(n)) return min;
   return Math.min(max, Math.max(min, n));
+}
+
+// ---------------------------------------------------------------- scheduled
+//
+// A job is a run template plus a schedule. Everything about WHEN lives in
+// Rust (cron.rs, scheduler.rs): the parsing, the next fire, the persistence
+// and the catch-up decision. This half owns exactly two things, and neither of
+// them is a clock:
+//
+//   it declares the Run a due job asks for, and drives it with the code above,
+//   so a scheduled run and a hand declared one are the same object under the
+//   same gate;
+//   it reports back what became of it, which is also what triggers delivery.
+//
+// The honest limit, stated on screen rather than buried here: the agent loop
+// is in this webview. Closing the window hides it and everything keeps going;
+// quitting Galactus ends it. Rust remembers the schedule either way and picks
+// it up at the next launch under the catch-up rule.
+
+let jobs: JobsView = { jobs: [], error: "", catchup_grace_minutes: 0 };
+let jobsLoaded = false;
+/** The job form, or null when it is closed. Out of the DOM, like `draft`. */
+let jobDraft: JobDraft | null = null;
+let jobPreview: number[] = [];
+let jobPreviewError = "";
+let previewTimer: number | null = null;
+
+async function loadJobs(): Promise<void> {
+  try {
+    jobs = decodeJobsView(await api.jobsList());
+  } catch (err) {
+    jobs = {
+      jobs: [],
+      error: err instanceof Error ? err.message : String(err),
+      catchup_grace_minutes: 0,
+    };
+  }
+  jobsLoaded = true;
+  paintJobs();
+}
+
+function jobRow(id: string | null): JobRow | null {
+  if (!id) return null;
+  return jobs.jobs.find((j) => j.id === id) ?? null;
+}
+
+/**
+ * Tell the scheduler what became of a run it asked for.
+ *
+ * `forced` exists for the one case the run itself cannot describe: a process
+ * that died mid run leaves a record, not a state, and "interrupted" is the
+ * only honest word for it.
+ */
+async function reportJob(run: LiveRun, forced?: string): Promise<void> {
+  const id = run.jobId;
+  if (!id) return;
+  const report = forced
+    ? { outcome: forced, detail: "" }
+    : jobReport(
+        run.run.getState(),
+        run.run.finalResult(),
+        run.run.failure(),
+        run.run.pendingQuestion(),
+      );
+  try {
+    jobs = decodeJobsView(await api.jobsReport(id, run.run.id, report.outcome, report.detail));
+    paintJobs();
+  } catch {
+    /* the run is already on disk; the job's row will be a tick out of date */
+  }
+}
+
+/**
+ * A job came due. Declare its run and start it.
+ *
+ * Called from the app shell's event listener rather than from this view, on
+ * purpose: a job must fire whether or not anyone is looking at the Runs
+ * screen, and this module keeps working with nothing mounted.
+ */
+export function runScheduledJob(payload: unknown): void {
+  const due = decodeJobDue(payload);
+  // A payload this build cannot read is not run on a guess. Rust will clear
+  // the job's flight when its deadline passes and try again at the next slot.
+  if (!due) return;
+  void startScheduled(due);
+}
+
+async function startScheduled(due: JobDue): Promise<void> {
+  await loadStored();
+  const now = Date.now();
+  const id = makeRunId(now);
+  const task = jobTask(due);
+  let run: Run;
+  try {
+    run = Run.create({
+      id,
+      name: jobRunName(due.job, due.scheduled_at),
+      limits: jobLimits(due.job),
+      now: () => Date.now(),
+    });
+  } catch (err) {
+    // The job cannot produce a run at all. Say so on its row rather than
+    // leaving it in flight until the deadline expires.
+    const message = err instanceof Error ? err.message : String(err);
+    await api.jobsReport(due.job.id, "", "failed", message).catch(() => {});
+    void loadJobs();
+    return;
+  }
+  const entry: LiveRun = {
+    run,
+    name: run.name,
+    prompt: task,
+    created: now,
+    updated: now,
+    agent: null,
+    hooks: null,
+    grants: new RunGrants(),
+    streaming: "",
+    driving: false,
+    open: false,
+    note: "",
+    jobId: due.job.id,
+  };
+  live.set(id, entry);
+  persist(entry, true);
+  void loadJobs();
+  if (!host.ready()) {
+    // No engine, so no turn can be taken. Cancelling with the reason keeps the
+    // run auditable and reports a real outcome to the job instead of letting
+    // it look like it is still going.
+    entry.run.cancel(t("runs.needModel"));
+    persist(entry, true);
+    await reportJob(entry);
+    schedulePaint();
+    return;
+  }
+  schedulePaint();
+  void drive(entry, firstPrompt(task));
+}
+
+// ---- job commands ----
+
+/**
+ * Run a job command and take its answer as the new truth.
+ *
+ * Returns whether it worked, because the caller has to know: a save that Rust
+ * refused (an unparsable schedule, a delivery folder that does not exist) must
+ * leave the form up with what the person typed still in it, and closing it on
+ * an assumption is how a rejected job silently becomes a lost one.
+ */
+async function applyJobs(work: Promise<unknown>): Promise<boolean> {
+  try {
+    jobs = decodeJobsView(await work);
+  } catch (err) {
+    host.toast(err instanceof Error ? err.message : String(err), "err");
+    paintJobs();
+    return false;
+  }
+  paintJobs();
+  return true;
+}
+
+function openJobForm(row: JobRow | null): void {
+  jobDraft = row ? draftOf(row) : emptyDraft();
+  jobPreview = [];
+  jobPreviewError = "";
+  paintJobForm();
+  refreshPreview();
+}
+
+function closeJobForm(): void {
+  jobDraft = null;
+  jobPreview = [];
+  jobPreviewError = "";
+  paintJobForm();
+}
+
+function saveJob(): void {
+  if (!jobDraft) return;
+  const bad = draftError(jobDraft);
+  if (bad) {
+    host.toast(
+      t(
+        bad === "task"
+          ? "sched.needTask"
+          : bad === "schedule"
+            ? "sched.needSchedule"
+            : bad === "webhook"
+              ? "sched.needWebhook"
+              : "sched.needFile",
+      ),
+    );
+    return;
+  }
+  const payload = draftToInput(jobDraft);
+  void (async () => {
+    if (await applyJobs(api.jobsSave(payload))) closeJobForm();
+  })();
+}
+
+/**
+ * Ask Rust what the schedule means. There is exactly one cron parser in this
+ * app and it is not in TypeScript, so the form shows the engine's answer
+ * rather than a second opinion that would drift from it.
+ */
+function refreshPreview(): void {
+  if (previewTimer !== null) {
+    clearTimeout(previewTimer);
+    previewTimer = null;
+  }
+  const expression = jobDraft?.schedule.trim() ?? "";
+  if (!expression) {
+    jobPreview = [];
+    jobPreviewError = "";
+    paintPreview();
+    return;
+  }
+  previewTimer = window.setTimeout(() => {
+    previewTimer = null;
+    api
+      .jobsPreview(expression, 3)
+      .then((list) => {
+        jobPreview = Array.isArray(list) ? list : [];
+        jobPreviewError = "";
+      })
+      .catch((err) => {
+        jobPreview = [];
+        jobPreviewError = err instanceof Error ? err.message : String(err);
+      })
+      .then(() => paintPreview());
+  }, 350);
+}
+
+// ---- painting the scheduled half ----
+
+function jobHeadHtml(row: JobRow): string {
+  const next =
+    row.next_fire_at !== null
+      ? `${clockLabel(row.next_fire_at)} · ${relativeLabel(row.next_fire_at, Date.now())}`
+      : t("sched.nextNone");
+  const state = row.in_flight ? t("sched.running") : row.enabled ? t("sched.on") : t("sched.off");
+  const cls = row.in_flight ? "s-running" : row.enabled ? "s-queued" : "s-cancelled";
+  return `<div class="runs-head">
+    <span class="runs-state ${cls}">${esc(state)}</span>
+    <b>${esc(row.name)}</b>
+    <span class="runs-pol">${esc(t(`runs.policy.${row.policy}`))}</span>
+    <span class="runs-pol mono">${esc(row.schedule)}</span>
+    <span class="runs-grow"></span>
+    <span class="runs-budget-read mono">${esc(t("sched.next"))}: ${esc(next)}</span>
+    <button class="bs" data-jact="run">${esc(t("sched.runNow"))}</button>
+    <button class="bs" data-jact="toggle">${esc(row.enabled ? t("sched.disable") : t("sched.enable"))}</button>
+    <button class="bs" data-jact="edit">${esc(t("sched.edit"))}</button>
+    <button class="bs" data-jact="delete">${esc(t("sched.delete"))}</button>
+  </div>`;
+}
+
+function jobFootHtml(row: JobRow): string {
+  const s = row.state;
+  const bits: string[] = [];
+  if (s.last_outcome) {
+    const when = s.last_finished_at !== null ? ` · ${relativeLabel(s.last_finished_at, Date.now())}` : "";
+    bits.push(
+      `<span class="sched-last tone-${outcomeTone(s.last_outcome)}">${esc(t("sched.last"))}: ${esc(s.last_outcome)}${esc(when)}</span>`,
+    );
+  } else {
+    bits.push(`<span class="sched-last tone-plain">${esc(t("sched.never"))}</span>`);
+  }
+  if (s.missed > 0) {
+    bits.push(`<span class="sched-tag">${esc(t("sched.missed").replace("%n", String(s.missed)))}</span>`);
+  }
+  if (s.consecutive_failures > 1) {
+    bits.push(
+      `<span class="sched-tag bad">${esc(t("sched.failures").replace("%n", String(s.consecutive_failures)))}</span>`,
+    );
+  }
+  if (row.delivery.mode !== "none") {
+    const target = row.delivery.mode === "webhook" ? row.delivery.url : row.delivery.path;
+    bits.push(`<span class="sched-tag mono">${esc(row.delivery.mode)}: ${esc(target)}</span>`);
+  }
+  if (s.last_delivery && s.last_delivery !== "ok") {
+    bits.push(
+      `<span class="sched-tag bad">${esc(t("sched.deliveryFailed").replace("%n", s.last_delivery))}</span>`,
+    );
+  } else if (s.last_delivery === "ok") {
+    bits.push(`<span class="sched-tag">${esc(t("sched.delivered"))}</span>`);
+  }
+  if (row.schedule_note) bits.push(`<span class="sched-tag">${esc(row.schedule_note)}</span>`);
+  return `<div class="sched-foot">${bits.join("")}</div>`;
+}
+
+function jobCardHtml(row: JobRow): string {
+  return `<div class="jobcard plate${row.enabled ? "" : " is-off"}" data-job="${esc(row.id)}">
+    ${jobHeadHtml(row)}
+    <div class="runs-task">${esc(row.task)}</div>
+    ${row.schedule_error ? `<div class="sched-bad">${esc(row.schedule_error)}</div>` : ""}
+    ${jobFootHtml(row)}
+  </div>`;
+}
+
+function jobListHtml(): string {
+  if (jobs.error) return "";
+  if (!jobs.jobs.length) {
+    return `<div class="empty-block"><span class="big">◷</span><b>${esc(
+      jobsLoaded ? t("sched.empty") : t("runs.loading"),
+    )}</b><span>${esc(t("sched.emptyHint"))}</span></div>`;
+  }
+  return jobs.jobs.map(jobCardHtml).join("");
+}
+
+function jobsSectionEl(): HTMLElement {
+  const grace = String(jobs.catchup_grace_minutes || 360);
+  const box = el(`<div class="schedwrap" id="schedwrap">
+    <div class="sched-note plate">
+      <div class="sched-note-t">
+        <b>${esc(t("sched.limit"))}</b>
+        <span>${esc(t("sched.catchup").replace("%n", grace))}</span>
+      </div>
+      <button class="bp" data-jnew="1">${esc(t("sched.new"))}</button>
+    </div>
+    <div id="schederr"></div>
+    <div id="schedlist"></div>
+    <div id="schedform"></div>
+  </div>`);
+  box.addEventListener("click", (e) => {
+    const target = e.target as HTMLElement;
+    if (target.closest("[data-jnew]")) {
+      openJobForm(null);
+      return;
+    }
+    const btn = target.closest("[data-jact]") as HTMLElement | null;
+    if (!btn) return;
+    const card = btn.closest("[data-job]") as HTMLElement | null;
+    const row = jobRow(card?.dataset.job ?? null);
+    if (!row) return;
+    switch (btn.dataset.jact) {
+      case "run":
+        void applyJobs(api.jobsRunNow(row.id));
+        break;
+      case "toggle":
+        void applyJobs(api.jobsEnable(row.id, !row.enabled));
+        break;
+      case "edit":
+        openJobForm(row);
+        break;
+      case "delete":
+        if (jobDraft && jobDraft.id === row.id) closeJobForm();
+        void applyJobs(api.jobsDelete(row.id));
+        break;
+    }
+  });
+  // A fresh section has empty children, so what was painted into the PREVIOUS
+  // one is not what is on screen now. Forgetting this is how a remounted view
+  // stays blank because the cache says it is already correct.
+  paintedList = " ";
+  paintedErr = " ";
+  paintInto(box);
+  return box;
+}
+
+/**
+ * The last HTML actually written, so a repaint that would produce the same
+ * thing writes nothing.
+ *
+ * This is not a micro-optimisation, it is the difference between a screen that
+ * is idle and one that is not: the rows carry a countdown, so the refresh
+ * below runs while the view is open, and without this every one of those
+ * passes would rebuild the list, drop the nodes and restart any text selection
+ * inside them for a string that did not change. The countdown is minute
+ * grained, so in practice the DOM is touched about once a minute.
+ */
+let paintedList = " ";
+let paintedErr = " ";
+
+function paintInto(box: HTMLElement): void {
+  const errHtml = jobs.error
+    ? `<div class="sched-bad plate"><b>${esc(t("sched.fileError"))}</b><span class="mono">${esc(jobs.error)}</span></div>`
+    : "";
+  const err = box.querySelector<HTMLElement>("#schederr");
+  if (err && errHtml !== paintedErr) {
+    err.innerHTML = errHtml;
+    paintedErr = errHtml;
+  }
+  const listHtml = jobListHtml();
+  const list = box.querySelector<HTMLElement>("#schedlist");
+  if (list && listHtml !== paintedList) {
+    list.innerHTML = listHtml;
+    paintedList = listHtml;
+  }
+}
+
+function paintJobs(): void {
+  if (!mounted || !mounted.isConnected) return;
+  const box = mounted.querySelector<HTMLElement>("#schedwrap");
+  if (box) paintInto(box);
+}
+
+function jobPolicyCard(policy: RunPolicy): string {
+  const grants = policyGrants(policy).join(", ");
+  return `<div class="auton ${jobDraft?.policy === policy ? "on" : ""}" data-jpolicy="${policy}">
+    <div class="r"><span class="rd"></span><b>${esc(t(`runs.policy.${policy}`))}</b></div>
+    <div class="d">${esc(t(`runs.policyHint.${policy}`))}</div>
+    <div class="d mono runs-grants">${esc(grants)}</div>
+  </div>`;
+}
+
+function previewHtml(): string {
+  if (jobPreviewError) return `<span class="sched-bad">${esc(jobPreviewError)}</span>`;
+  if (!jobPreview.length) return "";
+  return `<span class="mono">${esc(t("sched.preview"))}: ${esc(jobPreview.map(clockLabel).join(" · "))}</span>`;
+}
+
+function paintPreview(): void {
+  const slot = mounted?.querySelector<HTMLElement>("#jf-preview");
+  if (slot) slot.innerHTML = previewHtml();
+}
+
+const DELIVERY_MODES: DeliveryMode[] = ["none", "webhook", "file"];
+
+/**
+ * The job form, rebuilt from `jobDraft` and never read back out of the DOM at
+ * submit time: a background repaint throws the nodes away, and a value that
+ * only lived in an input would go with them. Same rule as the run form.
+ */
+function paintJobForm(): void {
+  const box = mounted?.querySelector<HTMLElement>("#schedform");
+  if (!box) return;
+  const d = jobDraft;
+  if (!d) {
+    box.innerHTML = "";
+    return;
+  }
+  box.innerHTML = `<div class="card plate">
+    <div class="runs-field"><small>${esc(t("runs.name"))}</small>
+      <div class="inset-input"><input id="jf-name" type="text" placeholder="${esc(t("runs.namePlaceholder"))}" value="${esc(d.name)}"/></div>
+    </div>
+    <div class="runs-field"><small>${esc(t("runs.task"))}</small>
+      <textarea class="mem" id="jf-task" rows="3" placeholder="${esc(t("runs.taskPlaceholder"))}">${esc(d.task)}</textarea>
+    </div>
+    <div class="runs-field"><small>${esc(t("sched.when"))}</small>
+      <div class="inset-input"><input id="jf-when" type="text" placeholder="${esc(t("sched.whenPlaceholder"))}" value="${esc(d.schedule)}"/></div>
+      <span class="runs-budget-hint">${esc(t("sched.whenHint"))}</span>
+      <div class="sched-preview" id="jf-preview">${previewHtml()}</div>
+    </div>
+    <div class="runs-field"><small>${esc(t("runs.policy"))}</small>
+      <div class="g3" id="jf-policy">${RUN_POLICIES.map(jobPolicyCard).join("")}</div>
+    </div>
+    <div class="runs-budget">
+      <div class="runs-field"><small>${esc(t("runs.turns"))}</small>
+        <div class="inset-input"><input id="jf-turns" type="number" min="1" max="200" value="${d.turns}"/></div>
+      </div>
+      <div class="runs-field"><small>${esc(t("runs.minutes"))}</small>
+        <div class="inset-input"><input id="jf-minutes" type="number" min="1" max="1440" value="${d.minutes}"/></div>
+      </div>
+      <span class="runs-budget-hint">${esc(t("runs.budgetHint"))}</span>
+    </div>
+    ${
+      d.policy === "autonomous"
+        ? `<label class="runs-preauth ${d.preauth ? "on" : ""}">
+             <input type="checkbox" id="jf-preauth" ${d.preauth ? "checked" : ""}/>
+             <span><b>${esc(t("runs.preauth"))}</b><small>${esc(t("runs.preauthHint"))}</small></span>
+           </label>`
+        : ""
+    }
+    <div class="runs-field"><small>${esc(t("sched.delivery"))}</small>
+      <div class="seg" id="jf-delivery">${DELIVERY_MODES.map(
+        (m) =>
+          `<button data-dmode="${m}" class="${d.deliveryMode === m ? "on" : ""}">${esc(t(`sched.delivery.${m}`))}</button>`,
+      ).join("")}</div>
+      <span class="runs-budget-hint">${esc(t("sched.deliveryHint"))}</span>
+      ${
+        d.deliveryMode === "webhook"
+          ? `<div class="inset-input"><input id="jf-webhook" type="text" placeholder="${esc(t("sched.webhookPlaceholder"))}" value="${esc(d.webhook)}"/></div>`
+          : ""
+      }
+      ${
+        d.deliveryMode === "file"
+          ? `<div class="inset-input"><input id="jf-file" type="text" placeholder="${esc(t("sched.filePlaceholder"))}" value="${esc(d.file)}"/></div>`
+          : ""
+      }
+    </div>
+    <div class="sched-actions">
+      <label class="runs-preauth ${d.enabled ? "on" : ""}">
+        <input type="checkbox" id="jf-enabled" ${d.enabled ? "checked" : ""}/>
+        <span><b>${esc(t("sched.enable"))}</b></span>
+      </label>
+      <span class="runs-grow"></span>
+      <button class="bs" id="jf-cancel">${esc(t("sched.cancelEdit"))}</button>
+      <button class="bp" id="jf-save">${esc(t("sched.save"))}</button>
+    </div>
+  </div>`;
+  const bind = <T extends HTMLElement>(id: string): T | null => box.querySelector<T>(id);
+  bind<HTMLInputElement>("#jf-name")?.addEventListener("input", (e) => {
+    if (jobDraft) jobDraft.name = (e.target as HTMLInputElement).value;
+  });
+  bind<HTMLTextAreaElement>("#jf-task")?.addEventListener("input", (e) => {
+    if (jobDraft) jobDraft.task = (e.target as HTMLTextAreaElement).value;
+  });
+  bind<HTMLInputElement>("#jf-when")?.addEventListener("input", (e) => {
+    if (!jobDraft) return;
+    jobDraft.schedule = (e.target as HTMLInputElement).value;
+    refreshPreview();
+  });
+  bind<HTMLInputElement>("#jf-turns")?.addEventListener("input", (e) => {
+    if (jobDraft) jobDraft.turns = clampInt(Number((e.target as HTMLInputElement).value), 1, 200);
+  });
+  bind<HTMLInputElement>("#jf-minutes")?.addEventListener("input", (e) => {
+    if (jobDraft) jobDraft.minutes = clampInt(Number((e.target as HTMLInputElement).value), 1, 1440);
+  });
+  bind<HTMLInputElement>("#jf-webhook")?.addEventListener("input", (e) => {
+    if (jobDraft) jobDraft.webhook = (e.target as HTMLInputElement).value;
+  });
+  bind<HTMLInputElement>("#jf-file")?.addEventListener("input", (e) => {
+    if (jobDraft) jobDraft.file = (e.target as HTMLInputElement).value;
+  });
+  bind<HTMLElement>("#jf-policy")?.addEventListener("click", (e) => {
+    const card = (e.target as HTMLElement).closest("[data-jpolicy]") as HTMLElement | null;
+    if (!card || !jobDraft) return;
+    jobDraft.policy = card.dataset.jpolicy as RunPolicy;
+    // Same rule as the run form: a policy that cannot use it cannot keep it.
+    if (jobDraft.policy !== "autonomous") jobDraft.preauth = false;
+    paintJobForm();
+  });
+  bind<HTMLElement>("#jf-delivery")?.addEventListener("click", (e) => {
+    const btn = (e.target as HTMLElement).closest("[data-dmode]") as HTMLElement | null;
+    if (!btn || !jobDraft) return;
+    jobDraft.deliveryMode = btn.dataset.dmode as DeliveryMode;
+    paintJobForm();
+  });
+  bind<HTMLInputElement>("#jf-preauth")?.addEventListener("change", (e) => {
+    if (jobDraft) jobDraft.preauth = (e.target as HTMLInputElement).checked;
+    paintJobForm();
+  });
+  bind<HTMLInputElement>("#jf-enabled")?.addEventListener("change", (e) => {
+    if (jobDraft) jobDraft.enabled = (e.target as HTMLInputElement).checked;
+  });
+  bind<HTMLButtonElement>("#jf-cancel")?.addEventListener("click", () => closeJobForm());
+  bind<HTMLButtonElement>("#jf-save")?.addEventListener("click", () => saveJob());
 }
 
 // ---------------------------------------------------------------- painting
@@ -643,12 +1221,21 @@ function schedulePaint(): void {
  */
 function ensureTick(): void {
   if (tick !== null) return;
+  let beats = 0;
   tick = window.setInterval(() => {
     if (!mounted || !mounted.isConnected) {
       if (tick !== null) clearInterval(tick);
       tick = null;
       return;
     }
+    // The scheduled rows carry a countdown, and it is minute grained, so it is
+    // re-read once a minute and not more: anything that actually CHANGES a row
+    // (a job firing, a run reporting, a command) already refreshes it on its
+    // own path. The paint is skipped outright when the HTML is identical, so a
+    // pass that finds nothing new touches neither the DOM nor the screen. Both
+    // stop with the view: the interval clears itself once it is unmounted.
+    beats += 1;
+    if (beats % 60 === 0) void loadJobs();
     for (const run of live.values()) {
       if (run.run.getState() === "running") {
         paintList();
@@ -662,6 +1249,8 @@ export function runsView(): HTMLElement {
   const wrap = el(`<div class="main">
     <div class="topbar" data-tauri-drag-region><span class="ttl">${esc(t("nav.runs"))}</span><span class="sub">${esc(t("runs.subtitle"))}</span></div>
     <div class="page"><div class="hold">
+      <div class="sect"><b>${esc(t("sched.sect"))}</b><span>${esc(t("sched.sectHint"))}</span></div>
+      <div id="schedwrap"></div>
       <div class="sect"><b>${esc(t("runs.sectNew"))}</b><span>${esc(t("runs.sectNewHint"))}</span></div>
       <div class="card plate" id="runform"></div>
       <div class="sect"><b>${esc(t("runs.sectList"))}</b><span>${esc(t("runs.sectListHint"))}</span></div>
@@ -670,9 +1259,12 @@ export function runsView(): HTMLElement {
   </div>`);
   mounted = wrap;
   paintForm(wrap);
+  wrap.querySelector<HTMLElement>("#schedwrap")!.replaceWith(jobsSectionEl());
+  paintJobForm();
   const list = wrap.querySelector<HTMLElement>("#runlist")!;
   list.replaceWith(listEl());
   void loadStored();
+  void loadJobs();
   ensureTick();
   return wrap;
 }

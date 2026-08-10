@@ -6,11 +6,13 @@
 // behind the permission gate, the settings store and the MCP stdio clients.
 
 mod code;
+mod cron;
 mod knowledge;
 mod lsp;
 mod pty;
 mod relay;
 mod pylang;
+mod scheduler;
 mod search;
 mod snapshot;
 mod symbols;
@@ -3068,7 +3070,7 @@ fn pick_folder() -> Result<Option<String>, String> {
 
 // ---------------------------------------------------------------- memory + obsidian
 
-fn app_support() -> PathBuf {
+pub(crate) fn app_support() -> PathBuf {
     settings_path().parent().unwrap().to_path_buf()
 }
 
@@ -3482,6 +3484,163 @@ fn skill_read(name: String) -> Result<String, String> {
         }
     }
     Err(format!("skill not found: {name}"))
+}
+
+// ------------------------------------------------- learned skills (storage)
+//
+// The procedural memory bank: skills the AGENT wrote for itself after a task.
+// Storage only. Everything that decides whether a skill may be written, what
+// it may contain and whether it may be loaded lives in app/src/learned.ts,
+// where it is pure and pinned by tests.
+//
+// Three properties are the reason this is a separate directory and a separate
+// set of commands rather than a fourth entry in `skill_search_dirs`:
+//
+//  1. `skills_list` and `skill_read` MUST NOT be able to return one of these.
+//     The thirty shipped skills and the agent's own notes must never share a
+//     listing, an ordering or a read path, or the provenance recorded in
+//     docs/skills-sources.md stops meaning anything.
+//  2. The folder sits under app_support(), which `is_protected_write` already
+//     refuses for `tool_fs_write`. So the agent cannot rewrite a stored skill
+//     with its own file tools: the authoring pipeline, which validates, is the
+//     only way in. Validation that can be bypassed by a second write is not
+//     validation.
+//  3. Deleting is first class, one by one and all at once, because a memory
+//     the user cannot empty is not a memory, it is a residue.
+//
+// The slug rules are enforced here as well as in TypeScript. That is not
+// redundancy: this side is what actually holds if the front end is ever
+// bypassed, and it is the only side that runs before a path is built.
+
+#[derive(Serialize, Clone)]
+struct LearnedSkillFile {
+    slug: String,
+    body: String,
+}
+
+fn learned_dir() -> PathBuf {
+    app_support().join("skills-learned")
+}
+
+/// Lowercase ascii, digits and single hyphens, bounded. No dot anywhere, so
+/// "..", "." and dot-files cannot be spelled at all.
+fn valid_learned_slug(slug: &str) -> bool {
+    let bytes = slug.as_bytes();
+    if bytes.len() < 2 || bytes.len() > 48 {
+        return false;
+    }
+    if !bytes[0].is_ascii_lowercase() && !bytes[0].is_ascii_digit() {
+        return false;
+    }
+    slug.bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && !slug.contains("--")
+}
+
+/// A body larger than this is not a procedure. The TypeScript cap is 6000
+/// characters; this one is deliberately looser and exists only so a bug on the
+/// other side cannot fill the disk.
+const LEARNED_MAX_BODY: usize = 40_000;
+/// Hard ceiling on the bank, mirroring MAX_BANK on the TypeScript side with
+/// the same intent: the catalogue is charged to every request.
+const LEARNED_MAX_ENTRIES: usize = 64;
+
+#[tauri::command]
+fn learned_list() -> Vec<LearnedSkillFile> {
+    let mut out = Vec::new();
+    let Ok(rd) = std::fs::read_dir(learned_dir()) else {
+        return out;
+    };
+    let mut dirs: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+    dirs.sort();
+    for p in dirs {
+        let slug = p
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if !valid_learned_slug(&slug) {
+            continue;
+        }
+        if let Ok(body) = std::fs::read_to_string(p.join("SKILL.md")) {
+            out.push(LearnedSkillFile { slug, body });
+        }
+        if out.len() >= LEARNED_MAX_ENTRIES {
+            break;
+        }
+    }
+    out
+}
+
+#[tauri::command]
+fn learned_write(slug: String, body: String) -> Result<String, String> {
+    if !valid_learned_slug(&slug) {
+        return Err("invalid learned skill name".into());
+    }
+    if body.len() > LEARNED_MAX_BODY {
+        return Err("learned skill body is too large".into());
+    }
+    let dir = learned_dir().join(&slug);
+    // Overwriting an existing slug is fine (a re-approval rewrites the state
+    // line); creating a 65th one is not.
+    if !dir.exists() && learned_list().len() >= LEARNED_MAX_ENTRIES {
+        return Err("the learned skills bank is full".into());
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let p = dir.join("SKILL.md");
+    std::fs::write(&p, body.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(p.display().to_string())
+}
+
+/// Delete one skill, or the whole bank when `slug` is absent. Deleting the
+/// bank removes the directory itself, so nothing is left behind for the user
+/// to wonder about.
+#[tauri::command]
+fn learned_delete(slug: Option<String>) -> Result<(), String> {
+    match slug {
+        Some(s) => {
+            if !valid_learned_slug(&s) {
+                return Err("invalid learned skill name".into());
+            }
+            let dir = learned_dir().join(&s);
+            if dir.is_dir() {
+                std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        }
+        None => {
+            let dir = learned_dir();
+            if dir.is_dir() {
+                std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        }
+    }
+}
+
+/// The folder itself, so the user can open it in Finder and see that the
+/// agent's notes are somewhere other than the thirty shipped skills.
+#[tauri::command]
+fn learned_folder() -> String {
+    learned_dir().display().to_string()
+}
+
+#[cfg(test)]
+mod learned_slug_tests {
+    use super::valid_learned_slug;
+
+    #[test]
+    fn traversal_and_dotfiles_cannot_be_spelled() {
+        for bad in ["..", ".", ".ssh", "a/../b", "a/b", "A", "-x", "x--y", "", "x"] {
+            assert!(!valid_learned_slug(bad), "{bad} must be refused");
+        }
+    }
+
+    #[test]
+    fn ordinary_slugs_pass() {
+        for ok in ["git-bisect-loop", "npm-test-then-fix", "a1"] {
+            assert!(valid_learned_slug(ok), "{ok} must be accepted");
+        }
+    }
 }
 
 #[tauri::command]
@@ -4414,6 +4573,74 @@ fn relay_addresses() -> Vec<String> {
     out
 }
 
+// ---------------------------------------------------------------- the tray
+//
+// Server mode runs unattended work in a window nobody is looking at. The red
+// button already hides that window rather than destroying it (see
+// on_window_event below), which is the only reason a scheduled job can drive
+// an agent at 03:00: the agent loop lives in the webview, and a destroyed
+// webview takes it with it.
+//
+// Hiding a window that is still working is exactly the "invisible but running"
+// state that makes people distrust an app, so server mode also puts an item in
+// the menu bar. It says the app is there, it brings the window back, and it
+// offers the one action that genuinely stops the work: Quit.
+
+const TRAY_ID: &str = "galactus-tray";
+
+fn tray_show(app: &AppHandle) -> Result<(), String> {
+    use tauri::menu::{Menu, MenuItem};
+    use tauri::tray::TrayIconBuilder;
+
+    if app.tray_by_id(TRAY_ID).is_some() {
+        return Ok(());
+    }
+    let show = MenuItem::with_id(app, "tray-show", "Show Galactus", true, None::<&str>)
+        .map_err(|e| e.to_string())?;
+    let quit = MenuItem::with_id(
+        app,
+        "tray-quit",
+        "Quit Galactus (stops scheduled jobs)",
+        true,
+        None::<&str>,
+    )
+    .map_err(|e| e.to_string())?;
+    let menu = Menu::with_items(app, &[&show, &quit]).map_err(|e| e.to_string())?;
+    let mut builder = TrayIconBuilder::with_id(TRAY_ID)
+        .menu(&menu)
+        .tooltip("Galactus, server mode")
+        .show_menu_on_left_click(true);
+    if let Some(icon) = app.default_window_icon().cloned() {
+        builder = builder.icon(icon).icon_as_template(true);
+    }
+    builder
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "tray-show" => {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+            }
+            "tray-quit" => app.exit(0),
+            _ => {}
+        })
+        .build(app)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Show or hide the menu bar item. Called by the frontend when the app mode
+/// changes, and at startup from the stored mode.
+#[tauri::command]
+fn tray_set(app: AppHandle, on: bool) -> Result<(), String> {
+    if on {
+        tray_show(&app)
+    } else {
+        app.remove_tray_by_id(TRAY_ID);
+        Ok(())
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -4469,6 +4696,15 @@ pub fn run() {
             if let Err(e) = seed_bundled_vault() {
                 eprintln!("Galactus vault seeding failed: {e}");
             }
+            // The clock starts with the process and not with the view: a
+            // schedule that only ticked while the Runs screen was open would
+            // be a schedule that stops when someone switches to Settings.
+            scheduler::start(app.handle().clone());
+            if settings_load().get("app_mode").map(|m| m == "server").unwrap_or(false) {
+                if let Err(e) = tray_show(app.handle()) {
+                    eprintln!("Galactus tray failed: {e}");
+                }
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -4521,6 +4757,10 @@ pub fn run() {
             obsidian_create_vault,
             skills_list,
             skill_read,
+            learned_list,
+            learned_write,
+            learned_delete,
+            learned_folder,
             conv_list,
             conv_load,
             conv_save,
@@ -4591,6 +4831,17 @@ pub fn run() {
             relay_start,
             relay_stop,
             relay_addresses,
+            // Scheduled jobs. Rust owns the clock, the definitions and the
+            // catch-up decision; the frontend owns the agent loop and reports
+            // back through jobs_report. See scheduler.rs.
+            scheduler::jobs_list,
+            scheduler::jobs_save,
+            scheduler::jobs_delete,
+            scheduler::jobs_enable,
+            scheduler::jobs_run_now,
+            scheduler::jobs_report,
+            scheduler::jobs_preview,
+            tray_set,
             preview_publish
         ])
         .build(tauri::generate_context!())

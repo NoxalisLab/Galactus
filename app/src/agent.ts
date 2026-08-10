@@ -15,7 +15,22 @@ import {
 } from "./api";
 import type { SearchEvent, SearchOptsWire } from "./api";
 import { getLang, t } from "./i18n";
-import { isElevatedWrite, isElevatedRead } from "./sensitive";
+import { isElevatedCommand, isElevatedWrite, isElevatedRead } from "./sensitive";
+import {
+  effectiveAutoApprove,
+  isStep,
+  quarantineWrapper,
+  resolveAuthored,
+  type SkillOrigin,
+  type TurnStep,
+} from "./learned";
+import {
+  learnedCatalogueLines,
+  learnedSkills,
+  learningEnabled,
+  maybeLearn,
+  refreshBank,
+} from "./learnedbank";
 
 /**
  * Bytes per token, measured rather than assumed, and identical to the figure
@@ -97,55 +112,12 @@ export interface AgentHooks {
 
 export type AgentRole = "main" | "sub";
 
-const ELEVATED_PATTERNS = [
-  /\bsudo\b/,
-  /\bdiskutil\b/,
-  /\bkillall\b/,
-  /\blaunchctl\b/,
-  /\bcsrutil\b/,
-  /\/System\//,
-  /\/Library\/(?!Caches)/,
-  /\bchmod\s+[0-7]*7[0-7]*\s+\//,
-  // Symbolic execute grants (+x, u+x, a+rx…): the octal pattern above only
-  // catches a 7 digit, and making a dropped file executable IS the payload.
-  /\bchmod\b[^|;&\n]*\+\w*[xX]/,
-  /\bmkfs\b/,
-  /\bshred\b/,
-  /\bdd\s+.*of=\/dev\//,
-  /\bfind\b.*\s-delete\b/,
-  /\bgit\s+reset\s+--hard\b/,
-  /\bgit\s+clean\b/,
-  /\bgit\s+checkout\s+--\s/,
-];
-
-export function isElevatedCommand(cmd: string): boolean {
-  if (ELEVATED_PATTERNS.some((re) => re.test(cmd))) return true;
-  // Destructive rm in ANY flag layout: `rm -rf`, `rm -r -f`, `rm --recursive`,
-  // `rm -f x` … Split on every separator that can chain commands, newlines,
-  // subshell parens, backticks and `$` included, so `$(rm …)` and `` `rm …` ``
-  // substitutions are scanned as their own segments, and scan EVERY `rm`
-  // token by BASENAME: `/bin/rm` must not slip past a whole-token compare,
-  // and an indexOf of the first occurrence misses `echo ok && rm …`,
-  // `for …; do rm …; done`, and `VAR=1 rm …`. Over-matching (a quoted
-  // "rm -rf" in an echo) only costs an extra confirmation, under-matching
-  // costs the user's files.
-  for (const seg of cmd.split(/[|;&\n()$`]+/)) {
-    const toks = seg.trim().split(/\s+/);
-    for (let i = 0; i < toks.length; i++) {
-      if ((toks[i].split("/").pop() ?? "") !== "rm") continue;
-      const flags = toks.slice(i + 1).filter((tk) => tk.startsWith("-"));
-      if (flags.some((tk) => /^-[a-zA-Z]*[rRf]/.test(tk) || tk === "--recursive" || tk === "--force")) {
-        return true;
-      }
-    }
-  }
-  // A nested shell (`sh -c '…'`, `zsh -lc "…"`, `/bin/sh -c '…'`) makes the
-  // real command opaque to this filter: treat it as elevated rather than
-  // guess. The prefix class includes "/", "$" and backtick so path-qualified
-  // shells and substitutions are caught too.
-  if (/(?:^|[\s|;&($`\/])(?:sh|bash|zsh|dash|ksh)\b[^|;&\n]*\s-\w*c\b/.test(cmd)) return true;
-  return false;
-}
+// `isElevatedCommand` now lives in sensitive.ts, beside the two path lists it
+// belongs with. It moved the day learned.ts needed it: a self-authored skill
+// is refused if it names an elevated command, and that check has to run in a
+// module the Node runner can load. Re-exported here so every existing import
+// (code.ts) keeps working against one single definition.
+export { isElevatedCommand } from "./sensitive";
 
 
 /**
@@ -933,12 +905,51 @@ export class Agent {
    */
   private chain: string[] = [];
 
+  // ---------------- procedural memory (learned.ts / learnedbank.ts) ----------
+  //
+  // Four fields, and the default of the first one is a safety decision rather
+  // than a convention.
+  //
+  // `origin` says whether a human was watching this turn. agent.ts cannot work
+  // that out for itself: it sees a hooks object, and it has no way to know
+  // whether the hand that answers askPermission is a person's or a run policy
+  // machine's. So the construction site declares it, and the default is the
+  // STRICT value, "run". A caller that forgets gets skills that wait for a
+  // human review instead of skills that enter the catalogue unseen. Getting
+  // the safe behaviour by omission is the only default worth having here.
+  private origin: SkillOrigin = "run";
+  /** What the tools actually did this turn, in order. Reset on every send. */
+  private steps: TurnStep[] = [];
+  /** A skill drove this turn, so a procedure for it exists already. */
+  private underSkill = false;
+  /**
+   * An authored skill has been loaded in this turn. See learned.ts, G4: while
+   * this is true, auto-approve is suspended and every ordinary action goes in
+   * front of a human again.
+   */
+  private authoredLoaded = false;
+  /** The user's request for this turn, verbatim, for the authoring call. */
+  private lastRequest = "";
+
   constructor(
     private hooks: AgentHooks,
     private port: number,
     private role: AgentRole = "main"
   ) {
     this.reset();
+  }
+
+  /**
+   * Declare whether this agent runs under someone's eyes.
+   *
+   * "conversation": app mode, a human sees each tool card as it happens and
+   * answers the gate. "run": nobody is there.
+   *
+   * Only the provenance of a written skill depends on it, never what the agent
+   * may do: runs.ts and rundrive.ts remain the only things that decide that.
+   */
+  setOrigin(origin: SkillOrigin): void {
+    this.origin = origin;
   }
 
   reset() {
@@ -952,6 +963,19 @@ export class Agent {
   setSkills(skills: SkillInfo[]) {
     this.skills = skills;
     if (this.messages[0]?.role === "system") this.messages[0].content = this.systemPrompt();
+    // The bank is re-read here rather than at construction because this is the
+    // one call every construction site already makes once the app is ready.
+    // Skipped entirely when the feature is off, so a user who never enabled it
+    // does not even pay the IPC round trip. Failure is silent and total: an
+    // unreadable bank means no authored skill in the catalogue, never a stale
+    // one.
+    if (!learningEnabled()) return;
+    void refreshBank().then(
+      () => {
+        if (this.messages[0]?.role === "system") this.messages[0].content = this.systemPrompt();
+      },
+      () => {}
+    );
   }
 
   setMode(mode: AgentMode) {
@@ -1085,11 +1109,18 @@ export class Agent {
           "they send back. Each teammate works on a clean context and its whole thread is visible to the user, so keep their briefs precise.";
       }
     }
-    if (this.skills.length > 0) {
+    // The accepted authored skills are folded into the sentence the catalogue
+    // already emitted, as extra lines and NOTHING else: no second paragraph,
+    // no preamble. When none has been accepted the array is empty and this
+    // whole block produces the exact string it produced before the feature
+    // existed, to the byte. That is the property learned.ts calls COST, and
+    // tools/learned/catalogue.test.ts measures it rather than trusting it.
+    const lines = [...this.skills.map((s) => `- ${s.name}: ${s.description}`), ...learnedCatalogueLines()];
+    if (lines.length > 0) {
       p +=
         "\n\nSkills are packaged instructions for specific tasks. When the user's request matches one, " +
         "call use_skill with its name to load its full instructions, then follow them. Available skills:\n" +
-        this.skills.map((s) => `- ${s.name}: ${s.description}`).join("\n");
+        lines.join("\n");
     }
     if (this.memory.trim().length > 0) {
       p += "\n\nWhat you remember about the user:\n" + this.memory.trim();
@@ -1127,7 +1158,29 @@ export class Agent {
     this.messages = [{ role: "system", content: this.systemPrompt() }, ...body];
   }
 
+  /**
+   * Start of a user-initiated turn: the transcript the procedural memory reads
+   * covers THIS turn and nothing else.
+   *
+   * `authoredLoaded` is cleared here too, so the auto-approve suspension of G4
+   * lasts exactly one turn. Carrying it further would be a permission state
+   * that nobody set and nobody can see.
+   */
+  private beginTurn(request: string, underSkill: boolean): void {
+    this.steps = [];
+    this.underSkill = underSkill;
+    this.authoredLoaded = false;
+    this.lastRequest = request;
+    // One string rebuild per user turn, so a skill the user accepted (or
+    // rejected, or deleted) in the panel a second ago is reflected here without
+    // the panel needing to reach into every live agent. When nothing has been
+    // accepted this produces the same bytes it produced before, so a user who
+    // never enables the feature pays a string concatenation and no tokens.
+    if (this.messages[0]?.role === "system") this.messages[0].content = this.systemPrompt();
+  }
+
   async send(userText: string): Promise<void> {
+    this.beginTurn(userText, false);
     this.messages.push({ role: "user", content: userText });
     await this.turn(0);
   }
@@ -1138,6 +1191,9 @@ export class Agent {
    * typed; the enriched content lives in the model history.
    */
   async sendSkill(name: string, userText: string): Promise<void> {
+    // underSkill = true: a procedure for this already exists and a human wrote
+    // it, so nothing this turn produces is worth a second one (learned.ts, R7).
+    this.beginTurn(userText, true);
     let body = "";
     try {
       body = await api.skillRead(name);
@@ -1474,7 +1530,7 @@ export class Agent {
       if (assistantText.length > 0) {
         this.messages.push({ role: "assistant", content: assistantText });
       }
-      this.finishTurn(assistantText);
+      this.finishTurn(assistantText, false);
       return;
     }
 
@@ -1535,14 +1591,22 @@ export class Agent {
       }
     }
     if (this.abort.signal.aborted) {
-      this.finishTurn(assistantText);
+      this.finishTurn(assistantText, false);
       return;
     }
     await this.turn(depth + 1);
   }
 
-  /** End of a task: notify if the window is unfocused, then signal "done". */
-  private finishTurn(assistantText: string) {
+  /**
+   * End of a task: notify if the window is unfocused, then signal "done".
+   *
+   * `clean` is false on the two Stop paths. It exists because the procedural
+   * memory must never distil a procedure out of work the user interrupted:
+   * the transcript of an abandoned attempt is a transcript of the abandonment,
+   * and R2 in learned.ts is where that is written down.
+   */
+  private finishTurn(assistantText: string, clean = true) {
+    if (clean && assistantText.trim().length > 0) this.considerLearning();
     if (this.role === "main" && !document.hasFocus()) {
       const firstLine = assistantText
         .split("\n")
@@ -1665,12 +1729,52 @@ export class Agent {
     return preview ? `${note}\n\n${plainDiff(preview.before, content, preview.existed)}` : note;
   }
 
+  // ---------------- loading a skill ----------------
+
+  /**
+   * `use_skill`, for both kinds of skill.
+   *
+   * The shipped catalogue is asked FIRST and always wins. A self-authored
+   * skill can therefore never shadow a reviewed one, whatever it is called,
+   * even if a collision somehow got past the check at authoring time.
+   *
+   * The content policy runs again here, on the body about to enter the
+   * context, even though it already ran when the file was written and again
+   * when the bank was loaded. Three times is not paranoia: each of the three
+   * covers a different way in (a draft, a file on disk, a stale in-memory
+   * entry), and the only one that matters for what the model reads is this one.
+   */
+  private async loadSkill(wanted: string): Promise<string> {
+    const name = wanted.trim();
+    if (!name) return "error: use_skill needs a name";
+    try {
+      return await api.skillRead(name);
+    } catch {
+      /* not a shipped skill: it may be one of ours */
+    }
+    // Every condition (feature on, human accepted, body still admissible) is
+    // decided by resolveAuthored, in the pure module, so there is no second
+    // copy of the rule here that could disagree with the tested one.
+    const found = resolveAuthored(learnedSkills(), learningEnabled(), name);
+    if (!found.skill) return found.refusal;
+    this.authoredLoaded = true;
+    return quarantineWrapper(found.skill, found.skill.body);
+  }
+
   private async gate(req: PermissionRequest): Promise<boolean> {
     if (this.abort?.signal.aborted) return false;
     if (!req.elevated && isStanding(req.kind, req.detail)) return true;
     // Agent mode autonomy: auto-approve ordinary actions for the run.
     // Elevated (system-modifying) actions ALWAYS ask, even in agent mode.
-    if (!req.elevated && this.autoApprove) return true;
+    //
+    // One exception, and it only ever removes autonomy: once a self-authored
+    // skill has been loaded in this turn, auto-approve is off for the rest of
+    // it. See learned.ts, G4. The reason is not that the actions are new (the
+    // model could always have emitted them) but that the INSTRUCTION is
+    // durable: a procedure the agent wrote for itself outlives the turn it was
+    // written in, and the one thing that must never become unattended is a
+    // path that survives across sessions.
+    if (!req.elevated && effectiveAutoApprove(this.autoApprove, this.authoredLoaded)) return true;
     const decision = await this.hooks.askPermission(req);
     // The user may have hit Stop while the dialog was open: an approval that
     // lands after the abort must NOT execute the pending tool.
@@ -1705,6 +1809,42 @@ export class Agent {
       await grantStanding(req.kind, prefix);
     }
     return true;
+  }
+
+  /**
+   * Record what a tool call really did, for the procedural memory.
+   *
+   * Kept deliberately close to the wire: the tool name as called, the command
+   * or path as passed, and the two facts that decide eligibility (did it fail,
+   * was it refused). Nothing here is the model's account of itself, which is
+   * the whole point: a procedure written from a model's recollection contains
+   * the step it wishes it had taken.
+   *
+   * Bounded, because a runaway turn must not grow an unbounded array.
+   */
+  private recordStep(tool: string, detail: string, result: string): void {
+    if (!isStep(tool)) return;
+    if (this.steps.length >= 200) return;
+    this.steps.push({
+      tool,
+      detail: detail.slice(0, 600),
+      ok: !result.startsWith("error:") && result !== "denied by user",
+      denied: result === "denied by user",
+    });
+  }
+
+  /** The detail worth remembering for each tool: the command, or the target. */
+  private static stepDetail(name: string, args: any): string {
+    if (name === "run_command") return String(args.command ?? "");
+    if (name === "write_file" || name === "read_file" || name === "list_directory" || name === "read_document") {
+      return String(args.path ?? "");
+    }
+    if (name === "fetch_url") return String(args.url ?? "");
+    if (name.startsWith("obsidian_")) return String(args.note ?? args.query ?? "");
+    if (name === "search_knowledge" || name === "search_workspace" || name === "find_files") {
+      return String(args.query ?? "");
+    }
+    return JSON.stringify(args ?? {}).slice(0, 300);
   }
 
   private async executeCall(call: ToolCall): Promise<string> {
@@ -1945,7 +2085,7 @@ export class Agent {
         const cap = Math.min(Math.max(Math.floor(Number(args.max_chars)) || 24_000, 1_000), 200_000);
         result = ok ? await api.convRead(id, cap) : "denied by user";
       } else if (name === "use_skill") {
-        result = await api.skillRead(String(args.name ?? ""));
+        result = await this.loadSkill(String(args.name ?? ""));
       } else if (name === "obsidian_search") {
         const ok = await this.gate({ kind: "obsidian", detail: `search: ${args.query}`, elevated: false });
         result = ok ? await api.obsidianSearch(String(args.query ?? "")) : "denied by user";
@@ -1989,11 +2129,77 @@ export class Agent {
       }
       const shown = result.length > 4000 ? result.slice(0, 4000) + "\n…(truncated)" : result;
       this.hooks.onToolResult(name, shown);
+      this.recordStep(name, Agent.stepDetail(name, args), result);
       return result;
     } catch (e: any) {
       const msg = `error: ${String(e?.message ?? e)}`;
       this.hooks.onToolResult(name, msg);
+      this.recordStep(name, Agent.stepDetail(name, args), msg);
       return msg;
     }
+  }
+
+  // ---------------- procedural memory: the end of the loop ----------------
+
+  /**
+   * A turn just ended cleanly. Decide, off the critical path, whether it was
+   * worth a procedure.
+   *
+   * Everything about this is deliberately quiet. It never blocks the turn, it
+   * never throws into it, and when the answer is no (which is almost always)
+   * nothing at all is said: a chat that reports "this was not worth
+   * remembering" after every task is a chat nobody wants. Only a skill that
+   * was actually written earns a line, because that is a durable change to how
+   * the agent will behave and the user has to know it happened.
+   *
+   * Sub-agents are excluded. A teammate's thread is one slice of a job the
+   * conversation's own agent is orchestrating, and a procedure distilled from
+   * a slice is a procedure for half a task.
+   */
+  private considerLearning(): void {
+    // Four synchronous comparisons, then out. Everything past this point runs
+    // in a LATER macrotask, on purpose: the transcript analysis, the bank read
+    // and the authoring call must not sit anywhere on the path of the turn the
+    // user is waiting on. When the feature is off, this whole method is three
+    // boolean tests and a return, which is the cost of the feature on a
+    // machine that never enabled it.
+    if (this.role !== "main") return;
+    if (!learningEnabled()) return;
+    if (this.abort?.signal.aborted) return;
+    if (this.steps.length === 0) return;
+    const shipped = this.skills.map((s) => s.name);
+    const steps = this.steps;
+    const request = this.lastRequest;
+    const underSkill = this.underSkill;
+    setTimeout(() => this.learnLater(shipped, steps, request, underSkill), 0);
+  }
+
+  /** Off the turn's critical path. Never throws into the conversation. */
+  private learnLater(
+    shipped: string[],
+    steps: readonly TurnStep[],
+    request: string,
+    underSkill: boolean
+  ): void {
+    // The snapshot is passed in, not read off `this`: by the time this runs
+    // the user may already have sent the next message, which resets the fields.
+    void maybeLearn({
+      port: this.port,
+      origin: this.origin,
+      steps,
+      request,
+      underSkill,
+      answered: true,
+      shippedNames: shipped,
+    }).then(
+      (out) => {
+        // A written skill is announced because it is a durable change the user
+        // has to know about, and because it now needs their review. It does
+        // NOT touch the system prompt: nothing became callable, so nothing in
+        // the catalogue changed.
+        if (out.learned) this.hooks.onNotice?.(out.reason);
+      },
+      () => {}
+    );
   }
 }
