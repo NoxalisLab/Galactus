@@ -115,6 +115,24 @@ Dictation is on-device, using macOS speech recognition, streaming partials into 
 
 MCP connectors plug external tools into the agent, a knowledge-graph memory server ships preconfigured and custom servers are a form away. The running model is also exposed as a local OpenAI-compatible endpoint at `http://127.0.0.1:<port>/v1`, so any other client on your machine can use it while the app is up. Live RAM footprint and tokens per second sit in the header, and a one-click bench measures the running model with the server's own timings.
 
+### Server mode
+
+Galactus starts in one of two modes, chosen in settings. **App** is the assistant. **Server** is the same engine with the conversation, workspace, memory and agent surfaces gone: someone running Galactus to serve a model to their editor has no use for a chat pane, and every surface that reads files is one more thing to reason about on a machine that is now listening on the network.
+
+The relay answers on port 8788 and can bind beyond the loopback. Binding to `0.0.0.0` requires an API key, generated on the spot from 256 bits of `/dev/urandom` and **never written to disk**: a key at rest in a settings file is a key in every backup and every sync folder, so it is shown once and held in memory while the screen is open. Bearer tokens are compared in constant time and the relay refuses to start with an empty key.
+
+The settings screen prints ready-to-paste configuration generated from the live relay state, so the host and port are the ones actually listening: a `curl` call, the three plain values Cursor and Continue ask for, the `language_models` block for Zed, and the two environment variables any OpenAI SDK reads, which is how an Obsidian plugin is pointed at it.
+
+### Unattended runs
+
+A machine serving a model with nobody in front of it can be given a task and left alone. A **run** is a named task with a policy, a turn budget and a wall clock, all fixed before the first token.
+
+Three policies, and the list is closed on purpose, because the alternative is an interface where the dangerous configuration and the safe one look alike. `read_only` looks and never touches. `propose` adds web retrieval and code proposals, which land in the editor as pending diffs and only reach the disk when a human accepts a hunk. `autonomous` covers every ordinary permission.
+
+What no policy covers: elevated requests are refused under all three, with no value that unlocks them, and anything the attended gate insists on showing every time (a push, with its branch and its count) stops the run rather than being auto-approved. The run's agent never writes a standing rule either, because a rule written by a run nobody was watching would outlive it and pre-approve the same action in a later session, in another project.
+
+When a run meets a decision only a person can make, it stops, records what it is waiting for, and resumes where it left off. Granting it is scoped to that one kind and that one path, is stored in the run's own append-only transcript rather than in a settings field, and overrules the policy alone: a cancelled run and a run past its wall clock stay refused whatever anyone granted them.
+
 ### The command line
 
 The same binary doubles as a CLI, sharing the app's exact engine logic, regimes and pack resolution:

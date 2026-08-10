@@ -19,79 +19,49 @@
       "native_fit_ram_gb": 80,
       "measured": [
         {
-          "cache_gb": 7,
-          "gen_tps": 4.6,
-          "prompt_tps": 4.6,
+          "cache_gb": 5.06,
+          "gen_tps": 3.2,
+          "prompt_tps": 2.3,
           "mac_gb": 16
         },
         {
-          "cache_gb": 8,
-          "gen_tps": 4.9,
-          "prompt_tps": 4.8
-        },
-        {
-          "cache_gb": 12,
-          "gen_tps": 6.3,
-          "prompt_tps": 6.0
-        },
-        {
-          "cache_gb": 15,
-          "gen_tps": 7.2,
-          "prompt_tps": 6.4,
+          "cache_gb": 13.06,
+          "gen_tps": 3.8,
+          "prompt_tps": 5.8,
           "mac_gb": 24
         },
         {
-          "cache_gb": 16,
+          "cache_gb": 21.06,
           "gen_tps": 7.7,
-          "prompt_tps": 6.8
-        },
-        {
-          "cache_gb": 23,
-          "gen_tps": 10.7,
-          "prompt_tps": 8.1,
+          "prompt_tps": 10.3,
           "mac_gb": 32
         },
         {
-          "cache_gb": 24,
-          "gen_tps": 11.3,
-          "prompt_tps": 8.2
-        },
-        {
-          "cache_gb": 27,
-          "gen_tps": 12.7,
-          "prompt_tps": 8.6,
+          "cache_gb": 24.81,
+          "gen_tps": 6.0,
+          "prompt_tps": 19.4,
           "mac_gb": 36
         },
         {
-          "cache_gb": 32,
-          "gen_tps": 15.1,
-          "prompt_tps": 9.1
-        },
-        {
-          "cache_gb": 39,
-          "gen_tps": 17.6,
-          "prompt_tps": 9.5,
+          "cache_gb": 33.6,
+          "gen_tps": 14.3,
+          "prompt_tps": 30.3,
           "mac_gb": 48
         },
         {
-          "cache_gb": 48,
-          "gen_tps": 16.1,
-          "prompt_tps": 9.8
-        },
-        {
-          "cache_gb": 55,
-          "gen_tps": 18.7,
-          "prompt_tps": 9.9,
+          "cache_gb": 44.8,
+          "gen_tps": 18.6,
+          "prompt_tps": 19.7,
           "mac_gb": 64
         },
         {
-          "cache_gb": 61,
-          "gen_tps": 19.4,
-          "prompt_tps": 10.0,
+          "cache_gb": 60.93,
+          "gen_tps": 20.6,
+          "prompt_tps": 22.6,
           "mac_gb": 128
         }
       ],
-      "measured_note": "M5 Max reference, ubatch 1, quality path (CPU experts+biases), benches 2026-08-05; mac_gb = official Mac tier (cache = RAM-9)",
+      "measured_note": "MacBook Pro M5 Max, 128 GB, internal SSD, shipped path (Metal bit-exact experts), batch 512, planner ubatch, 192 predicted tokens on a 24-paragraph prompt, bench 2026-08-09 by scripts/bench-curve.py; cache = app planning ceiling per Mac tier, curve stops at full residency (60.93 GB)",
       "download": {
         "base": "https://huggingface.co/unsloth/gpt-oss-120b-GGUF/resolve/main",
         "files": [
@@ -146,32 +116,33 @@
       "status": "certified_bit_transparent",
       "measured": [
         {
-          "cache_gb": 9.83,
-          "gen_tps": 11.7,
-          "prompt_tps": 10.7,
+          "cache_gb": 9.07,
+          "gen_tps": 7.1,
+          "prompt_tps": 6.9,
           "mac_gb": 16
         },
         {
-          "cache_gb": 17.0,
-          "gen_tps": 25.0,
-          "prompt_tps": 31.3,
+          "cache_gb": 16.8,
+          "gen_tps": 17.6,
+          "prompt_tps": 28.3,
           "mac_gb": 24
         },
         {
-          "cache_gb": 25.0,
-          "gen_tps": 27.1,
-          "prompt_tps": 42.1,
+          "cache_gb": 22.4,
+          "gen_tps": 25.5,
+          "prompt_tps": 37.1,
+          "mac_gb": 32
+        },
+        {
+          "cache_gb": 25.2,
+          "gen_tps": 27.3,
+          "prompt_tps": 36.4,
           "mac_gb": 36
         },
         {
-          "cache_gb": 29.0,
-          "gen_tps": 27.8,
-          "prompt_tps": 44.5
-        },
-        {
           "cache_gb": 30.8,
-          "gen_tps": 28.7,
-          "prompt_tps": 64.6,
+          "gen_tps": 26.9,
+          "prompt_tps": 53.8,
           "mac_gb": 48
         }
       ],
@@ -182,7 +153,7 @@
       "record_bytes": 5013504,
       "min_cache_bytes": 7700744192,
       "native_fit_ram_gb": 40,
-      "measured_note": "M5 Max reference, ubatch 1, quality path, bench 2026-08-05; full residency from cache 31 GB",
+      "measured_note": "MacBook Pro M5 Max, 128 GB, internal SSD, shipped path (Metal bit-exact experts), batch 512, planner ubatch, 192 predicted tokens on a 24-paragraph prompt, bench 2026-08-09 by scripts/bench-curve.py; cache = app planning ceiling per Mac tier, curve stops at full residency (30.80 GB)",
       "download": {
         "base": "https://huggingface.co/unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF/resolve/main",
         "files": [
@@ -215,48 +186,43 @@
       "native_fit_ram_gb": 80,
       "measured": [
         {
-          "cache_gb": 12,
-          "gen_tps": 3.7,
-          "prompt_tps": 3.0,
+          "cache_gb": 9.59,
+          "gen_tps": 2.8,
+          "prompt_tps": 1.9,
           "mac_gb": 24
         },
         {
-          "cache_gb": 20,
-          "gen_tps": 5.4,
-          "prompt_tps": 4.0,
+          "cache_gb": 17.59,
+          "gen_tps": 4.3,
+          "prompt_tps": 3.3,
           "mac_gb": 32
         },
         {
-          "cache_gb": 24,
-          "gen_tps": 6.6,
-          "prompt_tps": 4.2,
+          "cache_gb": 21.34,
+          "gen_tps": 5.4,
+          "prompt_tps": 4.0,
           "mac_gb": 36
         },
         {
-          "cache_gb": 33,
-          "gen_tps": 9.4,
-          "prompt_tps": 4.7
-        },
-        {
-          "cache_gb": 36,
-          "gen_tps": 10.1,
-          "prompt_tps": 3.4,
+          "cache_gb": 32.59,
+          "gen_tps": 10.0,
+          "prompt_tps": 8.3,
           "mac_gb": 48
         },
         {
-          "cache_gb": 52,
-          "gen_tps": 10.7,
-          "prompt_tps": 3.3,
+          "cache_gb": 44.8,
+          "gen_tps": 12.3,
+          "prompt_tps": 16.0,
           "mac_gb": 64
         },
         {
-          "cache_gb": 59,
-          "gen_tps": 14.4,
-          "prompt_tps": 5.5,
+          "cache_gb": 58.51,
+          "gen_tps": 12.4,
+          "prompt_tps": 26.6,
           "mac_gb": 128
         }
       ],
-      "measured_note": "M5 Max reference, ubatch 1; top-1, 76 MB records: SSD-bound until high residency; Mac 16 GB refused (quota<2)",
+      "measured_note": "MacBook Pro M5 Max, 128 GB, internal SSD, shipped path (Metal bit-exact experts), batch 512, planner ubatch, 192 predicted tokens on a 24-paragraph prompt, bench 2026-08-09 by scripts/bench-curve.py; cache = app planning ceiling per Mac tier, curve stops at full residency (58.51 GB)",
       "min_ram_gb": 24,
       "download": {
         "base": "https://huggingface.co/unsloth/Llama-4-Scout-17B-16E-Instruct-GGUF/resolve/main/Q4_K_M",
@@ -292,49 +258,37 @@
       "min_ram_gb": 24,
       "measured": [
         {
-          "cache_gb": 14,
-          "gen_tps": 1.1,
-          "prompt_tps": 1.1,
-          "mac_gb": 24,
-          "protected": 0.25
+          "cache_gb": 12.46,
+          "gen_tps": 0.6,
+          "prompt_tps": 0.7,
+          "mac_gb": 24
         },
         {
-          "cache_gb": 26,
-          "gen_tps": 1.6,
-          "prompt_tps": 1.6,
-          "mac_gb": 36,
-          "protected": 0.5
+          "cache_gb": 20.46,
+          "gen_tps": 0.9,
+          "prompt_tps": 1.2,
+          "mac_gb": 32
         },
         {
-          "cache_gb": 38,
-          "gen_tps": 2.2,
-          "prompt_tps": 1.8,
-          "mac_gb": 48,
-          "protected": 0.75
+          "cache_gb": 24.21,
+          "gen_tps": 1.0,
+          "prompt_tps": 1.3,
+          "mac_gb": 36
         },
         {
-          "cache_gb": 54,
-          "gen_tps": 3.5,
-          "prompt_tps": 2.1,
-          "mac_gb": 64,
-          "protected": 0.75
+          "cache_gb": 33.6,
+          "gen_tps": 1.7,
+          "prompt_tps": 2.0,
+          "mac_gb": 48
         },
         {
-          "cache_gb": 67,
-          "gen_tps": 5.2,
-          "prompt_tps": 2.4,
-          "mac_gb": 96,
-          "protected": 0.75
-        },
-        {
-          "cache_gb": 89,
-          "gen_tps": 7.0,
-          "prompt_tps": 2.5,
-          "mac_gb": 128,
-          "protected": 0.75
+          "cache_gb": 44.8,
+          "gen_tps": 2.4,
+          "prompt_tps": 3.1,
+          "mac_gb": 64
         }
       ],
-      "measured_note": "M5 Max reference, ubatch 1, adaptive protected fraction; arena capped at 70% of simulated RAM (macOS memory compressor); 24-64 tiers measured at 96 predicted tokens (slightly cold-biased), 96/128 at 192",
+      "measured_note": "MacBook Pro M5 Max, 128 GB, internal SSD, shipped path (Metal bit-exact experts), batch 512, planner ubatch, 192 predicted tokens on a 24-paragraph prompt, bench 2026-08-10 by scripts/bench-curve.py; cache = app planning ceiling per Mac tier, curve stops at full residency (137.29 GB)",
       "download": {
         "base": "https://huggingface.co/unsloth/Qwen3-235B-A22B-Instruct-2507-GGUF/resolve/main/Q4_K_M",
         "files": [
@@ -369,38 +323,43 @@
       "min_ram_gb": 32,
       "measured": [
         {
-          "cache_gb": 14,
-          "gen_tps": 2.7,
-          "prompt_tps": 2.7,
-          "mac_gb": 24,
-          "protected": 0.5
+          "cache_gb": 11.77,
+          "gen_tps": 1.8,
+          "prompt_tps": 1.4,
+          "mac_gb": 24
         },
         {
-          "cache_gb": 25,
-          "gen_tps": 3.7,
-          "prompt_tps": 3.0,
+          "cache_gb": 19.77,
+          "gen_tps": 2.2,
+          "prompt_tps": 1.9,
+          "mac_gb": 32
+        },
+        {
+          "cache_gb": 23.52,
+          "gen_tps": 2.7,
+          "prompt_tps": 2.1,
           "mac_gb": 36
         },
         {
-          "cache_gb": 33,
-          "gen_tps": 4.8,
-          "prompt_tps": 3.4,
+          "cache_gb": 33.6,
+          "gen_tps": 3.4,
+          "prompt_tps": 4.4,
           "mac_gb": 48
         },
         {
-          "cache_gb": 44,
-          "gen_tps": 6.6,
-          "prompt_tps": 2.8,
+          "cache_gb": 44.8,
+          "gen_tps": 6.8,
+          "prompt_tps": 9.0,
           "mac_gb": 64
         },
         {
-          "cache_gb": 67,
-          "gen_tps": 8.2,
-          "prompt_tps": 3.9,
-          "mac_gb": 96
+          "cache_gb": 66.02,
+          "gen_tps": 15.4,
+          "prompt_tps": 26.1,
+          "mac_gb": 128
         }
       ],
-      "measured_note": "M5 Max reference; thinking model, quality tier",
+      "measured_note": "MacBook Pro M5 Max, 128 GB, internal SSD, shipped path (Metal bit-exact experts), batch 512, planner ubatch, 192 predicted tokens on a 24-paragraph prompt, bench 2026-08-09 by scripts/bench-curve.py; cache = app planning ceiling per Mac tier, curve stops at full residency (66.02 GB)",
       "download": {
         "base": "https://huggingface.co/unsloth/GLM-4.5-Air-GGUF/resolve/main/Q4_K_M",
         "files": [
@@ -432,29 +391,49 @@
       "min_ram_gb": 16,
       "measured": [
         {
-          "cache_gb": 1.81,
-          "gen_tps": 3.8,
-          "prompt_tps": 4.2,
-          "mac_gb": 8
+          "cache_gb": 9.05,
+          "gen_tps": 9.3,
+          "prompt_tps": 15.2,
+          "mac_gb": 16
         },
         {
-          "cache_gb": 9.0,
-          "gen_tps": 12.5,
-          "prompt_tps": 14.8
+          "cache_gb": 16.8,
+          "gen_tps": 14.1,
+          "prompt_tps": 26.0,
+          "mac_gb": 24
         },
         {
-          "cache_gb": 16.0,
-          "gen_tps": 18.4,
-          "prompt_tps": 25.2
+          "cache_gb": 22.4,
+          "gen_tps": 17.6,
+          "prompt_tps": 28.3,
+          "mac_gb": 32
+        },
+        {
+          "cache_gb": 25.2,
+          "gen_tps": 17.8,
+          "prompt_tps": 28.5,
+          "mac_gb": 36
+        },
+        {
+          "cache_gb": 33.6,
+          "gen_tps": 18.6,
+          "prompt_tps": 27.8,
+          "mac_gb": 48
+        },
+        {
+          "cache_gb": 44.8,
+          "gen_tps": 18.2,
+          "prompt_tps": 27.3,
+          "mac_gb": 64
         },
         {
           "cache_gb": 46.91,
-          "gen_tps": 22.6,
-          "prompt_tps": 41.2,
-          "mac_gb": 96
+          "gen_tps": 18.2,
+          "prompt_tps": 31.1,
+          "mac_gb": 128
         }
       ],
-      "measured_note": "M5 Max reference; 512 experts (first 10-bit-key model), 1.9 MB records, hybrid attention; daily-driver tier",
+      "measured_note": "MacBook Pro M5 Max, 128 GB, internal SSD, shipped path (Metal bit-exact experts), batch 512, planner ubatch, 192 predicted tokens on a 24-paragraph prompt, bench 2026-08-09 by scripts/bench-curve.py; cache = app planning ceiling per Mac tier, curve stops at full residency (46.91 GB)",
       "download": {
         "base": "https://huggingface.co/unsloth/Qwen3-Next-80B-A3B-Instruct-GGUF/resolve/main",
         "files": [
@@ -481,14 +460,46 @@
       "status": "certified_bit_transparent",
       "min_ram_gb": 16,
       "native_fit_ram_gb": 40,
-      "measured": [],
+      "measured": [
+        {
+          "cache_gb": 9.07,
+          "gen_tps": 4.3,
+          "prompt_tps": 6.7,
+          "mac_gb": 16
+        },
+        {
+          "cache_gb": 16.8,
+          "gen_tps": 22.6,
+          "prompt_tps": 32.0,
+          "mac_gb": 24
+        },
+        {
+          "cache_gb": 22.4,
+          "gen_tps": 27.9,
+          "prompt_tps": 38.5,
+          "mac_gb": 32
+        },
+        {
+          "cache_gb": 25.2,
+          "gen_tps": 29.1,
+          "prompt_tps": 38.3,
+          "mac_gb": 36
+        },
+        {
+          "cache_gb": 30.8,
+          "gen_tps": 28.5,
+          "prompt_tps": 57.1,
+          "mac_gb": 48
+        }
+      ],
       "download": {
         "base": "https://huggingface.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF/resolve/main",
         "files": [
           "Qwen3-Coder-30B-A3B-Instruct-Q8_0.gguf"
         ]
       },
-      "certified_date": "2026-08-09"
+      "certified_date": "2026-08-09",
+      "measured_note": "MacBook Pro M5 Max, 128 GB, internal SSD, shipped path (Metal bit-exact experts), batch 512, planner ubatch, 192 predicted tokens on a 24-paragraph prompt, bench 2026-08-09 by scripts/bench-curve.py; cache = app planning ceiling per Mac tier, curve stops at full residency (30.80 GB)"
     },
     {
       "id": "olmoe-1b-7b",
@@ -512,7 +523,31 @@
         "general"
       ],
       "certified_date": "2026-08-09",
-      "certified_ppl": 3.988
+      "certified_ppl": 3.988,
+      "measured": [
+        {
+          "cache_gb": 0.98,
+          "gen_tps": 11.0,
+          "prompt_tps": 12.8
+        },
+        {
+          "cache_gb": 1.95,
+          "gen_tps": 21.0,
+          "prompt_tps": 20.9
+        },
+        {
+          "cache_gb": 2.93,
+          "gen_tps": 52.4,
+          "prompt_tps": 57.2
+        },
+        {
+          "cache_gb": 3.9,
+          "gen_tps": 77.2,
+          "prompt_tps": 138.9,
+          "mac_gb": 16
+        }
+      ],
+      "measured_note": "MacBook Pro M5 Max, 128 GB, internal SSD, shipped path (Metal bit-exact experts), batch 512, planner ubatch, 192 predicted tokens on a 24-paragraph prompt, bench 2026-08-09 by scripts/bench-curve.py; cache = app planning ceiling per Mac tier, curve stops at full residency (3.90 GB)"
     },
     {
       "id": "phi35-moe",
@@ -537,7 +572,34 @@
         "writing"
       ],
       "certified_date": "2026-08-09",
-      "certified_ppl": 1.4584
+      "certified_ppl": 1.4584,
+      "measured": [
+        {
+          "cache_gb": 10.1,
+          "gen_tps": 13.2,
+          "prompt_tps": 13.7,
+          "mac_gb": 16
+        },
+        {
+          "cache_gb": 16.8,
+          "gen_tps": 20.4,
+          "prompt_tps": 22.0,
+          "mac_gb": 24
+        },
+        {
+          "cache_gb": 22.4,
+          "gen_tps": 22.7,
+          "prompt_tps": 27.2,
+          "mac_gb": 32
+        },
+        {
+          "cache_gb": 24.38,
+          "gen_tps": 23.8,
+          "prompt_tps": 36.9,
+          "mac_gb": 36
+        }
+      ],
+      "measured_note": "MacBook Pro M5 Max, 128 GB, internal SSD, shipped path (Metal bit-exact experts), batch 512, planner ubatch, 192 predicted tokens on a 24-paragraph prompt, bench 2026-08-09 by scripts/bench-curve.py; cache = app planning ceiling per Mac tier, curve stops at full residency (24.38 GB)"
     }
   ],
   "mac_lineup": {
