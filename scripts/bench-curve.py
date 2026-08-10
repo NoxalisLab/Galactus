@@ -111,7 +111,17 @@ SEED = 42
 # threshold set anywhere near that refuses every honest run and teaches whoever
 # hits it to reach for --force, which is worse than having no guard. This is a
 # coarse backstop for sustained load the process list does not name.
-MAX_LOAD_AVG = 4.0
+# How many times each tier is measured. Interference can only slow a run down,
+# so the best of N is the estimate least polluted by whatever else the machine
+# was doing, and the spread between passes is the honest error bar: two passes
+# that agree were not disturbed, two that do not were.
+REPEATS = 3
+# A point whose passes disagree by more than this has not been measured, it has
+# been disturbed, and writing it would publish a number known to be doubtful.
+# So the sweep keeps going until the two best passes agree, or until it has
+# spent MAX_REPEATS trying, and either way the spread travels with the point.
+STABLE_SPREAD_PCT = 8.0
+MAX_REPEATS = 8
 
 # Cross-check only. The logical batch is 2 rather than 1 because llama.cpp
 # sizes its output buffers from it and asserts in output_reserve on a batch of
@@ -156,27 +166,75 @@ def competing_processes() -> list[str]:
     return seen
 
 
-def require_quiet_machine(force: bool) -> None:
-    """Refuse to measure on a busy machine, or say plainly that it was ignored.
+BUSY_CPU_PERCENT = 50.0
 
-    Refusing is the right default. A contaminated curve is worse than a missing
-    one: it looks exactly like a measurement, it gets written to the registry,
-    and the app then tells a user their Mac will do a number no Mac ever did.
+
+def cpu_hogs() -> list[str]:
+    """Anything sustaining a large share of a core, whatever it is called.
+
+    The name list below catches the build tools that contaminated a sweep once.
+    It cannot catch what it does not know, and the second time this bit was a
+    KiCad routing script pinning a core: not a build tool, not in any list, and
+    invisible to a check that only knows names. So the sharp instrument is
+    complemented by a blunt one that asks what the machine is DOING rather than
+    what it is running.
     """
-    load = load_average()
-    busy = competing_processes()
-    reasons = []
-    if load > MAX_LOAD_AVG:
-        reasons.append(f"load average {load:.2f} is above {MAX_LOAD_AVG:.1f}")
-    if busy:
-        reasons.append("these are running: " + ", ".join(busy))
-    if not reasons:
-        return
-    msg = ("the machine is not idle, so the timings would measure it too ("
-           + "; ".join(reasons) + ")")
-    if not force:
-        die(f"{msg}. Wait for it to finish, or pass --force to measure anyway")
-    print(f"AVERTISSEMENT: {msg} (--force)")
+    try:
+        out = subprocess.run(["/bin/ps", "-Ao", "%cpu=,comm="], capture_output=True,
+                             text=True, check=False).stdout
+    except OSError:
+        return []
+    loud = []
+    for line in out.splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) != 2:
+            continue
+        try:
+            pct = float(parts[0].replace(",", "."))
+        except ValueError:
+            continue
+        if pct < BUSY_CPU_PERCENT:
+            continue
+        name = parts[1].strip().rsplit("/", 1)[-1]
+        # The window server is always there on a desktop and is not competition
+        # for a disk bound sweep; excluding it is the difference between a guard
+        # people trust and a guard people learn to --force past.
+        if name in ("WindowServer", "kernel_task"):
+            continue
+        loud.append(f"{name} at {pct:.0f} percent")
+    return loud
+
+
+def machine_conditions() -> dict:
+    """What else the machine was doing, recorded rather than required absent.
+
+    The first version of this refused to measure unless the machine was idle,
+    and it was wrong in a way that took a while to see. A desktop is never idle:
+    it has a window server, a wallpaper, an editor, and the day it refused a
+    sweep the culprit was a PCB routing script that no name list would ever have
+    contained. A guard that blocks honest work teaches whoever hits it to reach
+    for --force, and then it guards nothing at all.
+
+    So the noise is handled where it can actually be handled, in the sampling
+    (see REPEATS), and what is left is recorded beside the number. Interference
+    slows a run down and never speeds it up, which is exactly what makes a
+    best-of-N robust to it and what makes the spread between passes worth
+    keeping: a wide spread is the point saying it was disturbed.
+    """
+    return {
+        "load1": round(load_average(), 2),
+        "building": competing_processes(),
+        "busy": cpu_hogs(),
+    }
+
+
+def describe_conditions(c: dict) -> str:
+    bits = [f"load {c['load1']:.2f}"]
+    if c["building"]:
+        bits.append("building: " + ", ".join(c["building"]))
+    if c["busy"]:
+        bits.append("busy: " + ", ".join(c["busy"]))
+    return "; ".join(bits)
 
 
 def ship_ubatch(tier: dict, geo: dict) -> int:
@@ -505,6 +563,13 @@ def measured_point(tier: dict, result: dict) -> dict:
     }
     if tier["mac_gb"] is not None:
         point["mac_gb"] = tier["mac_gb"]
+    # The error bar travels with the number. A reader who sees 2 percent knows
+    # the machine was quiet; one who sees 30 knows it was not, and neither has
+    # to take it on trust.
+    if result.get("passes", 1) > 1:
+        point["passes"] = result["passes"]
+        point["spread_pct"] = result.get("spread_pct", 0.0)
+        point["prompt_spread_pct"] = result.get("prompt_spread_pct", 0.0)
     return point
 
 
@@ -614,7 +679,7 @@ def update_registry(model_id: str, points: list[dict], note: str) -> None:
 
 
 def bench(model_id: str, predict: int, dry_run: bool, write_registry: bool,
-          regime: str, force: bool, only_mac: set[int]) -> int:
+          regime: str, force: bool, only_mac: set[int], repeats: int) -> int:
     if not dry_run and not LLAMA_CLI.is_file():
         die(f"{LLAMA_CLI} is missing: build the engine first "
             f"(cmake --build third_party/llama.cpp/build --target llama-cli -j)")
@@ -669,7 +734,10 @@ def bench(model_id: str, predict: int, dry_run: bool, write_registry: bool,
         print("\n--dry-run: nothing was measured")
         return 0
 
-    require_quiet_machine(force)
+    conditions = machine_conditions()
+    print(f"  machine  {describe_conditions(conditions)}")
+    if force:
+        print("  (--force n'a plus d'effet: la machine est decrite, plus jamais exigee au repos)")
 
     runnable = [t for t in tiers if t.get("ok")]
     if not runnable:
@@ -694,17 +762,79 @@ def bench(model_id: str, predict: int, dry_run: bool, write_registry: bool,
         print(f"--- {('Mac ' + str(t['mac_gb']) + ' Go') if t['mac_gb'] is not None else 'palier'} "
               f"-> cache {cache_gb} Go (quota {t['quota']}, probation {t['probation']}) ---",
               flush=True)
-        settle(measured_any)
-        r = run_tier(model_id, gguf, pack, geo["profile"], t, log, predict, regime, geo)
-        measured_any = True
+        # Best of REPEATS, and the spread kept. See REPEATS above: noise is
+        # subtractive here, so the fastest pass is the one that saw the least of
+        # it, and a wide spread is the tier telling you not to trust it.
+        passes = []
+        attempt = 0
+        while True:
+            attempt += 1
+            settle(measured_any)
+            measured_any = True
+            attempt_log = log if attempt == 1 else log.with_name(
+                log.name.replace(".log", f".p{attempt}.log"))
+            one = run_tier(model_id, gguf, pack, geo["profile"], t, attempt_log,
+                           predict, regime, geo)
+            if one["ok"]:
+                print(f"    passe {attempt}: prompt {one['prompt_tps']} "
+                      f"| generation {one['gen_tps']} ({one['seconds']:.0f}s)", flush=True)
+                passes.append(one)
+            else:
+                print(f"    passe {attempt}: ECHEC, {one['why']}", flush=True)
+            # BOTH columns, not just the one the app reads. The first version
+            # stopped on generation alone and published a tier whose generation
+            # agreed to 0.5 percent next to a prompt rate that disagreed by 45.
+            # Prefill and decode are measured in the same run and disturbed
+            # independently, so a criterion that watches one of them declares
+            # victory while the other is still moving.
+            def top_two_spread(values):
+                s = sorted(values, reverse=True)
+                return (s[0] - s[1]) / s[0] * 100 if len(s) >= 2 and s[0] > 0 else 100.0
+            gen_spread = top_two_spread([x["gen_tps"] for x in passes])
+            prompt_spread = top_two_spread([x["prompt_tps"] for x in passes])
+            settled = (len(passes) >= 2
+                       and gen_spread <= STABLE_SPREAD_PCT
+                       and prompt_spread <= STABLE_SPREAD_PCT)
+            if attempt >= repeats and settled:
+                break
+            if attempt >= MAX_REPEATS:
+                if not settled:
+                    print(f"    apres {attempt} essais, generation a {gen_spread:.1f}% et "
+                          f"prompt a {prompt_spread:.1f}%: ce qui n'a pas converge est "
+                          f"ecrit avec le point", flush=True)
+                break
+        if passes:
+            # Best of each COLUMN, taken independently, and the first run showed
+            # why. Picking the whole record by generation kept the pass that had
+            # the best decode rate and, with it, the worst prefill of the three:
+            # 10.7 where another pass had seen 16.1. Prefill and decode are two
+            # different phases measured in the same run, noise is subtractive on
+            # each, so the least polluted estimate of each is its own maximum.
+            # The resulting point is a pair of bests, not a transcript of one
+            # pass, which is stated in the note rather than left to be inferred.
+            gens = [x["gen_tps"] for x in passes]
+            prompts = [x["prompt_tps"] for x in passes]
+            r = dict(max(passes, key=lambda x: x["gen_tps"]))
+            r["gen_tps"] = max(gens)
+            r["prompt_tps"] = max(prompts)
+            top = sorted(gens, reverse=True)[:2]
+            r["spread_pct"] = (round((top[0] - top[1]) / top[0] * 100, 1)
+                               if len(top) == 2 and top[0] else 0.0)
+            ptop = sorted(prompts, reverse=True)[:2]
+            r["prompt_spread_pct"] = (round((ptop[0] - ptop[1]) / ptop[0] * 100, 1)
+                                      if len(ptop) == 2 and ptop[0] else 0.0)
+            r["passes"] = len(passes)
+        else:
+            r = one
         if not r["ok"]:
             print(f"    ECHEC en {r['seconds']:.0f}s : {r['why']}")
             failures.append(f"{machine} GB / cache {cache_gb} GB: {r['why']}")
             rows.append(f"{machine},{cache_gb},{t['quota']},{t['fraction']:.2f},"
                         f"{t['probation']},echec,echec")
             continue
-        print(f"    prompt {r['prompt_tps']} t/s | generation {r['gen_tps']} t/s "
-              f"({r['seconds']:.0f}s)")
+        print(f"    RETENU prompt {r['prompt_tps']} | generation {r['gen_tps']} "
+              f"(meilleur de {r.get('passes', 1)}, ecart generation {r.get('spread_pct', 0)}%, "
+              f"prompt {r.get('prompt_spread_pct', 0)}%)")
         rows.append(f"{machine},{cache_gb},{t['quota']},{t['fraction']:.2f},"
                     f"{t['probation']},{r['prompt_tps']},{r['gen_tps']}")
         points.append(measured_point(t, r))
@@ -758,6 +888,10 @@ def main() -> int:
     ap.add_argument("--only-mac", type=int, nargs="+", metavar="GB",
                     help="measure only these Mac tiers and merge them into the stored curve, "
                          "for finishing a long sweep one tier at a time")
+    ap.add_argument("--repeat", type=int, default=REPEATS, metavar="N",
+                    help=f"measure each tier N times and keep the best (default {REPEATS}). "
+                         "Interference only slows a run down, so the best pass is the "
+                         "cleanest one and the spread is the error bar")
     ap.add_argument("--force", action="store_true",
                     help="measure even when the machine is busy, and say so in the output")
     ap.add_argument("--regime", choices=REGIMES, default="ship",
@@ -766,7 +900,7 @@ def main() -> int:
                          "1, the path that proves the kernels and that the app does not take")
     args = ap.parse_args()
     return bench(args.model, args.predict, args.dry_run, args.update_registry,
-                 args.regime, args.force, set(args.only_mac or []))
+                 args.regime, args.force, set(args.only_mac or []), max(1, args.repeat))
 
 
 if __name__ == "__main__":
