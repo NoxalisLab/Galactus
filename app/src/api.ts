@@ -5,11 +5,63 @@ import { listen, UnlistenFn } from "@tauri-apps/api/event";
 // stops the wire shape from drifting away from the module that consumes it.
 import type { RustLspStatus } from "./code/rust-lsp";
 
+/** One tier of CPU cores, named as macOS names it. */
+export interface CoreLevel {
+  /** Verbatim hw.perflevelN.name. Never a name the app chose: this machine
+   *  reports "Super" and "Performance", and no level called "Efficiency". */
+  name: string;
+  count: number;
+}
+
 export interface HwInfo {
   chip: string;
   cores: number;
   ram_gb: number;
   disk_free_gb: number;
+  /** GPU cores. Null on Intel or in a virtual machine. */
+  gpu_cores: number | null;
+  /** CPU tiers, fastest first. */
+  core_levels: CoreLevel[];
+  /** What Metal will let the GPU keep resident, bytes. Null when unknown. */
+  gpu_working_set_bytes: number | null;
+  /** Apple's published memory bandwidth for this chip, GB/s. Null when Apple
+   *  published none, or the chip is newer than this build. Shown, not used. */
+  bandwidth_gbs: number | null;
+  /** What the engine may hold in total right now, bytes. */
+  engine_budget_bytes: number;
+  power_source: "ac" | "battery" | "unknown";
+  power_mode: "automatic" | "low" | "high" | "unknown";
+}
+
+/** Where a model's pack should be written. */
+export type PackLayout =
+  | { kind: "single"; mount: string }
+  | { kind: "dual"; internal: string; external: string }
+  | { kind: "no-room" };
+
+/** Everything the app chose for one model on this Mac. */
+export interface Recommendation {
+  model_id: string;
+  mode: string;
+  requested_mode: string;
+  slots: number;
+  slots_chosen_by_user: boolean;
+  variant: string | null;
+  layout: PackLayout | null;
+  resident_bytes: number;
+  budget_bytes: number;
+  ubatch: number;
+  /** The planner's own sentence, with its numbers, when nothing fits. */
+  blocked: string | null;
+}
+
+/** A measured drive, as `recommendForModel` wants them. */
+export interface MeasuredVolume {
+  mount: string;
+  free_bytes: number;
+  /** GB/s from volumeBandwidth. Omitted when this drive was not probed, and
+   *  an unprobed drive is never made half of a split pack. */
+  bandwidth_gbs?: number;
 }
 
 export interface MeasuredPoint {
@@ -282,6 +334,15 @@ export const api = {
   deleteModel: (modelId: string) => invoke<string>("delete_model", { modelId }),
   listVolumes: () => invoke<VolumeInfo[]>("list_volumes"),
   volumeBandwidth: (path: string) => invoke<number>("volume_bandwidth", { path }),
+  /**
+   * What the app would choose for one model on this Mac, without starting it.
+   *
+   * `volumes` are the measured drives, and are omitted for an installed model
+   * or when the caller does not care where the pack would go: the layout then
+   * comes back null rather than as a guess over drives nobody measured.
+   */
+  recommendForModel: (modelId: string, volumes?: MeasuredVolume[] | null) =>
+    invoke<Recommendation>("recommend_for_model", { modelId, volumes: volumes ?? null }),
   fsRead: (path: string, maxBytes: number, offset?: number) =>
     invoke<string>("tool_fs_read", { path, maxBytes, offset }),
   scratchWrite: (name: string, content: string) =>

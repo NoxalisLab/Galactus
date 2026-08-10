@@ -7,6 +7,7 @@
 
 mod code;
 mod cron;
+mod hardware;
 mod knowledge;
 mod lsp;
 mod pty;
@@ -306,6 +307,24 @@ struct HwInfo {
     cores: u32,
     ram_gb: u64,
     disk_free_gb: u64,
+    /// GPU cores, from ioreg. `None` on Intel or in a VM.
+    gpu_cores: Option<u32>,
+    /// The CPU tiers, fastest first, named as macOS names them. Never a name
+    /// this code invented: see `hardware::read_core_levels`.
+    core_levels: Vec<hardware::CoreLevel>,
+    /// `MTLDevice.recommendedMaxWorkingSetSize`: the unified memory this GPU
+    /// may keep resident. `None` when there is no Metal device.
+    gpu_working_set_bytes: Option<u64>,
+    /// Apple's published memory bandwidth for this chip, GB/s. `None` for any
+    /// chip released after this build. Shown, never used to decide.
+    bandwidth_gbs: Option<f64>,
+    /// What the engine may hold in total RIGHT NOW: the tightest of the four
+    /// bounds. This is the number a user needs to understand any refusal, and
+    /// it is the one the app never showed.
+    engine_budget_bytes: u64,
+    /// Live, and the reason `hw_info` is worth calling more than once.
+    power_source: hardware::PowerSource,
+    power_mode: hardware::PowerMode,
 }
 
 fn run_capture(cmd: &str, args: &[&str]) -> String {
@@ -395,11 +414,10 @@ mod available_memory_tests {
 }
 
 fn hw_info_impl() -> HwInfo {
-    let ram: u64 = run_capture("sysctl", &["-n", "hw.memsize"])
-        .parse()
-        .unwrap_or(0);
-    let cores: u32 = run_capture("sysctl", &["-n", "hw.ncpu"]).parse().unwrap_or(0);
-    let chip = run_capture("sysctl", &["-n", "machdep.cpu.brand_string"]);
+    // The static half is read once per process and cached: the chip, the
+    // cores, the soldered memory and the Metal limits do not move while the
+    // app runs. About 30 ms the first time, nothing after.
+    let profile = hardware::static_profile();
     let base = galactus_root()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| "/".into());
@@ -410,13 +428,27 @@ fn hw_info_impl() -> HwInfo {
         .and_then(|l| l.split_whitespace().nth(3))
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
+    // hw.memsize is a power of two: a "128 GB" Mac is 128 GiB. Dividing by
+    // 1e9 would report 137 and defeat every min_ram_gb gate.
+    let ram_gb = profile.ram_bytes >> 30;
+    let live = hardware::live_state(available_memory_bytes());
+    let machine = MachineLimits {
+        ram_gb,
+        available: live.available_bytes,
+        gpu_working_set: profile.gpu.map(|g| g.working_set_bytes),
+    };
     HwInfo {
-        chip,
-        cores,
-        // hw.memsize is a power of two: a "128 GB" Mac is 128 GiB. Dividing by
-        // 1e9 would report 137 and defeat every min_ram_gb gate.
-        ram_gb: ram >> 30,
+        chip: profile.chip.clone(),
+        cores: profile.cores,
+        ram_gb,
         disk_free_gb,
+        gpu_cores: profile.gpu_cores,
+        core_levels: profile.core_levels.clone(),
+        gpu_working_set_bytes: profile.gpu.map(|g| g.working_set_bytes),
+        bandwidth_gbs: profile.bandwidth_gbs,
+        engine_budget_bytes: engine_budget_bytes(ram_gb * 1_000_000_000, machine),
+        power_source: live.power_source,
+        power_mode: live.power_mode,
     }
 }
 
@@ -1097,6 +1129,125 @@ async fn volume_bandwidth(path: String) -> Result<f64, String> {
     measure_volume(Path::new(&path))
 }
 
+/// Everything the app chose for one model on this Mac, and what it chose it
+/// from.
+///
+/// A turnkey product still has to say what it decided. Silent magic that gets
+/// it wrong is worse than a visible choice, so every field here is either
+/// shown to the user or feeds the sentence that is.
+#[derive(Serialize, Clone, Debug)]
+struct Recommendation {
+    model_id: String,
+    /// eco, balanced or perf: the mode a start would really run in, after the
+    /// step-down.
+    mode: String,
+    /// The mode the settings asked for. Different from `mode` when this Mac
+    /// cannot afford it right now.
+    requested_mode: String,
+    /// Conversations that may generate at once.
+    slots: u32,
+    /// True when `slots` came from an explicit setting rather than from the
+    /// machine. The UI says "your choice" instead of "recommended".
+    slots_chosen_by_user: bool,
+    /// The download variant, when the entry declares any. `None` means the
+    /// entry's single `download` block, which is every entry today.
+    variant: Option<String>,
+    /// Where the pack should go. `None` when the model is already installed
+    /// and the question no longer applies.
+    layout: Option<PackLayout>,
+    /// What the engine would hold in total, bytes.
+    resident_bytes: u64,
+    /// What this Mac can give right now, bytes.
+    budget_bytes: u64,
+    /// The physical micro-batch the planner guarded.
+    ubatch: u32,
+    /// Set when nothing this app can arrange will start this model right now,
+    /// carrying the planner's own sentence with its numbers.
+    blocked: Option<String>,
+}
+
+/// Decide everything for one model, without starting anything.
+///
+/// Async: it reads vm_stat and two pmset calls, and measures nothing. It must
+/// not run on the main thread.
+///
+/// `volumes` are the measured drives, `[{ mount, free_bytes, bandwidth_gbs }]`,
+/// from the install dialog once it has probed. Absent means the model is
+/// already installed or the caller does not care where the pack would go, and
+/// `layout` then comes back `None` rather than as a guess over drives nobody
+/// measured.
+#[tauri::command]
+async fn recommend_for_model(
+    model_id: String,
+    volumes: Option<Vec<Value>>,
+) -> Result<Recommendation, String> {
+    let root = galactus_root()?;
+    let entry = registry_entry(&root, &model_id)?;
+    let settings = settings_load();
+    let ram_mode = settings
+        .get("ram_mode")
+        .map(String::as_str)
+        .filter(|s| matches!(*s, "eco" | "balanced" | "perf"))
+        .unwrap_or("balanced")
+        .to_string();
+    let cpu_moe = entry["cpu_moe"].as_bool().unwrap_or(false)
+        || settings.get("cpu_moe").map(|v| v == "1").unwrap_or(false);
+    let ram_gb = hardware::static_profile().ram_bytes >> 30;
+    let machine = MachineLimits::probe(ram_gb.max(8));
+    let chosen = settings.get("engine_slots").and_then(|s| s.trim().parse::<u32>().ok());
+    let slots = match chosen {
+        Some(n) => n.clamp(1, MAX_SLOTS),
+        None => recommended_slots(&entry, machine, &ram_mode, cpu_moe),
+    };
+
+    let layout = volumes.map(|list| {
+        let pack_bytes = entry["expert_bytes_total"]
+            .as_u64()
+            .or_else(|| entry["gguf_bytes"].as_u64())
+            .unwrap_or(0);
+        let parsed: Vec<PackVolume> = list
+            .iter()
+            .filter_map(|v| {
+                Some(PackVolume {
+                    mount: v["mount"].as_str()?.to_string(),
+                    free_bytes: v["free_bytes"].as_u64()?,
+                    bandwidth_gbs: v["bandwidth_gbs"].as_f64(),
+                })
+            })
+            .collect();
+        recommend_layout(&parsed, pack_bytes)
+    });
+
+    let base = Recommendation {
+        model_id: model_id.clone(),
+        mode: ram_mode.clone(),
+        requested_mode: ram_mode.clone(),
+        slots,
+        slots_chosen_by_user: chosen.is_some(),
+        variant: recommend_variant(&entry, ram_gb),
+        layout,
+        resident_bytes: 0,
+        budget_bytes: engine_budget_bytes(ram_gb * 1_000_000_000, machine),
+        ubatch: 0,
+        blocked: None,
+    };
+    // The planner is the authority on mode and micro-batch, and it is also the
+    // only thing that knows how to say no with a number in the sentence. A
+    // refusal is REPORTED, not turned into an error: the card still has to
+    // render, and the user still has to be told what would have to change.
+    Ok(match plan_cache(&entry, machine, None, &ram_mode, cpu_moe, slots) {
+        Ok(plan) => Recommendation {
+            mode: plan.decision.mode,
+            requested_mode: plan.decision.requested,
+            resident_bytes: plan.decision.resident_bytes,
+            budget_bytes: plan.decision.budget_bytes,
+            ubatch: plan.ubatch,
+            ..base
+        },
+        Err(why) => Recommendation { blocked: Some(why), ..base },
+    })
+}
+
 // ------------------------------------------------------- dual split ratio
 //
 // Both volumes are read in parallel, so a record is ready when the SLOWER side
@@ -1283,6 +1434,22 @@ fn engine_slots() -> u32 {
         .and_then(|s| s.trim().parse::<u32>().ok())
         .unwrap_or(2)
         .clamp(1, MAX_SLOTS)
+}
+
+/// The slot count a start will really use: what the user chose, or what this
+/// model on this Mac can afford.
+///
+/// The flat default of two was the turnkey promise failing quietly. It is the
+/// right answer on most Macs and it is 0.8 GB of KV cache taken out of the
+/// arena on the Macs that had nothing to give, which is where the modes were
+/// stepping down to pay for a second conversation the user had not opened.
+///
+/// An explicit setting always wins: this replaces a default, not a choice.
+fn resolved_slots(entry: &Value, machine: MachineLimits, ram_mode: &str, cpu_moe: bool) -> u32 {
+    match settings_load().get("engine_slots").and_then(|s| s.trim().parse::<u32>().ok()) {
+        Some(chosen) => chosen.clamp(1, MAX_SLOTS),
+        None => recommended_slots(entry, machine, ram_mode, cpu_moe),
+    }
 }
 
 #[derive(Serialize, Clone)]
@@ -1562,37 +1729,131 @@ const AVAILABLE_CLAIM_DEN: u64 = 5;
 /// sold in GiB by about 7 percent, while `available` is real bytes from
 /// vm_stat. The mismatch only ever makes the hardware bound smaller than the
 /// truth, and a bound that errs toward leaving memory free is the one to keep.
-fn engine_budget_bytes(installed: u64, available: Option<u64>) -> u64 {
+/// The three readings that bound a start, and the one number every registry
+/// `min_ram_gb` is written against.
+///
+/// Grouped rather than passed one by one because they answer the same
+/// question, "what can this Mac give", and because they arrive together: one
+/// is a property of the hardware, one is a measurement taken seconds before
+/// the engine allocates, and one is what the GPU driver will actually let the
+/// process hold.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct MachineLimits {
+    /// `hw.memsize >> 30`. GiB, because that is the unit every `min_ram_gb`
+    /// in the registry is written in.
+    ram_gb: u64,
+    /// vm_stat free plus inactive plus speculative. `None` when vm_stat could
+    /// not be read.
+    available: Option<u64>,
+    /// `MTLDevice.recommendedMaxWorkingSetSize`. `None` when there is no Metal
+    /// device (headless CI, a VM without GPU passthrough).
+    gpu_working_set: Option<u64>,
+}
+
+impl MachineLimits {
+    /// Read the machine. The only place these three come from a real Mac.
+    fn probe(ram_gb: u64) -> Self {
+        Self {
+            ram_gb,
+            available: available_memory_bytes(),
+            gpu_working_set: hardware::gpu_limits().map(|g| g.working_set_bytes),
+        }
+    }
+
+    /// A Mac for a test: installed GiB and what vm_stat would report, with no
+    /// Metal reading. That is exactly the shape every planner test asserted
+    /// before the GPU working set became a bound, so the numbers they pin stay
+    /// the numbers they pinned.
+    #[cfg(test)]
+    fn mac(ram_gb: u64, available: Option<u64>) -> Self {
+        Self { ram_gb, available, gpu_working_set: None }
+    }
+}
+
+fn engine_budget_bytes(installed: u64, limits: MachineLimits) -> u64 {
     // Properties of the hardware, so they stay on installed RAM: never more
     // than 70 percent of the Mac, and never so much that the system reserve is
     // eaten. Both bound the TOTAL, which is the fix in defect 1.
-    let hardware_bound =
+    let mut bound =
         (installed * 7 / 10).min(installed.saturating_sub(system_reserve_bytes(installed)));
-    match available {
-        None => hardware_bound,
-        Some(free) => hardware_bound
-            .min(free.saturating_mul(AVAILABLE_CLAIM_NUM) / AVAILABLE_CLAIM_DEN),
+    // THE BOUND THE ALLOCATOR ACTUALLY ANSWERS TO, and the one nothing here
+    // ever read.
+    //
+    // The expert arena is host memory (posix_memalign, h4-expert-store.cpp),
+    // and llama.cpp hands it to Metal with newBufferWithBytesNoCopy under
+    // MTLResourceStorageModeShared, then puts every buffer in an
+    // MTLResidencySet and calls requestResidency (ggml-metal-device.m:1621 and
+    // :1470, residency sets on by default from macOS 15, :827). The residency
+    // is what wires the pages, measured: a 4 GiB shared buffer fully written
+    // by the CPU moves vm_stat's wired count by 30 MiB, and requestResidency
+    // on the same buffer moves it by the whole 4 GiB. What bounds that is
+    // recommendedMaxWorkingSetSize, which llama.cpp treats as the total GPU
+    // memory itself: it answers `free = recommended - currentAllocated`
+    // (:1043).
+    //
+    // A BUDGET, NOT A GATE, so it is used as one. Apple calls it "an
+    // approximation of how much memory this GPU device can allocate without
+    // affecting its runtime performance" and asks callers to keep the total
+    // footprint below it. Nothing refuses past it: llama.cpp only LOGS
+    // (:1427), inside `#ifndef GGML_METAL_NDEBUG`, so a release build prints
+    // nothing; the allocation then either succeeds and the machine pays in
+    // swap, or newBufferWithBytesNoCopy returns nil and the backend buffer
+    // fails (:1626). Apple documents no macOS OOM kill, fault or panic at all,
+    // and the outcome reported in practice is the swap spiral rather than a
+    // clean failure. Neither reaches the user as a sentence about memory. That
+    // is what "it crashed twice" looked like from outside.
+    //
+    // NOT scaled by a fraction. 70 percent, the system reserve and the four
+    // fifths of the live reading are already three separate cushions, and
+    // recommendedMaxWorkingSetSize is itself macOS leaving headroom (107.5 of
+    // 128 GiB on the machine this was written on, 84 percent). A fourth
+    // invented fraction on top would be the same guessed constant this whole
+    // change exists to remove.
+    //
+    // COMPUTED NOWHERE. The formula the internet quotes for this limit comes
+    // from a 2023 decompilation of AGXAccelerator on a Ventura beta: reserve a
+    // third below 32 GiB of unified memory, a quarter above. It already
+    // disagrees with the hardware. On this machine it predicts 96.00 GiB and
+    // the device answers 107.52. The API is read; no formula is kept.
+    //
+    // `None` falls through untouched: a machine with no Metal device is no
+    // worse off than before, and a probe that failed must never make the app
+    // refuse to start.
+    if let Some(working_set) = limits.gpu_working_set {
+        bound = bound.min(working_set);
+    }
+    match limits.available {
+        None => bound,
+        Some(free) => {
+            bound.min(free.saturating_mul(AVAILABLE_CLAIM_NUM) / AVAILABLE_CLAIM_DEN)
+        }
     }
 }
 
 #[cfg(test)]
 mod engine_budget_tests {
-    use super::engine_budget_bytes;
+    use super::{engine_budget_bytes, MachineLimits};
 
     const GB: u64 = 1_000_000_000;
+
+    /// A machine with no Metal reading: what every test asserted before the
+    /// GPU working set became a bound.
+    fn ram_only(available: Option<u64>) -> MachineLimits {
+        MachineLimits { ram_gb: 0, available, gpu_working_set: None }
+    }
 
     #[test]
     fn without_a_reading_the_budget_is_the_hardware_bound() {
         // 70 percent of the Mac, and it bounds the TOTAL resident footprint.
-        assert_eq!(engine_budget_bytes(24 * GB, None), 16_800_000_000);
-        assert_eq!(engine_budget_bytes(128 * GB, None), 89_600_000_000);
+        assert_eq!(engine_budget_bytes(24 * GB, ram_only(None)), 16_800_000_000);
+        assert_eq!(engine_budget_bytes(128 * GB, ram_only(None)), 89_600_000_000);
     }
 
     #[test]
     fn a_busy_mac_gets_a_budget_from_what_is_free_not_from_what_it_was_sold_with() {
         // The colleague's 24 GB Mac with a browser open: 9 GB actually free.
         // The old planner offered 16.8 GB anyway; four fifths of 9 is 7.2.
-        assert_eq!(engine_budget_bytes(24 * GB, Some(9 * GB)), 7_200_000_000);
+        assert_eq!(engine_budget_bytes(24 * GB, ram_only(Some(9 * GB))), 7_200_000_000);
     }
 
     #[test]
@@ -1600,12 +1861,47 @@ mod engine_budget_tests {
         // 22 GB free of 24 installed. Four fifths would be 17.6, more than the
         // 70 percent bound: the hardware bound must still win, or the engine
         // would fill a freshly booted Mac to the brim.
-        assert_eq!(engine_budget_bytes(24 * GB, Some(22 * GB)), 16_800_000_000);
+        assert_eq!(engine_budget_bytes(24 * GB, ram_only(Some(22 * GB))), 16_800_000_000);
     }
 
     #[test]
     fn a_machine_with_nothing_free_offers_nothing() {
-        assert_eq!(engine_budget_bytes(24 * GB, Some(0)), 0);
+        assert_eq!(engine_budget_bytes(24 * GB, ram_only(Some(0))), 0);
+    }
+
+    #[test]
+    fn the_gpu_working_set_bounds_the_budget_when_it_is_the_tightest_of_the_three() {
+        // The 24 GB Mac that crashed. Idle, so the live reading gives the
+        // planner 16.8 GB, and Metal will let the process keep 15 GB resident.
+        // Planning 16.8 GB of Metal buffers on a device that recommends 15 is
+        // the over-commit nothing reports: either swap, or a nil buffer and a
+        // backend failure the user reads as a crash.
+        let m = MachineLimits {
+            ram_gb: 24,
+            available: Some(22 * GB),
+            gpu_working_set: Some(15 * GB),
+        };
+        assert_eq!(engine_budget_bytes(24 * GB, m), 15 * GB);
+    }
+
+    #[test]
+    fn a_generous_gpu_limit_never_widens_the_budget() {
+        // The M5 Max this was written on: 128 GiB installed, Metal recommends
+        // 107.5 GB. The 70 percent bound is 89.6 and must still win, or the
+        // engine would fill the machine because the GPU said it could.
+        let m = MachineLimits {
+            ram_gb: 128,
+            available: None,
+            gpu_working_set: Some(115_448_725_504),
+        };
+        assert_eq!(engine_budget_bytes(128 * GB, m), 89_600_000_000);
+    }
+
+    #[test]
+    fn a_mac_with_no_metal_device_is_no_worse_off_than_before() {
+        // Headless CI, or a VM. A failed probe must never refuse a start.
+        let with = MachineLimits { ram_gb: 24, available: Some(9 * GB), gpu_working_set: None };
+        assert_eq!(engine_budget_bytes(24 * GB, with), 7_200_000_000);
     }
 }
 
@@ -1769,8 +2065,7 @@ struct CachePlan {
 
 fn plan_cache(
     entry: &Value,
-    ram_gb: u64,
-    available: Option<u64>,
+    machine: MachineLimits,
     override_gb: Option<u64>,
     ram_mode: &str,
     cpu_moe_regime: bool,
@@ -1778,6 +2073,7 @@ fn plan_cache(
     // a whole extra KV cache, and the planner used to ignore them.
     slots: u32,
 ) -> Result<CachePlan, String> {
+    let ram_gb = machine.ram_gb;
     // Hard gate, mirrored by the UI card: below the registry minimum the
     // engine cannot hold the non-expert weights plus a viable cache, so the
     // model is refused everywhere (app start, CLI serve), not just greyed out.
@@ -1851,13 +2147,18 @@ fn plan_cache(
     // macOS, for this app and its webview, and for everything the user had
     // open. It now bounds what it claims to bound, the TOTAL, and the arena is
     // what is left of the budget once the weights and the overhead are paid.
-    let hardware_budget = engine_budget_bytes(ram, None);
+    // The GPU working set stays in BOTH budgets, unlike the live reading: it
+    // is a property of the device, not of the moment, so a mode has to mean
+    // the same footprint whether or not a browser is open AND has to be a
+    // footprint Metal will actually hold.
+    let hardware_budget =
+        engine_budget_bytes(ram, MachineLimits { available: None, ..machine });
     let ceiling_cache = hardware_budget.saturating_sub(fixed).min(expert_total);
 
     // The LIVE budget is what the machine can give right now, and it is the one
     // the decision is taken against. Before this, nothing in the planner ever
     // looked at a number that could change after the Mac left the factory.
-    let live_budget = engine_budget_bytes(ram, available);
+    let live_budget = engine_budget_bytes(ram, machine);
 
     // Memory-footprint policy over the registry's MEASURED curve. The point
     // of Galactus on a machine where the model would fit natively is to run
@@ -1935,7 +2236,7 @@ fn plan_cache(
         balanced: fixed + policy_cache("balanced", ceiling_cache),
         perf: fixed + policy_cache("perf", ceiling_cache),
     };
-    let mut decision = choose_start_mode(hardware_budget, footprints, ram_mode);
+    let mut decision = choose_start_mode(live_budget, footprints, ram_mode);
     if decision.impossible {
         if override_gb.is_none() {
             // The missing figure, named. "Not enough memory" without a number
@@ -2031,9 +2332,404 @@ fn plan_cache(
     ))
 }
 
+// ------------------------------------------------- what to choose, per model
+//
+// The owner's instruction, verbatim: case by case, model after model, rather
+// than one global rule. Every function below takes ONE registry entry and ONE
+// machine, and none of them holds an opinion that applies to all ten models.
+//
+// Where the policy LIVES: in the registry entry, next to the geometry and the
+// measured curve that the same entry already carries. The optional keys these
+// functions read are documented on each function. When a key is absent the
+// answer is derived from the geometry that IS there, and the derivation is
+// today's behaviour, so a registry with no policy keys behaves exactly as it
+// behaves now and every key added later only ever narrows a choice.
+
+/// The most decode slots the app will ever recommend on its own.
+///
+/// A slot past the first is a whole extra KV cache: `KV_BYTES_PER_EXTRA_SLOT`,
+/// 0.8 GB, measured. Above two, nothing the app can read tells it the user
+/// wants a third conversation generating at the same time, so that stays an
+/// explicit choice in Settings rather than a guess the machine pays for.
+const RECOMMENDED_SLOT_CAP: u32 = 2;
+
+/// How many conversations may generate at once, for THIS model on THIS Mac.
+///
+/// The app shipped a flat default of two. Two slots cost 0.8 GB taken out of
+/// the arena of every model on every Mac, whether or not the machine had it,
+/// and on a 24 GB Mac 0.8 GB is exactly the difference between a mode that
+/// fits and a mode that does not.
+///
+/// THE RULE: a second conversation must never cost the user a footprint mode.
+/// The count is the largest n up to the cap for which the mode the user asked
+/// for still starts, and 1 when even that does not hold.
+fn recommended_slots(entry: &Value, machine: MachineLimits, ram_mode: &str, cpu_moe: bool) -> u32 {
+    for n in (2..=RECOMMENDED_SLOT_CAP).rev() {
+        match plan_cache(entry, machine, None, ram_mode, cpu_moe, n) {
+            Ok(plan) if plan.decision.mode == plan.decision.requested => return n,
+            _ => continue,
+        }
+    }
+    1
+}
+
+/// A volume the installer could write a pack to.
+#[derive(Clone, Debug, PartialEq)]
+struct PackVolume {
+    mount: String,
+    free_bytes: u64,
+    /// Measured sequential read bandwidth, GB/s, from `volume_bandwidth`.
+    /// `None` when this volume has not been probed, and an unprobed volume is
+    /// never chosen as the second half of a dual pack: the split ratio is
+    /// computed FROM the two bandwidths, so guessing one would write a pack
+    /// cut at the wrong place for the life of the install.
+    bandwidth_gbs: Option<f64>,
+}
+
+/// Where a model's pack should be written.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+enum PackLayout {
+    /// One volume carries the whole pack.
+    Single { mount: String },
+    /// Both volumes carry a share of every record and are read in parallel.
+    /// `internal` is the faster of the two and takes the larger share.
+    Dual { internal: String, external: String },
+    /// No arrangement of the mounted volumes has room for this model.
+    NoRoom,
+}
+
+/// Bytes left free on a volume beyond the share it carries. Same 2 GiB the
+/// download preflight keeps (`INSTALL_DOWNLOAD_RESERVE_GIB`): a volume filled
+/// to its last byte is a volume macOS cannot work on.
+const PACK_VOLUME_RESERVE: u64 = INSTALL_DOWNLOAD_RESERVE_GIB * 1024 * 1024 * 1024;
+
+/// The slowest a second volume may be before splitting the pack across it
+/// costs more than it buys.
+///
+/// Not a new number: it is the threshold the install pipeline already applies
+/// as a fallback, and the one the install dialog already paints as its
+/// bottleneck verdict. What was missing is that the user had to reach that
+/// verdict by hand, by choosing dual and pressing Measure.
+const DUAL_BANDWIDTH_FLOOR: f64 = 0.35;
+
+/// Which volume layout to preselect, from volumes that have been measured.
+///
+/// Dual is the point of the pack format: both volumes are read in parallel, so
+/// a record is ready when the slower side finishes, and `pack_split_ratio`
+/// cuts each record at r* = Bi / (Bi + Be) so the two finish together. It is
+/// therefore preferred whenever a second volume is fast enough to be worth
+/// reading from and both sides have room for their shares.
+///
+/// Single wins when there is one volume, when the second is under
+/// `DUAL_BANDWIDTH_FLOOR` of the first, when the second has not been measured,
+/// or when the shares do not fit but the whole pack does.
+fn recommend_layout(volumes: &[PackVolume], pack_bytes: u64) -> PackLayout {
+    // Fastest first. An unmeasured volume sorts last rather than being
+    // treated as slow: it may well be the fastest, nobody asked it yet.
+    let mut ranked: Vec<&PackVolume> = volumes.iter().collect();
+    ranked.sort_by(|a, b| {
+        b.bandwidth_gbs
+            .unwrap_or(-1.0)
+            .total_cmp(&a.bandwidth_gbs.unwrap_or(-1.0))
+            .then(b.free_bytes.cmp(&a.free_bytes))
+    });
+
+    let fits_whole = |v: &PackVolume| v.free_bytes >= pack_bytes + PACK_VOLUME_RESERVE;
+
+    // Dual first: the best pair by aggregate bandwidth whose shares both fit.
+    let mut best: Option<(f64, &PackVolume, &PackVolume)> = None;
+    for (i, fast) in ranked.iter().enumerate() {
+        for slow in ranked.iter().skip(i + 1) {
+            let (Some(bi), Some(be)) = (fast.bandwidth_gbs, slow.bandwidth_gbs) else { continue };
+            if bi <= 0.0 || be < DUAL_BANDWIDTH_FLOOR * bi {
+                continue;
+            }
+            // The real cut, the one the packer and the engine will both use.
+            let ratio = pack_split_ratio(bi, be);
+            let share_fast = (pack_bytes as f64 * ratio) as u64;
+            let share_slow = pack_bytes.saturating_sub(share_fast);
+            if fast.free_bytes < share_fast + PACK_VOLUME_RESERVE
+                || slow.free_bytes < share_slow + PACK_VOLUME_RESERVE
+            {
+                continue;
+            }
+            let aggregate = bi + be;
+            if best.map(|(a, _, _)| aggregate > a).unwrap_or(true) {
+                best = Some((aggregate, fast, slow));
+            }
+        }
+    }
+    if let Some((_, fast, slow)) = best {
+        return PackLayout::Dual { internal: fast.mount.clone(), external: slow.mount.clone() };
+    }
+
+    match ranked.iter().find(|v| fits_whole(v)) {
+        Some(v) => PackLayout::Single { mount: v.mount.clone() },
+        None => PackLayout::NoRoom,
+    }
+}
+
+/// Which quantization to offer for download, for THIS model on THIS Mac.
+///
+/// # The registry key
+///
+/// ```json
+/// "variants": [
+///   { "id": "Q8_0",   "min_ram_gb": 64, "gguf_bytes": 79000000000, "download": { ... } },
+///   { "id": "Q4_K_M", "min_ram_gb": 32, "gguf_bytes": 45000000000, "download": { ... } },
+///   { "id": "IQ2_XXS","min_ram_gb": 16, "gguf_bytes": 23000000000, "download": { ... } }
+/// ]
+/// ```
+///
+/// Absent, which is every entry today, this returns `None` and the caller uses
+/// the entry's single `download` block: today's behaviour, unchanged, so the
+/// key can be added one model at a time while the campaign is running.
+///
+/// # The rule
+///
+/// The largest variant this Mac can hold: highest `gguf_bytes` among those
+/// whose `min_ram_gb` the machine meets. Judged on INSTALLED RAM and never on
+/// the live reading. A download is not a start: a browser tab open at download
+/// time must not condemn the user to a smaller model for the life of the
+/// install, and the mode ladder is what answers a machine under pressure.
+fn recommend_variant(entry: &Value, ram_gb: u64) -> Option<String> {
+    let variants = entry["variants"].as_array()?;
+    variants
+        .iter()
+        .filter(|v| v["min_ram_gb"].as_u64().map(|min| ram_gb >= min).unwrap_or(false))
+        .max_by_key(|v| v["gguf_bytes"].as_u64().unwrap_or(0))
+        .and_then(|v| v["id"].as_str())
+        .map(str::to_string)
+}
+
+#[cfg(test)]
+mod recommendation_tests {
+    use super::*;
+
+    const GB: u64 = 1_000_000_000;
+
+    fn vol(mount: &str, free_gb: u64, bw: Option<f64>) -> PackVolume {
+        PackVolume { mount: mount.into(), free_bytes: free_gb * GB, bandwidth_gbs: bw }
+    }
+
+    #[test]
+    fn one_volume_carries_the_whole_pack() {
+        let v = vec![vol("/", 200, Some(6.0))];
+        assert_eq!(
+            recommend_layout(&v, 60 * GB),
+            PackLayout::Single { mount: "/".into() }
+        );
+    }
+
+    #[test]
+    fn a_second_volume_fast_enough_to_read_from_is_used() {
+        // Two decent SSDs: reading both in parallel is what the pack format
+        // is for, and the user had to discover it by choosing dual by hand.
+        let v = vec![vol("/", 200, Some(6.0)), vol("/Volumes/T7", 200, Some(3.0))];
+        assert_eq!(
+            recommend_layout(&v, 60 * GB),
+            PackLayout::Dual { internal: "/".into(), external: "/Volumes/T7".into() }
+        );
+    }
+
+    #[test]
+    fn a_second_volume_too_slow_to_be_worth_reading_is_left_alone() {
+        // 1.0 against 6.0 is under the 35 percent floor the install pipeline
+        // already falls back on. Splitting there makes every record wait on
+        // the slow side.
+        let v = vec![vol("/", 200, Some(6.0)), vol("/Volumes/USB2", 200, Some(1.0))];
+        assert_eq!(
+            recommend_layout(&v, 60 * GB),
+            PackLayout::Single { mount: "/".into() }
+        );
+    }
+
+    #[test]
+    fn an_unmeasured_volume_is_never_made_half_of_a_split() {
+        // The split ratio is computed FROM the two bandwidths. Guessing one
+        // writes a pack cut at the wrong place for the life of the install.
+        let v = vec![vol("/", 200, Some(6.0)), vol("/Volumes/T7", 200, None)];
+        assert_eq!(
+            recommend_layout(&v, 60 * GB),
+            PackLayout::Single { mount: "/".into() }
+        );
+    }
+
+    #[test]
+    fn a_pack_too_big_for_either_volume_alone_is_split_across_both() {
+        // 300 GB of experts, two 200 GB volumes. Single is impossible and
+        // dual is the only thing that installs at all.
+        let v = vec![vol("/", 200, Some(6.0)), vol("/Volumes/T7", 200, Some(5.0))];
+        assert_eq!(
+            recommend_layout(&v, 300 * GB),
+            PackLayout::Dual { internal: "/".into(), external: "/Volumes/T7".into() }
+        );
+    }
+
+    #[test]
+    fn the_faster_volume_takes_the_larger_share() {
+        // Order matters: `internal` is the side pack_split_ratio gives r* to.
+        let v = vec![vol("/Volumes/T7", 400, Some(3.0)), vol("/", 400, Some(6.0))];
+        assert_eq!(
+            recommend_layout(&v, 100 * GB),
+            PackLayout::Dual { internal: "/".into(), external: "/Volumes/T7".into() }
+        );
+    }
+
+    #[test]
+    fn a_machine_with_nowhere_to_put_it_says_so_instead_of_choosing_a_volume() {
+        let v = vec![vol("/", 20, Some(6.0)), vol("/Volumes/T7", 20, Some(5.0))];
+        assert_eq!(recommend_layout(&v, 300 * GB), PackLayout::NoRoom);
+        assert_eq!(recommend_layout(&[], 60 * GB), PackLayout::NoRoom);
+    }
+
+    #[test]
+    fn the_reserve_is_kept_on_every_volume_a_share_lands_on() {
+        // Exactly the pack and not a byte more is not enough: the 2 GiB
+        // reserve is what keeps macOS able to work on the volume.
+        let tight = vec![vol("/", 60, Some(6.0))];
+        assert_eq!(recommend_layout(&tight, 60 * GB), PackLayout::NoRoom);
+        let ok = vec![vol("/", 63, Some(6.0))];
+        assert_eq!(recommend_layout(&ok, 60 * GB), PackLayout::Single { mount: "/".into() });
+    }
+
+    /// A model with three published quantizations. The ids are the shape the
+    /// registry key would carry, not a real entry: no registry file is read.
+    fn three_variants() -> Value {
+        json!({
+            "id": "variant-test-fixture",
+            "variants": [
+                { "id": "IQ2_XXS", "min_ram_gb": 16, "gguf_bytes": 23_000_000_000u64 },
+                { "id": "Q4_K_M",  "min_ram_gb": 32, "gguf_bytes": 45_000_000_000u64 },
+                { "id": "Q8_0",    "min_ram_gb": 64, "gguf_bytes": 79_000_000_000u64 }
+            ]
+        })
+    }
+
+    #[test]
+    fn each_mac_is_offered_the_largest_quantization_it_can_hold() {
+        assert_eq!(recommend_variant(&three_variants(), 128), Some("Q8_0".into()));
+        assert_eq!(recommend_variant(&three_variants(), 64), Some("Q8_0".into()));
+        assert_eq!(recommend_variant(&three_variants(), 48), Some("Q4_K_M".into()));
+        assert_eq!(recommend_variant(&three_variants(), 24), Some("IQ2_XXS".into()));
+    }
+
+    #[test]
+    fn a_mac_below_every_variant_is_offered_none_rather_than_the_smallest() {
+        // 8 GB does not meet even IQ2_XXS. Handing it the smallest anyway is
+        // how a user ends up downloading 23 GB for a model that cannot start.
+        assert_eq!(recommend_variant(&three_variants(), 8), None);
+    }
+
+    #[test]
+    fn an_entry_with_no_variants_key_keeps_todays_single_download() {
+        // Every registry entry today. None means "use entry.download", which
+        // is what the installer already does, so the key can be added one
+        // model at a time.
+        assert_eq!(recommend_variant(&json!({ "id": "x" }), 128), None);
+        // A malformed variant with no floor is skipped, not guessed at.
+        let broken = json!({ "variants": [{ "id": "Q4", "gguf_bytes": 1 }] });
+        assert_eq!(recommend_variant(&broken, 128), None);
+    }
+
+    /// GLM-4.5-Air's shape: 7 GB of non-expert weights, 66 GB of experts.
+    fn glm_air() -> Value {
+        json!({
+            "id": "recommendation-test-fixture",
+            "min_ram_gb": 16,
+            "non_expert_bytes": 7_000_000_000u64,
+            "expert_bytes_total": 66_022_539_264u64,
+            "layers_moe": 45,
+            "experts": 128,
+            "experts_used": 8,
+            "record_bytes": 11_462_246u64,
+            "measured": [
+                { "cache_gb": 11.77, "gen_tps": 1.8 },
+                { "cache_gb": 44.8, "gen_tps": 6.8 },
+                { "cache_gb": 66.02, "gen_tps": 15.4 }
+            ],
+        })
+    }
+
+    #[test]
+    fn a_mac_with_room_gets_the_second_conversation() {
+        // 128 GB, idle. Balanced reaches full residency and a second KV cache
+        // is 0.8 GB out of tens of gigabytes of headroom.
+        let m = MachineLimits::mac(128, Some(100 * GB));
+        assert_eq!(recommended_slots(&glm_air(), m, "balanced", false), 2);
+    }
+
+    /// A model sized so the SECOND slot is what tips the mode over, on a
+    /// machine that can otherwise afford balanced. 3 GB of non-expert weights
+    /// and 40 GB of experts across 32 layers of 64.
+    ///
+    /// The shape matters: with GLM-4.5-Air on a 24 GB Mac the planner refuses
+    /// at every slot count, so a test written on it passes whether or not the
+    /// mode is checked at all. This fixture is the case the rule exists for,
+    /// where two slots start and start WORSE.
+    fn slot_sensitive() -> Value {
+        json!({
+            "id": "slot-policy-test-fixture",
+            "min_ram_gb": 16,
+            "non_expert_bytes": 3_000_000_000u64,
+            "expert_bytes_total": 40_000_000_000u64,
+            "layers_moe": 32,
+            "experts": 64,
+            "experts_used": 8,
+            "record_bytes": 19_531_250u64,
+            "measured": [
+                { "cache_gb": 7.0, "gen_tps": 3.0 },
+                { "cache_gb": 10.0, "gen_tps": 9.0 },
+                { "cache_gb": 40.0, "gen_tps": 10.0 }
+            ],
+        })
+    }
+
+    #[test]
+    fn a_mac_that_would_pay_for_the_second_conversation_with_its_mode_does_not_get_it() {
+        // 32 GB Mac with 21.3 GB free, so the engine may hold 17.04 GB.
+        // Balanced at one slot is 16.85 GB and fits. Balanced at two slots is
+        // 17.65 GB and does not, and the flat default of two would have taken
+        // the user from Balanced to Eco to buy a second conversation nobody
+        // had opened yet.
+        let m = MachineLimits::mac(32, Some(21_300_000_000));
+        assert_eq!(recommended_slots(&slot_sensitive(), m, "balanced", false), 1);
+        // And the step-down is real, not the planner refusing outright: two
+        // slots DO start, in a worse mode. Without this the test above would
+        // pass on a machine where nothing starts at all, which is how the
+        // first version of it passed while checking nothing.
+        let two = plan_cache(&slot_sensitive(), m, None, "balanced", false, 2).unwrap();
+        assert_eq!(two.decision.mode, "eco");
+        assert_eq!(two.decision.requested, "balanced");
+        let one = plan_cache(&slot_sensitive(), m, None, "balanced", false, 1).unwrap();
+        assert_eq!(one.decision.mode, "balanced");
+    }
+
+    #[test]
+    fn a_mac_that_cannot_start_the_model_at_all_is_not_told_it_has_two_conversations() {
+        // The colleague's 24 GB Mac with GLM-4.5-Air: the planner refuses at
+        // every slot count, and the answer has to be a number llama-server can
+        // be started with so the refusal comes from the planner, with its
+        // sentence about memory, rather than from here.
+        let m = MachineLimits::mac(24, Some(14 * GB));
+        assert_eq!(recommended_slots(&glm_air(), m, "balanced", false), 1);
+        assert!(plan_cache(&glm_air(), m, None, "balanced", false, 1).is_err());
+    }
+
+    #[test]
+    fn a_model_that_cannot_start_at_all_still_answers_one_rather_than_zero() {
+        // plan_cache refuses at every slot count. Zero slots is not a thing
+        // llama-server can be started with, so the refusal has to come from
+        // the planner with its sentence about memory, not from here.
+        let m = MachineLimits::mac(24, Some(GB));
+        assert_eq!(recommended_slots(&glm_air(), m, "balanced", false), 1);
+    }
+}
+
 #[cfg(test)]
 mod plan_cache_tests {
-    use super::plan_cache;
+    use super::{plan_cache, MachineLimits};
     use serde_json::json;
 
     const GB: u64 = 1_000_000_000;
@@ -2067,7 +2763,7 @@ mod plan_cache_tests {
         // percent of the machine, under a bound that reads "70 percent".
         //
         // Against that old shape this assertion is 15_150_000_000 and goes red.
-        let plan = plan_cache(&entry(json!([])), 24, None, None, "perf", false, 1).unwrap();
+        let plan = plan_cache(&entry(json!([])), MachineLimits::mac(24, None), None, "perf", false, 1).unwrap();
         assert_eq!(plan.cache_bytes, 24 * GB * 7 / 10 - FIXED);
         assert_eq!(
             plan.cache_bytes + FIXED,
@@ -2091,7 +2787,7 @@ mod plan_cache_tests {
         // No reading available: the planner falls back to installed RAM, which
         // is exactly the behaviour that existed before, so a broken vm_stat
         // cannot make the app refuse to work.
-        let plan = plan_cache(&entry(curve()), 24, None, None, "perf", false, 1).unwrap();
+        let plan = plan_cache(&entry(curve()), MachineLimits::mac(24, None), None, "perf", false, 1).unwrap();
         assert_eq!(plan.decision.mode, "perf");
         assert_eq!(plan.decision.requested, "perf");
     }
@@ -2101,7 +2797,7 @@ mod plan_cache_tests {
         // DEFECT 2, pinned. 24 GB installed, 16 GB actually free, so 12.8 GB to
         // spare. perf wants 16.8 and balanced 14.85; eco needs 10.85 and fits.
         // This is the case that reached the user as "Compute error.".
-        let plan = plan_cache(&entry(curve()), 24, Some(16 * GB), None, "perf", false, 1).unwrap();
+        let plan = plan_cache(&entry(curve()), MachineLimits::mac(24, Some(16 * GB)), None, "perf", false, 1).unwrap();
         assert_eq!(plan.decision.mode, "eco");
         assert_eq!(plan.decision.requested, "perf");
         assert_eq!(plan.cache_bytes, 4 * GB);
@@ -2113,14 +2809,14 @@ mod plan_cache_tests {
         // 19 GB free of 24, so 15.2 GB to spare: perf does not fit, balanced
         // does. Falling straight to eco here would cost the user a working
         // mode for nothing.
-        let plan = plan_cache(&entry(curve()), 24, Some(19 * GB), None, "perf", false, 1).unwrap();
+        let plan = plan_cache(&entry(curve()), MachineLimits::mac(24, Some(19 * GB)), None, "perf", false, 1).unwrap();
         assert_eq!(plan.decision.mode, "balanced");
         assert_eq!(plan.cache_bytes, 8 * GB);
     }
 
     #[test]
     fn a_machine_with_nothing_to_spare_is_told_so_before_anything_is_spawned() {
-        let err = plan_cache(&entry(curve()), 24, Some(2 * GB), None, "balanced", false, 1)
+        let err = plan_cache(&entry(curve()), MachineLimits::mac(24, Some(2 * GB)), None, "balanced", false, 1)
             .expect_err("2 GB free cannot hold a 3 GB model plus its arena");
         assert!(err.contains("memory"), "the refusal must name memory: {err}");
         assert!(err.contains("eco"), "and name the footprint it tried: {err}");
@@ -2135,9 +2831,9 @@ mod plan_cache_tests {
         // budgeted. Nothing about the resident total changes here, because in
         // perf the total IS the budget; what changes is that the arena stops
         // being handed memory the KV cache has already taken.
-        let one = plan_cache(&entry(json!([])), 24, None, None, "perf", false, 1).unwrap();
-        let two = plan_cache(&entry(json!([])), 24, None, None, "perf", false, 2).unwrap();
-        let four = plan_cache(&entry(json!([])), 24, None, None, "perf", false, 4).unwrap();
+        let one = plan_cache(&entry(json!([])), MachineLimits::mac(24, None), None, "perf", false, 1).unwrap();
+        let two = plan_cache(&entry(json!([])), MachineLimits::mac(24, None), None, "perf", false, 2).unwrap();
+        let four = plan_cache(&entry(json!([])), MachineLimits::mac(24, None), None, "perf", false, 4).unwrap();
         assert_eq!(one.cache_bytes - two.cache_bytes, 800_000_000);
         assert_eq!(one.cache_bytes - four.cache_bytes, 2_400_000_000);
     }
@@ -2146,7 +2842,7 @@ mod plan_cache_tests {
     fn an_explicit_cache_size_still_overrules_the_policy() {
         // The override is the escape hatch for someone who knows their machine.
         // It must not be silently replaced by a step-down decision.
-        let plan = plan_cache(&entry(curve()), 24, Some(19 * GB), Some(6), "perf", false, 1).unwrap();
+        let plan = plan_cache(&entry(curve()), MachineLimits::mac(24, Some(19 * GB)), Some(6), "perf", false, 1).unwrap();
         assert_eq!(plan.cache_bytes, 6 * GB);
     }
 }
@@ -2163,7 +2859,7 @@ mod plan_cache_tests {
 /// six months sees THIS USER's case go red, not a number that drifted.
 #[cfg(test)]
 mod user_report_24gb_tests {
-    use super::plan_cache;
+    use super::{plan_cache, MachineLimits};
     use serde_json::json;
 
     const GB: u64 = 1_000_000_000;
@@ -2236,7 +2932,7 @@ mod user_report_24gb_tests {
         // The ceiling fix alone, with no reading of free memory: balanced falls
         // from 20.6 GB resident to 13.9, because the 70 percent cap now bounds
         // the whole footprint and the knee is recomputed under it.
-        let plan = plan_cache(&phi35_moe(), 24, None, None, "balanced", false, 1).unwrap();
+        let plan = plan_cache(&phi35_moe(), MachineLimits::mac(24, None), None, "balanced", false, 1).unwrap();
         assert_eq!(plan.cache_bytes, 10_100_000_000);
         assert_eq!(plan.decision.resident_bytes, 13_905_000_000);
         // And it gets there WITHOUT stepping down: on an idle 24 GB Mac
@@ -2258,7 +2954,7 @@ mod user_report_24gb_tests {
         // had to give: that gap IS the "Compute error." he read. It now holds
         // 13.9, the same footprint he reached by switching to eco himself, and
         // the request never has to change mode to get there.
-        let plan = plan_cache(&phi35_moe(), 24, Some(18 * GB), None, "balanced", false, 1).unwrap();
+        let plan = plan_cache(&phi35_moe(), MachineLimits::mac(24, Some(18 * GB)), None, "balanced", false, 1).unwrap();
         assert_eq!(plan.decision.requested, "balanced");
         assert_eq!(plan.decision.mode, "balanced");
         assert_eq!(plan.decision.budget_bytes, 14_400_000_000);
@@ -2275,7 +2971,7 @@ mod user_report_24gb_tests {
         // Same Mac, same 18 GB free. Performance would hold the full 16.8 GB
         // ceiling, which does not fit in 14.4, so the ladder takes one rung and
         // says which. The user is told; nothing is decided behind his back.
-        let plan = plan_cache(&phi35_moe(), 24, Some(18 * GB), None, "perf", false, 1).unwrap();
+        let plan = plan_cache(&phi35_moe(), MachineLimits::mac(24, Some(18 * GB)), None, "perf", false, 1).unwrap();
         assert_eq!(plan.decision.requested, "perf");
         assert_eq!(plan.decision.mode, "balanced");
         assert!(plan.decision.resident_bytes <= plan.decision.budget_bytes);
@@ -2289,7 +2985,7 @@ mod user_report_24gb_tests {
         // "the cap is fixed" would have declared the user's bug closed while
         // one of his two models still planned 14.1 GB resident with nobody
         // asking whether the machine had 14.1 GB to give.
-        let plan = plan_cache(&gpt_oss_120b(), 24, None, None, "balanced", false, 1).unwrap();
+        let plan = plan_cache(&gpt_oss_120b(), MachineLimits::mac(24, None), None, "balanced", false, 1).unwrap();
         assert_eq!(plan.decision.resident_bytes, OLD_GPT_OSS_BALANCED_RESIDENT);
     }
 
@@ -2298,7 +2994,7 @@ mod user_report_24gb_tests {
         // Same 24 GB Mac with a browser open: 12 GB free, so 9.6 GB claimable.
         // Even eco needs 14.1. There is no mode that fits, and the honest
         // answer is a number and a refusal, not an engine that dies mid-graph.
-        let err = plan_cache(&gpt_oss_120b(), 24, Some(12 * GB), None, "balanced", false, 1)
+        let err = plan_cache(&gpt_oss_120b(), MachineLimits::mac(24, Some(12 * GB)), None, "balanced", false, 1)
             .expect_err("14.1 GB cannot come out of 9.6");
         assert!(err.contains("9.6 GB"), "name what the machine can give: {err}");
         assert!(err.contains("short by 4.5 GB"), "and what is missing: {err}");
@@ -2310,7 +3006,7 @@ mod user_report_24gb_tests {
         // claimable, and eco's 14.085 fits. Nothing here refuses out of
         // caution; the gate is arithmetic, and it opens when the memory is
         // really there.
-        let plan = plan_cache(&gpt_oss_120b(), 24, Some(18 * GB), None, "balanced", false, 1)
+        let plan = plan_cache(&gpt_oss_120b(), MachineLimits::mac(24, Some(18 * GB)), None, "balanced", false, 1)
             .expect("14.085 GB fits in 14.4");
         assert!(plan.decision.resident_bytes <= plan.decision.budget_bytes);
     }
@@ -2326,7 +3022,7 @@ mod user_report_24gb_tests {
             for mode in ["eco", "balanced", "perf"] {
                 for step in 0..=64u64 {
                     let available = step * 500_000_000;
-                    match plan_cache(&entry, 24, Some(available), None, mode, false, 2) {
+                    match plan_cache(&entry, MachineLimits::mac(24, Some(available)), None, mode, false, 2) {
                         Ok(plan) => assert!(
                             plan.decision.resident_bytes <= plan.decision.budget_bytes,
                             "{mode} at {available} bytes free planned {} over a budget of {}",
@@ -2688,13 +3384,15 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
     let cpu_moe = entry["cpu_moe"].as_bool().unwrap_or(false)
         || settings.get("cpu_moe").map(|v| v == "1").unwrap_or(false);
     // What the Mac can hand over RIGHT NOW, measured a moment before the
-    // engine starts allocating. The whole reason the planner can step down.
-    let available = available_memory_bytes();
+    // engine starts allocating, and what Metal will let it hold resident. The
+    // first is the whole reason the planner can step down; the second is the
+    // bound the allocator answers to.
+    let machine = MachineLimits::probe(ram_gb);
     // Resolved BEFORE planning: every slot past the first is a whole extra KV
     // cache, and the plan has to pay for the slots this start will really ask
-    // llama-server for.
-    let slots = engine_slots();
-    let plan = plan_cache(&entry, ram_gb, available, override_gb, &ram_mode, cpu_moe, slots)?;
+    // llama-server for. Per model and per machine, not a flat two.
+    let slots = resolved_slots(&entry, machine, &ram_mode, cpu_moe);
+    let plan = plan_cache(&entry, machine, override_gb, &ram_mode, cpu_moe, slots)?;
     let (cache_bytes, fraction, ubatch) = (plan.cache_bytes, plan.protected, plan.ubatch);
 
     // Engine resolution: a developer checkout build wins (always freshest);
@@ -6060,6 +6758,7 @@ pub fn run() {
             delete_model,
             list_volumes,
             volume_bandwidth,
+            recommend_for_model,
             tool_fs_read,
             tool_web_fetch,
             scratch_write,

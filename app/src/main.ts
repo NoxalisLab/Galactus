@@ -28,6 +28,7 @@ import * as store from "./store";
 import type { ChatItem, Conversation, ConvMeta, SubAgent, ThreadData } from "./store";
 import { hasVerifiedDownload, modelAvailability, modelCertification } from "./model-policy";
 import { engineAdvice, isEngineDecodeFailure, modeLabelKey } from "./engine-error";
+import { layoutBriefKey, machineBrief, machineSummary } from "./machine-brief";
 import * as runsview from "./runsview";
 import { learnedView } from "./learnedview";
 import { configurePanePreferences, wirePaneResizer } from "./layout/pane-resize";
@@ -610,7 +611,19 @@ function expectedTps(m: ModelEntry): number | null {
   // estimate assumed a cache 5 GB larger than any start would ever plan and
   // promised a throughput the engine could not reach. Same defect as the one
   // fixed in plan_cache, and it had been copied here.
-  const budget = Math.min(hw.ram_gb - systemReserve, hw.ram_gb * 0.7);
+  //
+  // The GPU working set is the third bound, and it belongs in the HARDWARE
+  // ceiling rather than the live one: recommendedMaxWorkingSetSize is a
+  // property of the device, not of the moment, so it does not make the
+  // estimate move when a browser tab opens. Without it, a Mac whose GPU
+  // limit sits below 70 percent of its memory would read an estimate for a
+  // cache no start on that machine can ever plan.
+  const workingSet = hw.gpu_working_set_bytes;
+  const budget = Math.min(
+    hw.ram_gb - systemReserve,
+    hw.ram_gb * 0.7,
+    workingSet === null ? Infinity : workingSet / 1e9,
+  );
   const maxCache = Math.min(budget - fixed, (m.expert_bytes_total ?? Infinity) / 1e9);
   const pts = [...m.measured].sort((a, b) => a.cache_gb - b.cache_gb);
   // Mirror the backend's memory-footprint policy so the shown estimate
@@ -2635,6 +2648,53 @@ function benchResetBtn(m: ModelEntry): HTMLButtonElement | null {
   return b;
 }
 
+/**
+ * What this Mac IS, not only how much memory it was sold with.
+ *
+ * A 16 GB M1 and a 16 GB M4 Max used to render identically here, and on the
+ * binned Max parts the GPU core count is the only reading that tells two chips
+ * of the same name apart at all.
+ *
+ * Painted from the cached `hw` first so the bar is never empty, then repainted
+ * from a fresh reading. The three live figures in it, what the Mac can spare
+ * and whether it is on battery, are exactly the ones that go stale while the
+ * user has the window open.
+ */
+function paintHwBar(bar: HTMLElement): void {
+  const render = (info: HwInfo) => {
+    const s = machineSummary(info);
+    const gpu = s.gpuCores === null ? "" : `
+      <div class="div"></div>
+      <div class="st"><small>${esc(t("hw.gpu"))}</small><b>${esc(t("hw.gpuCores").replace("%n", String(s.gpuCores)))}</b></div>`;
+    // Apple publishes no bandwidth figure for some chips and none at all for
+    // any chip newer than this build. A blank is the honest rendering of that.
+    const bandwidth = s.bandwidthGbs === null ? "" : `
+      <div class="div"></div>
+      <div class="st"><small>${esc(t("hw.bandwidth"))}</small><b>${s.bandwidthGbs} GB/s</b></div>`;
+    bar.innerHTML = `
+      <div class="ico">${I.chip}</div>
+      <div class="st"><small>${esc(t("hw.chip"))}</small><b>${esc(s.chip || "Mac")}</b></div>
+      ${gpu}
+      <div class="div"></div>
+      <div class="st"><small>${esc(t("hw.ram"))}</small><b>${s.ramGb} GB</b></div>
+      ${bandwidth}
+      <div class="div"></div>
+      <div class="st" title="${esc(t("hw.budgetHint"))}"><small>${esc(t("hw.budget"))}</small><b>${s.budgetGb.toFixed(0)} GB</b></div>
+      <div class="div"></div>
+      <div class="st"><small>${esc(t("hw.disk"))}</small><b>${info.disk_free_gb} GB</b></div>
+      <span class="grow"></span>
+      <span class="note">${esc(s.onBattery ? t("hw.onBattery") : t("models.hwNote"))}</span>`;
+  };
+  if (hw) render(hw);
+  void api
+    .hwInfo()
+    .then((fresh) => {
+      hw = fresh;
+      if (bar.isConnected) render(fresh);
+    })
+    .catch(() => undefined);
+}
+
 function modelsView(): HTMLElement {
   const wrap = el(`<div class="main">
     <div class="topbar" data-tauri-drag-region><span class="ttl">${esc(t("nav.models"))}</span><span class="sub">${esc(t("models.subtitle"))}</span></div>
@@ -2649,17 +2709,7 @@ function modelsView(): HTMLElement {
     slot.appendChild(serverFailCard());
   }
   const hwbar = wrap.querySelector<HTMLElement>("#hw")!;
-  if (hw) {
-    hwbar.innerHTML = `
-      <div class="ico">${I.chip}</div>
-      <div class="st"><small>${esc(t("hw.chip"))}</small><b>${esc(hw.chip || "Mac")}</b></div>
-      <div class="div"></div>
-      <div class="st"><small>${esc(t("hw.ram"))}</small><b>${hw.ram_gb} GB</b></div>
-      <div class="div"></div>
-      <div class="st"><small>${esc(t("hw.disk"))}</small><b>${hw.disk_free_gb} GB</b></div>
-      <span class="grow"></span>
-      <span class="note">${esc(t("models.hwNote"))}</span>`;
-  }
+  paintHwBar(hwbar);
   const grid = wrap.querySelector<HTMLElement>("#grid")!;
   if (!registry.length) {
     grid.replaceWith(el(`<div class="empty-block"><span class="big">◇</span><b>${esc(t("models.empty"))}</b><span>${esc(t("models.emptyHint"))}</span></div>`));
@@ -2706,6 +2756,7 @@ function modelsView(): HTMLElement {
         <div class="spd"><b style="color:${speedColor}">${tps && v.ok ? (measured ? "" : "~") + tps.toFixed(0) : "·"}</b><small>${esc(v.ok ? t(measured ? "models.measured" : "models.onThisMac") : "·")}</small></div>
       </div>
       <div class="bar"><div style="width:${bar}%"></div></div>
+      <div class="brief" data-brief="${esc(m.id)}"></div>
       <div class="foot"><span class="n">${prog ? `<b style="color:var(--acc-tx)">${Math.round(prog.pct)}%</b> · ${esc(installLabel(prog.label))}` : esc(v.note || (m.installed ? t("models.installed") : (m.arch + " · " + (m.experts_used ?? "?") + " active")))}</span><span data-a></span></div>
       ${prog ? `<div class="bar" style="margin-top:2px"><div style="width:${prog.pct}%"></div></div>` : ""}
     </div>`);
@@ -2824,7 +2875,49 @@ function modelsView(): HTMLElement {
     }
     wrap.querySelector<HTMLElement>(".page")!.appendChild(locked);
   }
+  void paintBriefs(wrap, available);
   return wrap;
+}
+
+/**
+ * Fill in, on each card, the one sentence saying what this Mac will do with
+ * this model.
+ *
+ * Asynchronous and best effort. The cards render first and stay usable if the
+ * backend never answers: a recommendation that fails to arrive must leave the
+ * catalogue exactly as it was, never an empty state or a spinner. Each answer
+ * is written only if its card is still on screen, so a user who switches views
+ * mid-flight does not repaint a detached node.
+ *
+ * No volumes are passed: this is the catalogue, where the question is what
+ * would RUN, not where a pack would land. The install dialog is the surface
+ * that has measured drives to reason about, and it asks for the layout there.
+ */
+async function paintBriefs(wrap: HTMLElement, models: ModelEntry[]): Promise<void> {
+  for (const m of models) {
+    let rec;
+    try {
+      rec = await api.recommendForModel(m.id);
+    } catch {
+      continue; // no recommendation is strictly better than a wrong one
+    }
+    // Matched on the dataset rather than through a selector built from the id:
+    // a model id is registry data, and building a selector out of data is how
+    // a quoting bug becomes a broken query.
+    const slot = Array.from(wrap.querySelectorAll<HTMLElement>("[data-brief]")).find(
+      (n) => n.dataset.brief === m.id,
+    );
+    if (!slot || !slot.isConnected) continue;
+    const b = machineBrief(rec);
+    const sentence = t(b.key)
+      .replace("%m", t(b.modeKey))
+      .replace("%q", t(b.requestedModeKey))
+      .replace("%n", String(b.slots))
+      .replace("%r", b.residentGb.toFixed(1))
+      .replace("%b", b.budgetGb.toFixed(1));
+    slot.className = `brief ${b.tone}`;
+    slot.textContent = sentence;
+  }
 }
 
 // ---------- connectors ----------
@@ -3523,8 +3616,9 @@ function settingsView(): HTMLElement {
           <button data-rm="perf">${esc(t("settings.ramPerf"))}</button>
         </div>
       </div>
-      <div class="set-row"><div class="grow"><b>${esc(t("settings.slots"))}</b><span>${esc(t("settings.slotsHint"))}</span></div>
+      <div class="set-row"><div class="grow"><b>${esc(t("settings.slots"))}</b><span>${esc(t("settings.slotsHint"))}</span><span>${esc(t("brief.autoHint"))}</span></div>
         <div class="seg" id="slotseg">
+          <button data-sl="">${esc(t("brief.auto"))}</button>
           <button data-sl="1">1</button>
           <button data-sl="2">2</button>
           <button data-sl="3">3</button>
@@ -3638,11 +3732,21 @@ function settingsView(): HTMLElement {
   {
     // Decode slots: the real bound on how many conversations may generate at
     // once. Applied on the next model start, like the memory footprint.
+    //
+    // Automatic is the empty string, and it is the shipped default: a setting
+    // that does not parse as a number is what the Rust side reads as "no
+    // choice made", and it then works the count out per model and per machine.
+    // The settings file has no key removal, so blanking is how a user goes
+    // back to automatic after having picked a number, exactly as the bench
+    // reset blanks bench_<id>.
     const seg = wrap.querySelector<HTMLElement>("#slotseg")!;
     const paint = (n: string) =>
       seg.querySelectorAll("button").forEach((b) => b.classList.toggle("on", (b as HTMLElement).dataset.sl === n));
-    paint(String(engineSlots()));
-    api.settingsGet().then((st) => paint(String(Math.min(Math.max(Number(st["engine_slots"]) || 2, 1), 4))));
+    paint("");
+    api.settingsGet().then((st) => {
+      const stored = Number(st["engine_slots"]);
+      paint(Number.isFinite(stored) && stored >= 1 ? String(Math.min(stored, 4)) : "");
+    });
     seg.addEventListener("click", async (e) => {
       const b = (e.target as HTMLElement).closest("[data-sl]") as HTMLElement | null;
       if (!b) return;

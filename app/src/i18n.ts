@@ -233,6 +233,53 @@ const dict: Record<string, { en: string; fr: string }> = {
   "hw.chip": { en: "Chip", fr: "Puce" },
   "hw.ram": { en: "Memory", fr: "Mémoire" },
   "hw.disk": { en: "Disk free", fr: "Disque libre" },
+  "hw.gpu": { en: "Graphics", fr: "Graphismes" },
+  "hw.gpuCores": { en: "%n cores", fr: "%n cœurs" },
+  "hw.budget": { en: "For models", fr: "Pour les modèles" },
+  "hw.budgetHint": {
+    en: "The most Galactus will hold in memory at once on this Mac right now.",
+    fr: "Ce que Galactus gardera au plus en mémoire sur ce Mac en ce moment.",
+  },
+  "hw.bandwidth": { en: "Memory speed", fr: "Vitesse mémoire" },
+  "hw.onBattery": {
+    en: "On battery: speeds are lower than the figures below until you plug in.",
+    fr: "Sur batterie : les vitesses restent sous les chiffres ci-dessous tant que le Mac n'est pas branché.",
+  },
+
+  // The one sentence that says what the app chose for a model on this Mac.
+  // Placeholders are named because a translation may reorder them: %m mode,
+  // %q mode asked for, %n conversations, %r footprint in GB, %b what the Mac
+  // can spare in GB.
+  "brief.ok": {
+    en: "Set up for your Mac: %m, %n conversation(s) at a time, using about %r GB of the %b GB available.",
+    fr: "Réglé pour votre Mac : %m, %n discussion(s) à la fois, environ %r Go sur les %b Go disponibles.",
+  },
+  "brief.adjusted": {
+    en: "Your Mac has %b GB free right now, not enough for %q, so Galactus will run this model in %m (about %r GB).",
+    fr: "Votre Mac a %b Go de libre en ce moment, pas assez pour %q, donc Galactus lancera ce modèle en %m (environ %r Go).",
+  },
+  "brief.blocked": {
+    en: "Not enough free memory for this model right now: it needs about %r GB and your Mac can spare %b GB. Quit an application and try again.",
+    fr: "Pas assez de mémoire libre pour ce modèle en ce moment : il lui faut environ %r Go et votre Mac peut en libérer %b. Quittez une application puis réessayez.",
+  },
+  "brief.layoutSingle": {
+    en: "It will be stored on one drive.",
+    fr: "Il sera stocké sur un seul disque.",
+  },
+  "brief.layoutDual": {
+    en: "It will be spread over both drives and read from both at once, which is faster.",
+    fr: "Il sera réparti sur les deux disques et lu sur les deux à la fois, ce qui est plus rapide.",
+  },
+  "brief.layoutNoRoom": {
+    en: "No drive has room for it. Free some space, or connect another drive.",
+    fr: "Aucun disque n'a la place. Libérez de l'espace, ou branchez un autre disque.",
+  },
+  "brief.override": { en: "Change", fr: "Modifier" },
+  "brief.auto": { en: "Automatic", fr: "Automatique" },
+  "brief.autoHint": {
+    en: "Galactus picks the number this Mac can afford, per model.",
+    fr: "Galactus choisit le nombre que ce Mac peut se permettre, modèle par modèle.",
+  },
 
   "conn.subtitle": { en: "Give Galactus new abilities", fr: "De nouvelles capacités pour Galactus" },
   "conn.choose": { en: "Choose…", fr: "Choisir…" },

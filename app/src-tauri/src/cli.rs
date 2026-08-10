@@ -73,17 +73,23 @@ fn serve(root: &Path, model_id: &str, args: &[String]) -> Result<(), String> {
     //
     // Resolu AVANT la planification : chaque creneau au-dela du premier est un
     // cache KV entier, et le plafond doit le payer.
+    //
+    // Sans reglage explicite, le nombre est celui que CE modele peut se
+    // permettre sur CETTE machine, comme dans l'app : `resolved_slots` et non
+    // plus le deux fixe. Un `serve` reste utilisable pour mesurer ce que
+    // l'utilisateur execute vraiment.
+    let machine = MachineLimits::probe(ram_gb);
     let slots = args
         .windows(2)
         .find(|w| w[0] == "--slots")
         .and_then(|w| w[1].parse::<u32>().ok())
         .map(|n| n.clamp(1, MAX_SLOTS))
-        .unwrap_or_else(engine_slots);
+        .unwrap_or_else(|| resolved_slots(&entry, machine, &ram_mode, cpu_moe));
     // Meme decision que l'app : la memoire REELLEMENT disponible (vm_stat), pas
     // celle marquee sur la boite. Un `serve` qui planifierait sur la RAM
     // installee pendant que l'app se rabat sur eco mesurerait autre chose que
     // ce que l'utilisateur execute.
-    let plan = plan_cache(&entry, ram_gb, available_memory_bytes(), None, &ram_mode, cpu_moe, slots)?;
+    let plan = plan_cache(&entry, machine, None, &ram_mode, cpu_moe, slots)?;
     let (cache_bytes, fraction, ubatch) = (plan.cache_bytes, plan.protected, plan.ubatch);
     let port: u16 = args
         .windows(2)

@@ -342,6 +342,13 @@ html.pane-dragging iframe { pointer-events: none !important; }
 .mcard .spd small { font-size: 10px; color: var(--dim3); }
 .bar { height: 3px; border-radius: 0; background: rgba(255, 255, 255, 0.05); overflow: hidden; }
 .bar > div { height: 100%; background: linear-gradient(90deg, #8a7cff, #b06cff); border-radius: 0; }
+/* The sentence saying what this Mac will do with this model. Empty until the
+   recommendation arrives, and collapsed while empty so a card that never gets
+   one looks like a card, not like a card with a hole in it. */
+.brief { font-size: 11.5px; line-height: 1.45; color: var(--dim2); }
+.brief:empty { display: none; }
+.brief.adjusted { color: var(--warn); }
+.brief.blocked { color: var(--bad); }
 .mcard .foot { display: flex; align-items: center; gap: 10px; }
 .mcard .foot .n { font-size: 11.5px; color: var(--dim); flex: 1; min-width: 0; }
 .model-locked { margin-top: 16px; border-top: 1px solid var(--bd); color: var(--dim2); }
