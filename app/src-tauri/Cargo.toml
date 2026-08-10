@@ -1,6 +1,6 @@
 [package]
 name = "galactus-app"
-version = "0.1.8"
+version = "0.1.9"
 description = "Galactus, local MoE assistant by Noxalis Lab"
 edition = "2021"
 # Two binaries live in this crate (the app and the galactus CLI); tauri
@@ -15,7 +15,12 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+# tray-icon is a FEATURE of a crate that is already here, not a new
+# dependency: tray-icon and muda were already in Cargo.lock as part of tauri's
+# own tree. Server mode needs it, because the red button hides the window
+# rather than destroying it (the webview holds the agent loop), and an app that
+# is running with no window and no menu bar item is an app nobody can find.
+tauri = { version = "2", features = ["tray-icon"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
