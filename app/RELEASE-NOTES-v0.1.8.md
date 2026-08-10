@@ -131,15 +131,18 @@ right-click then Open. Apple Silicon only.
 
 ## Verification
 
-Frontend and Rust test suites pass in full. Ten models certified
-bit-transparent, verified by a differential run rather than by declaration.
+722 frontend tests and 111 Rust tests pass. Ten models certified
+bit-transparent, verified by a differential run rather than by declaration,
+and nine of them re-measured on the shipped path.
 
 ## Known, not fixed here
 
-The curves of the older models are still cross-check measurements. They are
-labelled as such in the registry, and they will be re-measured on the shipped
-path model by model rather than in one sweep, because each one is a long run on
-an idle machine.
+`glm-5.2-744b` keeps its single point. Its pack does not live in the
+repository, so the bench has nothing to read, and one point is not a curve: the
+app clamps to it rather than interpolating.
+
+The upper tiers of the eight models measured by sweep read low, by the amount
+described above. They will be re-measured one tier per process.
 
 No behaviour of the runs view has been verified by clicking through it. What was
 run is the type checker, the build and the test suites.
