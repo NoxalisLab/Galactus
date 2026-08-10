@@ -22,6 +22,7 @@
   "files": [
     "env.ts",
     "runsview.test.ts",
-    "learnedview.test.ts"
+    "learnedview.test.ts",
+    "mainmode.test.ts"
   ]
 }

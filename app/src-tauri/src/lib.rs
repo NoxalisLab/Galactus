@@ -794,6 +794,18 @@ fn list_volumes() -> Vec<VolumeInfo> {
 
 const BW_CHUNK: usize = 8 * 1024 * 1024;
 const BW_MIN_FILE: u64 = 2_000_000_000;
+/// Queued probe shape. A per-expert record is a few MiB (4.1 MB on olmoe,
+/// 13.2 MB on GLM-5.2) and the engine keeps many of them in flight per volume
+/// (GALACTUS_H4_QD, 32 at serve time). 4 MiB at 16 deep sits in that regime,
+/// which is what the ratio has to be measured in.
+const BW_RECORD_CHUNK: usize = 4 * 1024 * 1024;
+const BW_INFLIGHT: usize = 16;
+/// Bytes the queued probe reads in total. Big enough that a few hundred
+/// milliseconds of scheduling noise does not move the answer, small enough
+/// that two volumes are probed in a couple of seconds.
+const BW_QUEUED_TARGET: u64 = 1_500_000_000;
+/// Record alignment, so probe offsets land where real reads land.
+const RECORD_ALIGN: u64 = 16_384;
 
 /// F_NOCACHE on macOS: reads bypass the unified buffer cache, so the probe
 /// measures the SSD instead of RAM (same flag the H4 reader uses).
@@ -903,28 +915,214 @@ fn read_bandwidth(path: &Path) -> Result<f64, String> {
     Ok(total as f64 / 1e9 / secs)
 }
 
-/// Sequential read bandwidth of the volume at `path`, in GB/s. Reads a real
-/// big file found under the path; when none exists, a temporary probe file is
-/// written, read back cache-cold, then deleted.
-fn measure_volume(base: &Path) -> Result<f64, String> {
+/// Read bandwidth in the shape the ENGINE reads: record-sized requests at
+/// random offsets, several in flight, cache bypassed.
+///
+/// WHY THIS EXISTS ALONGSIDE read_bandwidth
+///
+/// read_bandwidth is one thread walking a file forwards in 8 MiB blocks. That
+/// is the right number to show a user, and the right one for the "is this pair
+/// worth splitting at all" guard, but it is NOT the number the split ratio
+/// needs, because it is not how expert records are read.
+///
+/// Measured here on this machine's two SSDs, cold, same files, same instant:
+/// sequentially 10.2 and 4.7 GB/s, which puts r* at 0.684; at the engine's
+/// shape 14.4 and 4.6 GB/s, which puts it at 0.757. Sweeping the real split
+/// found the throughput peak at 0.75. The sequential figures therefore name a
+/// ratio that is 13% SLOWER than the constant it was meant to replace, and the
+/// queued figures name the optimum. The internal NVMe is the one that gains
+/// from depth, so measuring it single-threaded understates it and hands the
+/// slow volume more of every record than it can carry.
+fn read_bandwidth_queued(path: &Path, chunk: usize, inflight: usize) -> Result<f64, String> {
+    use std::os::unix::fs::FileExt;
+    use std::sync::atomic::{AtomicU64, Ordering as O};
+
+    let f = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    #[cfg(target_os = "macos")]
+    set_nocache(&f);
+    let len = f.metadata().map_err(|e| e.to_string())?.len();
+    if len < chunk as u64 * 2 {
+        return Err("probe file too small for a queued read".into());
+    }
+    // Enough offsets that no two workers replay the same extent, and few
+    // enough that the run stays short.
+    let slots = (len - chunk as u64) / RECORD_ALIGN + 1;
+    let target_per_worker = (BW_QUEUED_TARGET / inflight as u64).max(chunk as u64);
+    let f = std::sync::Arc::new(f);
+    let total = std::sync::Arc::new(AtomicU64::new(0));
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos() as u64;
+
+    let t0 = Instant::now();
+    let mut handles = Vec::new();
+    for w in 0..inflight {
+        let f = f.clone();
+        let total = total.clone();
+        handles.push(std::thread::spawn(move || -> Result<(), String> {
+            let mut buf = vec![0u8; chunk];
+            // xorshift: a per-worker offset stream, no shared state, no crate.
+            let mut x = seed
+                .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+                .wrapping_add(w as u64 + 1)
+                | 1;
+            let mut done: u64 = 0;
+            while done < target_per_worker {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                let offset = (x % slots) * RECORD_ALIGN;
+                f.read_exact_at(&mut buf, offset).map_err(|e| e.to_string())?;
+                done += chunk as u64;
+                total.fetch_add(chunk as u64, O::Relaxed);
+            }
+            Ok(())
+        }));
+    }
+    for h in handles {
+        h.join().map_err(|_| "queued probe worker panicked".to_string())??;
+    }
+    let secs = t0.elapsed().as_secs_f64();
+    let read = total.load(O::Relaxed);
+    if read < 200_000_000 || secs <= 0.0 {
+        return Err("queued probe read too small to be meaningful".into());
+    }
+    Ok(read as f64 / 1e9 / secs)
+}
+
+/// Run `probe` against a big file on the volume at `base`: a real one when the
+/// volume already holds one, otherwise a temporary incompressible file that is
+/// written, read back cache-cold, and deleted.
+fn on_a_big_file<T>(base: &Path, probe: impl Fn(&Path) -> Result<T, String>) -> Result<T, String> {
     if !base.is_dir() {
         return Err(format!("not a directory: {}", base.display()));
     }
     match find_big_file(base, BW_MIN_FILE) {
-        Some(p) => read_bandwidth(&p),
+        Some(p) => probe(&p),
         None => {
             let p = base.join(".galactus-bw-probe.bin");
             let written = write_probe_file(&p, BW_MIN_FILE);
-            let result = written.and_then(|_| read_bandwidth(&p));
+            let result = written.and_then(|_| probe(&p));
             let _ = std::fs::remove_file(&p);
             result
         }
     }
 }
 
+/// Sequential read bandwidth of the volume at `path`, in GB/s. This is the
+/// number the user is shown and the one the dual/mono guard judges.
+fn measure_volume(base: &Path) -> Result<f64, String> {
+    on_a_big_file(base, read_bandwidth)
+}
+
+/// Bandwidth of the volume at `path` in the engine's own access shape, in
+/// GB/s. This is the number the split ratio is computed from.
+fn measure_volume_queued(base: &Path) -> Result<f64, String> {
+    on_a_big_file(base, |p| read_bandwidth_queued(p, BW_RECORD_CHUNK, BW_INFLIGHT))
+}
+
 #[tauri::command]
 async fn volume_bandwidth(path: String) -> Result<f64, String> {
     measure_volume(Path::new(&path))
+}
+
+// ------------------------------------------------------- dual split ratio
+//
+// Both volumes are read in parallel, so a record is ready when the SLOWER side
+// finishes: the time is max(r/Bi, (1-r)/Be) and the optimum is the r where the
+// two finish together, r* = Bi / (Bi + Be). Any other r pays the difference on
+// every single record for the life of the install, which is why this number is
+// measured rather than compiled in.
+//
+// These three constants MUST stay identical to src/h4/h4-core.hpp
+// (p0v2_default_ratio, p0_ratio_minimum, p0_ratio_maximum) and to
+// scripts/galactus-pack-plan.py: the planner writes what this computes and the
+// engine validates what the planner wrote.
+/// The historical P0v2 cut. Fallback for a failed or degenerate measurement,
+/// and the ratio every pack written before this was a runtime value used.
+const PACK_RATIO_DEFAULT: f64 = 0.7157;
+/// Usable bounds. Outside them one volume carries so little of each record
+/// that the read it still costs is pure overhead.
+const PACK_RATIO_MIN: f64 = 0.05;
+const PACK_RATIO_MAX: f64 = 0.95;
+/// Fractional digits the ratio is quantised to. Finer than the probe's own
+/// noise, and short enough that the decimal spelling is exact everywhere it is
+/// parsed: Python float() and C strtod are both correctly rounded, so the
+/// packer and the engine recover the SAME double from this string and their
+/// round(blocks * ratio) cannot drift apart.
+const PACK_RATIO_DECIMALS: usize = 4;
+
+/// r* = Bi / (Bi + Be), quantised and clamped. A measurement that failed
+/// (zero, negative, NaN, infinite) or a degenerate result falls back to
+/// PACK_RATIO_DEFAULT: a bad ratio must never produce a pack nothing can read.
+fn pack_split_ratio(internal_bw: f64, external_bw: f64) -> f64 {
+    if !internal_bw.is_finite() || !external_bw.is_finite() || internal_bw <= 0.0 || external_bw <= 0.0
+    {
+        return PACK_RATIO_DEFAULT;
+    }
+    let sum = internal_bw + external_bw;
+    if !sum.is_finite() || sum <= 0.0 {
+        return PACK_RATIO_DEFAULT;
+    }
+    let scale = 10f64.powi(PACK_RATIO_DECIMALS as i32);
+    let r = (internal_bw / sum * scale).round() / scale;
+    if !r.is_finite() || !(PACK_RATIO_MIN..=PACK_RATIO_MAX).contains(&r) {
+        return PACK_RATIO_DEFAULT;
+    }
+    r
+}
+
+/// The one spelling of a ratio that ever reaches a file or an environment
+/// variable. Fixed decimals, so the planner and the engine parse the same
+/// characters.
+fn pack_ratio_text(ratio: f64) -> String {
+    format!("{ratio:.*}", PACK_RATIO_DECIMALS)
+}
+
+#[cfg(test)]
+mod pack_ratio_tests {
+    use super::*;
+
+    #[test]
+    fn optimum_puts_the_bigger_share_on_the_faster_volume() {
+        // Two identical NVMe drives: half each, which is where the compiled
+        // 0.7157 cost the most.
+        assert_eq!(pack_split_ratio(6.0, 6.0), 0.5);
+        // The pair the frozen constant was measured on: Bi/Be = 2.52.
+        assert_eq!(pack_split_ratio(2.52, 1.0), 0.7159);
+        // Fast internal, slow external, and the reverse.
+        assert_eq!(pack_split_ratio(6.0, 1.0), 0.8571);
+        assert_eq!(pack_split_ratio(1.0, 6.0), 0.1429);
+    }
+
+    #[test]
+    fn a_failed_measurement_falls_back_to_the_historical_cut() {
+        assert_eq!(pack_split_ratio(0.0, 6.0), PACK_RATIO_DEFAULT);
+        assert_eq!(pack_split_ratio(6.0, 0.0), PACK_RATIO_DEFAULT);
+        assert_eq!(pack_split_ratio(-1.0, 6.0), PACK_RATIO_DEFAULT);
+        assert_eq!(pack_split_ratio(f64::NAN, 6.0), PACK_RATIO_DEFAULT);
+        assert_eq!(pack_split_ratio(f64::INFINITY, 6.0), PACK_RATIO_DEFAULT);
+        assert_eq!(pack_split_ratio(6.0, f64::NAN), PACK_RATIO_DEFAULT);
+    }
+
+    #[test]
+    fn a_ratio_outside_the_bounds_falls_back_instead_of_being_clamped() {
+        // 100:1 is not a pair of SSDs, it is a broken probe. Clamping to 0.95
+        // would write a pack from a measurement nobody should trust.
+        assert_eq!(pack_split_ratio(100.0, 1.0), PACK_RATIO_DEFAULT);
+        assert_eq!(pack_split_ratio(1.0, 100.0), PACK_RATIO_DEFAULT);
+        // The edges themselves are usable.
+        assert_eq!(pack_split_ratio(19.0, 1.0), PACK_RATIO_MAX);
+        assert_eq!(pack_split_ratio(1.0, 19.0), PACK_RATIO_MIN);
+    }
+
+    #[test]
+    fn the_text_form_is_the_grid_the_engine_parses() {
+        assert_eq!(pack_ratio_text(0.5), "0.5000");
+        assert_eq!(pack_ratio_text(PACK_RATIO_DEFAULT), "0.7157");
+        assert_eq!(pack_ratio_text(pack_split_ratio(6.0, 1.0)), "0.8571");
+    }
 }
 
 /// Probe base for a pack destination dir: nearest existing ancestor, then the
@@ -1638,6 +1836,21 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
     if has_engine_profile {
         cmd.env("GALACTUS_PROFILE", &profile);
     }
+    // The split ratio the install recorded for this model, handed to the
+    // engine as a CROSS-CHECK. The engine cuts by the .split record the pack
+    // writer left beside the pack; this is the app's independent copy of the
+    // same number, and the engine refuses to start when the two disagree
+    // rather than reading one of the two volumes at the wrong offset. Only
+    // dual installs have it: a mono pack has nothing to split.
+    if pack_internal != pack_external {
+        if let Some(r) = settings
+            .get(&format!("pack_ratio_{model_id}"))
+            .map(|v| v.trim())
+            .filter(|v| !v.is_empty())
+        {
+            cmd.env("GALACTUS_H4_RATIO", r);
+        }
+    }
     if cpu_moe {
         cmd.env("GALACTUS_H4_CPU_MOE", "1");
     } else {
@@ -2155,10 +2368,18 @@ fn install_pipeline_with(
     //     and the dual split is only kept when the slow one holds at least
     //     35% of the fast one: below that the slow SSD caps the pair and a
     //     mono pack on the fast SSD wins (the guard falls back with a
-    //     warning in the progress stream). The internal pack carries the
-    //     bigger share (71.57%), so it goes on the faster volume.
+    //     warning in the progress stream). The faster volume takes the
+    //     internal role, so the internal share is always the bigger one.
+    //
+    //     The split ratio comes from those two measurements and nothing else:
+    //     r* = Bi / (Bi + Be) is where the two volumes finish a record at the
+    //     same instant. It used to be a compiled 0.7157, which is the optimum
+    //     for exactly one pair of SSDs; on two identical NVMe drives, the
+    //     commonest dual setup, that constant costs about 43% of first-order
+    //     read time per record.
     let mut dual_dirs: Option<(PathBuf, PathBuf)> = None;
     let mut mono_dir: Option<PathBuf> = None;
+    let mut split_ratio = PACK_RATIO_DEFAULT;
     if let Some(v) = vols {
         if let Some(ext) = &v.external_dir {
             progress("probe", 60.2, "probing volumes");
@@ -2172,7 +2393,32 @@ fn install_pipeline_with(
             }
             let (fast, slow) = (bw_a.max(bw_b), bw_a.min(bw_b));
             if slow >= 0.35 * fast {
-                progress("probe", 61.0, &format!("dual ok {bw_a:.1}/{bw_b:.1} GB/s"));
+                // Second probe, in the engine's own access shape, and ONLY for
+                // the ratio: the sequential figures above answer "is this pair
+                // worth splitting", this one answers "where". They are not the
+                // same question and, measured here, not the same answer. A
+                // failure falls back to the sequential pair rather than
+                // aborting an install over a probe.
+                let (qa, qb) = (
+                    measure_volume_queued(&probe_base_for(&v.internal_dir)).unwrap_or(bw_a),
+                    measure_volume_queued(&probe_base_for(ext)).unwrap_or(bw_b),
+                );
+                if cancel.load(Ordering::SeqCst) {
+                    return Err("cancelled".into());
+                }
+                // The ratio is the FASTER volume's share, and the faster
+                // volume takes the internal role just below: the two must be
+                // ordered the same way or the pack is cut backwards.
+                let (q_fast, q_slow) = if bw_a >= bw_b { (qa, qb) } else { (qb, qa) };
+                split_ratio = pack_split_ratio(q_fast, q_slow);
+                progress(
+                    "probe",
+                    61.0,
+                    &format!(
+                        "dual ok {bw_a:.1}/{bw_b:.1} GB/s, en file {q_fast:.1}/{q_slow:.1}, \
+                         split {split_ratio:.4}"
+                    ),
+                );
                 dual_dirs = Some(if bw_a >= bw_b {
                     (v.internal_dir.clone(), ext.clone())
                 } else {
@@ -2213,21 +2459,31 @@ fn install_pipeline_with(
         return Err(format!("profile: {}", String::from_utf8_lossy(&out.stderr)));
     }
 
-    // 3. Plan. The dual ratio stays at the planner's default (0.7157, the
-    //    internal share): it is the P0v2 profile the engine's record split
-    //    reproduces at read time, a different ratio would corrupt reads.
+    // 3. Plan. The dual ratio is the one measured above, passed as a fixed
+    //    4-decimal string. That exact spelling is what the pack writer records
+    //    beside the pack and what the engine parses back at load: the packer
+    //    and the reader therefore cut at the same block, and the engine proves
+    //    it by re-deriving the totals before serving anything.
     progress("plan", 65.0, "planning");
+    let profile_json = format!("models/{id}/profile.json");
+    let plan_json = format!("models/{id}/plan.json");
+    let ratio_text = pack_ratio_text(split_ratio);
+    let mut plan_args: Vec<&str> = vec![
+        "scripts/galactus-pack-plan.py",
+        "--profile",
+        &profile_json,
+        "--output",
+        &plan_json,
+        "--volumes",
+        if dual { "dual" } else { "single" },
+    ];
+    if dual {
+        plan_args.push("--ratio");
+        plan_args.push(&ratio_text);
+    }
     let out = python3_cmd()
         .current_dir(root)
-        .args([
-            "scripts/galactus-pack-plan.py",
-            "--profile",
-            &format!("models/{id}/profile.json"),
-            "--output",
-            &format!("models/{id}/plan.json"),
-            "--volumes",
-            if dual { "dual" } else { "single" },
-        ])
+        .args(&plan_args)
         .output()
         .map_err(|e| e.to_string())?;
     if !out.status.success() {
@@ -2328,6 +2584,13 @@ fn install_pipeline_with(
 
     // 5. Custom placement: remember the pack paths so resolve_packs (serve,
     //    registry, CLI) finds them. The default location needs no settings.
+    //
+    //    The ratio is remembered alongside, but NOT as the engine's source of
+    //    truth: the pack carries its own .split record and that is what the
+    //    engine cuts by. What this key buys is a SECOND, independent copy, so
+    //    that a pack file swapped underneath the app is caught by the engine
+    //    as a disagreement between the two instead of read at the wrong offset
+    //    in silence.
     if vols.is_some() {
         settings_update(|map| {
             map.insert(
@@ -2342,6 +2605,11 @@ fn install_pipeline_with(
                     .display()
                     .to_string(),
             );
+            if dual {
+                map.insert(format!("pack_ratio_{id}"), ratio_text.clone());
+            } else {
+                map.remove(&format!("pack_ratio_{id}"));
+            }
         })?;
     }
     Ok(())
@@ -3643,6 +3911,56 @@ mod learned_slug_tests {
     }
 }
 
+/// The guard the whole "the agent cannot rewrite its own skills" claim rests on.
+///
+/// The bank lives at app_support()/skills-learned, and the ONLY thing keeping
+/// the agent's own file tools out of it is `is_protected_write`, four lines
+/// consulted by tool_fs_write and tool_fs_revert. It had no test: the property
+/// was documented in three comments and asserted nowhere, so a refactor that
+/// dropped the check would have shipped green.
+#[cfg(test)]
+mod protected_write_tests {
+    use super::{app_support, is_protected_write, learned_dir};
+
+    #[test]
+    fn the_learned_bank_is_not_writable_by_the_agents_file_tools() {
+        let bank = learned_dir();
+        assert!(
+            is_protected_write(&bank),
+            "the bank itself must be refused: {}",
+            bank.display()
+        );
+        // A skill FILE, not just the folder. The agent writes paths, not
+        // directories, and a prefix check that only matched the directory
+        // exactly would let every file inside it through.
+        assert!(
+            is_protected_write(&bank.join("git-bisect-loop").join("SKILL.md")),
+            "a file inside the bank must be refused too"
+        );
+    }
+
+    #[test]
+    fn the_whole_configuration_folder_is_refused_not_only_the_bank() {
+        let support = app_support();
+        for name in ["settings.json", "conversations", "schedule/jobs.json", "skills"] {
+            let p = support.join(name);
+            assert!(is_protected_write(&p), "{} must be refused", p.display());
+        }
+    }
+
+    #[test]
+    fn an_ordinary_user_path_is_still_writable() {
+        // The other half: a guard that refused everything would pass the two
+        // tests above and break every legitimate write the agent makes.
+        for p in ["/tmp/galactus-test-file", "/Users/somebody/projects/x/main.rs"] {
+            assert!(
+                !is_protected_write(std::path::Path::new(p)),
+                "{p} must stay writable"
+            );
+        }
+    }
+}
+
 #[tauri::command]
 fn memory_read() -> String {
     std::fs::read_to_string(memory_path()).unwrap_or_default()
@@ -4923,3 +5241,4 @@ pub fn run() {
             }
         });
 }
+

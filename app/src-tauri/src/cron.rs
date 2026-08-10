@@ -1245,7 +1245,21 @@ mod tests {
         let now = utc("2024-05-15T10:10:00Z");
         let m = missed_since(&s, anchor, now, &Utc, 100);
         assert_eq!(m.count, 20);
+        assert!(!m.saturated, "twenty fires fit in a cap of a hundred");
         assert_eq!(m.last, Some(utc("2024-05-15T10:00:00Z")));
+
+        // The saturating branch of the INTERVAL arm. The cron arm has its own
+        // test above; this arm reaches the cap by arithmetic rather than by
+        // walking, and nothing asserted its flag, so `saturated = false` was a
+        // mutation the whole suite let through.
+        let over = missed_since(&s, anchor, now, &Utc, 5);
+        assert_eq!(over.count, 5, "the count stops at the cap");
+        assert!(over.saturated, "twenty fires do not fit in a cap of five");
+        assert_eq!(
+            over.last,
+            Some(utc("2024-05-15T10:00:00Z")),
+            "the instant the catch-up decision reads stays exact past the cap"
+        );
     }
 
     #[test]

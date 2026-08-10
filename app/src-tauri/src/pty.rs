@@ -1182,7 +1182,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn killing_the_group_frees_a_pipe_a_grandchild_still_holds() {
         // The exact shape that hung the shell tool: zsh backgrounds a child,
         // the deadline kills the direct process, the grandchild keeps the
@@ -1223,6 +1222,7 @@ mod tests {
         reader.join().expect("reader");
     }
 
+    #[test]
     fn kill_group_refuses_dangerous_group_ids() {
         // pgid 0 means "every process in my own group", which would take
         // Galactus down with it. A defensive guard, exercised so it cannot be

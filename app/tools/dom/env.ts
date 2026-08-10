@@ -178,6 +178,59 @@ export function installDom(): void {
   // paintList asks for it before deciding whether a caret has to be restored.
   document.hasFocus = () => false;
 
+  // A canvas that hands out a 2D context.
+  //
+  // WHY THIS IS NEEDED TO TEST ANYTHING AT ALL. linkedom has no canvas, so
+  // getContext("2d") returns null, and PixelViz throws "canvas 2d context
+  // unavailable" the moment the app shell is drawn. boot() catches that,
+  // toasts, and returns early, so everything AFTER the last render (syncTray,
+  // maybeAutoCheck, the event subscriptions) silently never ran. The failure
+  // was invisible: a rendered .layout with a boot that had quietly given up.
+  //
+  // The stub records nothing and draws nothing, which is right: no assertion
+  // here is about pixels, and pretending to rasterise would be inventing a
+  // fidelity nothing needs. It only has to exist and to answer the calls
+  // pixel.ts and cosmos.ts actually make.
+  const context2d: Record<string, unknown> = {
+    canvas: null,
+    fillStyle: "",
+    strokeStyle: "",
+    font: "",
+    lineWidth: 1,
+    globalAlpha: 1,
+    imageSmoothingEnabled: false,
+    measureText: () => ({ width: 0 }),
+    createRadialGradient: () => ({ addColorStop: () => {} }),
+  };
+  for (const name of [
+    "arc",
+    "beginPath",
+    "clearRect",
+    "fill",
+    "fillRect",
+    "fillText",
+    "lineTo",
+    "moveTo",
+    "restore",
+    "roundRect",
+    "save",
+    "setTransform",
+    "stroke",
+    "strokeRect",
+    "translate",
+  ]) {
+    context2d[name] = () => {};
+  }
+  const canvasProto = (view.HTMLCanvasElement as { prototype?: Record<string, unknown> } | undefined)
+    ?.prototype;
+  if (canvasProto) {
+    canvasProto.getContext = function getContext(this: unknown, kind: string) {
+      // Only 2d. A module asking for webgl is asking for something this cannot
+      // honestly provide, and null is the answer a browser without it gives.
+      return kind === "2d" ? { ...context2d, canvas: this } : null;
+    };
+  }
+
   const internals = {
     invoke: async (cmd: string, args: Record<string, unknown> = {}) => {
       calls.push({ cmd, args: args ?? {} });

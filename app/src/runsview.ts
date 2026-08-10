@@ -1039,8 +1039,8 @@ function jobsSectionEl(): HTMLElement {
  * inside them for a string that did not change. The countdown is minute
  * grained, so in practice the DOM is touched about once a minute.
  */
-let paintedList = " ";
-let paintedErr = " ";
+let paintedList = "\u0000";
+let paintedErr = "\u0000";
 
 function paintInto(box: HTMLElement): void {
   const errHtml = jobs.error

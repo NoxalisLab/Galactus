@@ -326,22 +326,42 @@ test("a grant turns a block into an allow, and only a block", async () => {
   assert.deepEqual(outcome, { kind: "final", text: "wrote it" });
 });
 
+// NEVER ASSERT INSIDE send(). Both tests below used to, and neither could fail.
+//
+// driveTurn wraps `await agent.send(prompt)` in a try/catch that turns anything
+// thrown into the turn's error string, and node:test only sees a rejected
+// promise. So a failed assertion inside send() was swallowed and recorded as a
+// failing TURN, which is a perfectly normal outcome that changes nothing the
+// test goes on to check. Reintroducing the exact defect these two are named
+// after, consulting the grant on any non-allow answer instead of on `block`
+// alone, left the whole suite green.
+//
+// The decision is therefore captured in a variable and asserted AFTER driveTurn
+// has returned, where a failure is the test's and cannot be mistaken for the
+// run's.
+
 test("a grant cannot serve a cancelled run", async () => {
   // The cancel lands mid turn, so the state has not changed yet and only the
   // gate knows. A grant consulted before it would hand the run a capability
   // after a human told it to stop.
   const run = newRun("read_only");
   let hooks: RunTurnHooks | null = null;
+  let decision: RunDecision | null = null;
   const agent: DrivableAgent = {
     async send() {
       run.cancel("user");
-      const d = await hooks!.askPermission(WRITE);
-      assert.equal(d, "deny", "cancelled outranks any grant");
+      decision = await hooks!.askPermission(WRITE);
     },
     stop() {},
   };
   await driveTurn(run, agent, "go", (h) => { hooks = h; }, {}, GRANT_ALL);
+  assert.equal(decision, "deny", "cancelled outranks any grant");
   assert.equal(run.getState(), "cancelled");
+  // The gate's own record must show the refusal and its reason, since the gate
+  // is what a grant consulted too early would have bypassed entirely.
+  const gate = run.transcript().find((e) => e.type === "gate");
+  assert.equal(gate?.type === "gate" ? gate.decision : "", "refuse");
+  assert.equal(gate?.type === "gate" ? gate.reason : "", "cancelled");
 });
 
 test("a grant cannot serve a run past its wall clock", async () => {
@@ -352,15 +372,19 @@ test("a grant cannot serve a run past its wall clock", async () => {
     now: () => t,
   });
   let hooks: RunTurnHooks | null = null;
+  let decision: RunDecision | null = null;
   const agent: DrivableAgent = {
     async send() {
       t = 1000;
-      const d = await hooks!.askPermission(WRITE);
-      assert.equal(d, "deny", "a grant is a permission, not an extension of the budget");
+      decision = await hooks!.askPermission(WRITE);
     },
     stop() {},
   };
   await driveTurn(run, agent, "go", (h) => { hooks = h; }, {}, GRANT_ALL);
+  assert.equal(decision, "deny", "a grant is a permission, not an extension of the budget");
+  const gate = run.transcript().find((e) => e.type === "gate");
+  assert.equal(gate?.type === "gate" ? gate.decision : "", "refuse");
+  assert.equal(gate?.type === "gate" ? gate.reason : "", "expired");
 });
 
 test("a grant can never cover an elevated request", async () => {

@@ -1429,6 +1429,12 @@ mod tests {
         // Daily, so the last due fire stays put while `now` walks past the
         // boundary. An hourly job would keep producing fresher ones and would
         // never reach the edge being tested here.
+        // The VALUE, not just the boundary. Everything below is written in
+        // terms of CATCHUP_GRACE_SECS, so it moves with the constant and would
+        // stay green if the window were widened to twelve hours or narrowed to
+        // one. "Nothing older than six hours" is the rule that was agreed, so
+        // six hours is what has to be pinned, once, here.
+        assert_eq!(CATCHUP_GRACE_SECS, 6 * 3600, "the grace window is six hours");
         let s = cron::parse_schedule("0 3 * * *").expect("daily");
         let scheduled = 1_715_742_000; // 2024-05-15T03:00:00Z
         let before = state_fired(scheduled - 86_400);

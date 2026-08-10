@@ -311,6 +311,55 @@ pub fn stop() {
 mod tests {
     use super::*;
 
+    /// Serialises every test that calls `start` or `stop`.
+    ///
+    /// The relay's listener, port, bind address and key are process globals,
+    /// which is right for a thing there is exactly one of and wrong for a test
+    /// runner that uses a thread per test. Without this, the live test below
+    /// sets RUNNING while `listening_without_a_key_is_refused` is asking for a
+    /// refusal, and that test fails with "the relay is already running": a red
+    /// build caused by the harness rather than by the code.
+    fn relay_lock() -> std::sync::MutexGuard<'static, ()> {
+        static L: OnceLock<Mutex<()>> = OnceLock::new();
+        L.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// A stand-in for llama-server: answers every request 200 and closes.
+    ///
+    /// WHY THIS EXISTS. The live test was `#[ignore]`d because it needed a real
+    /// model listening on 8737, which meant the relay's authenticate-then-
+    /// forward path, the one thing the whole module is for, was never executed
+    /// by anybody on any machine. What that path needs from the engine is a
+    /// TCP peer that speaks a response, not inference, so the requirement was
+    /// never really a model.
+    ///
+    /// It binds port 0 and reports what the OS gave it, so two runs of the
+    /// suite on the same machine cannot collide on a fixed port.
+    fn stub_engine() -> u16 {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("stub engine binds");
+        let port = listener.local_addr().expect("addr").port();
+        std::thread::spawn(move || {
+            for conn in listener.incoming() {
+                let Ok(mut sock) = conn else { break };
+                std::thread::spawn(move || {
+                    // Read one head so the relay's write side does not fail,
+                    // then answer. The body is irrelevant to what is asserted.
+                    let mut chunk = [0u8; 4096];
+                    let _ = sock.read(&mut chunk);
+                    let _ = sock.write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+Content-Length: 13\r\nConnection: close\r\n\r\n{\"data\":[{}]}",
+                    );
+                    let _ = sock.flush();
+                    let _ = sock.shutdown(Shutdown::Write);
+                });
+            }
+        });
+        port
+    }
+
     #[test]
     fn a_bearer_token_is_read_whatever_the_header_case() {
         let head = "POST /v1/chat HTTP/1.1\r\nHost: x\r\nauthorization: Bearer gx_abc\r\n";
@@ -354,6 +403,7 @@ mod tests {
 
     #[test]
     fn listening_without_a_key_is_refused() {
+        let _guard = relay_lock();
         // The single rule the exposure rests on. If this ever passes, the app
         // can publish an unauthenticated endpoint that reads the user's files.
         let err = start("0.0.0.0", 0, 8737, "").unwrap_err();
@@ -364,25 +414,39 @@ mod tests {
 
     #[test]
     fn only_the_two_intended_addresses_are_accepted() {
+        let _guard = relay_lock();
         // Binding an arbitrary interface is refused rather than attempted:
         // the set of addresses that expose the machine must stay enumerable.
         let err = start("192.168.1.35", 0, 8737, "gx_k").unwrap_err();
         assert!(err.contains("refusing to bind"), "got: {err}");
     }
 
-    /// End to end against a REAL engine. Ignored by default because it needs
-    /// a model running on 8737; run it explicitly:
-    ///   cargo test --lib -- --ignored relay::tests::live
+    /// End to end over real sockets: bind, refuse, authenticate, forward, stop.
+    ///
+    /// This is the only test in the module that exercises `start`, `serve_one`
+    /// and `pump` rather than the pure helpers around them, which is to say it
+    /// is the only one that would notice if the relay let an unauthenticated
+    /// request through to the engine.
+    ///
+    /// The engine is a stub (see `stub_engine`), so nothing here needs a model,
+    /// a network or a permission grant. What is asserted is the relay's own
+    /// behaviour: everything below the 200 is the stub's, and the 200 only
+    /// proves the bytes reached it.
     #[test]
-    #[ignore]
     fn live_relay_authenticates_and_forwards() {
         use std::io::{BufRead, BufReader};
 
+        let _guard = relay_lock();
         let key = generate_key().expect("key");
-        // Port 0 would be ideal but the relay stores the port it was told, so
-        // a fixed high port keeps the assertion simple.
-        let port = 8791u16;
-        start("0.0.0.0", port, 8737, &key).expect("relay start");
+        let engine_port = stub_engine();
+        // Port 0 would be ideal but the relay stores the port it was TOLD, not
+        // the one the OS handed the listener, so a bound ephemeral port is
+        // borrowed and released to get a number that is free right now.
+        let port = {
+            let probe = TcpListener::bind(("127.0.0.1", 0)).expect("probe");
+            probe.local_addr().expect("addr").port()
+        };
+        start("0.0.0.0", port, engine_port, &key).expect("relay start");
         std::thread::sleep(Duration::from_millis(200));
 
         let call = |auth: Option<&str>| -> String {

@@ -2,7 +2,12 @@
 export type Lang = "en" | "fr";
 
 const dict: Record<string, { en: string; fr: string }> = {
-  "brand.by": { en: "by Noxalis Lab · v0.1.7", fr: "par Noxalis Lab · v0.1.7" },
+  // No version here. It used to read "v0.1.7" and it was still reading it in
+  // the 0.1.9 build, because a version written into a translation string is
+  // updated by remembering to, and nobody did for two releases. The sidebar
+  // now appends the version the BINARY reports, which is the same source the
+  // updater compares against.
+  "brand.by": { en: "by Noxalis Lab", fr: "par Noxalis Lab" },
   "tools.blocked": {
     en: "This model does not emit tool calls, so the agent cannot read files or run commands. Start a model that does.",
     fr: "Ce modele n'emet pas d'appels d'outils : l'agent ne peut ni lire de fichier ni lancer de commande. Demarre un modele qui le fait.",

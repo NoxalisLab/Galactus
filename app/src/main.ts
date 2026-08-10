@@ -3860,7 +3860,7 @@ function render() {
   const layout = el(`<div class="layout">
     <div class="side">
       <div class="side-head" data-tauri-drag-region></div>
-      <div class="brand2"><img class="mark" src="${LOGO}" alt="Galactus"/><div class="txt"><b>Galactus</b><span>${esc(t("brand.by"))}</span></div></div>
+      <div class="brand2"><img class="mark" src="${LOGO}" alt="Galactus"/><div class="txt"><b>Galactus</b><span class="brandby">${esc(appVersion ? `${t("brand.by")} · v${appVersion}` : t("brand.by"))}</span></div></div>
       <div class="nav">
         ${appMode === "server" ? "" : nav("chat", I.chat, t("nav.chat"))}
         ${appMode === "server" ? "" : nav("code", I.code, t("nav.code"), codeview.pendingCount())}
