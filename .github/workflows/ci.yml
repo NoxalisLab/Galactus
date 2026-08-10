@@ -126,6 +126,32 @@ jobs:
           restore-keys: |
             cargo-${{ runner.os }}-${{ runner.arch }}-
 
+      - name: Stage the bundle resource directories
+        working-directory: app/src-tauri
+        # tauri-build refuses to run when a path listed in bundle.resources is
+        # missing, and all four of these are generated: engine comes from a
+        # compiled llama.cpp, the other three from the build script. A clean
+        # checkout has none of them, so the crate would not compile here at all,
+        # and the first CI run said exactly that: resource path engine does not
+        # exist.
+        #
+        # They are staged EMPTY on purpose. This job compiles the crate and runs
+        # its unit tests, which touch none of these; producing the real ones
+        # means building the engine, which is tens of minutes for coverage that
+        # the release workflow already provides on a machine that has it.
+        # An empty directory here is honest: it says the resource exists and
+        # says nothing about its contents. A shippable bundle is never produced
+        # by this workflow.
+        run: |
+          for d in engine packaged python rust-tooling; do
+            mkdir -p "$d"
+            printf '%s\n' \
+              "Staged empty by CI so tauri-build can resolve bundle.resources." \
+              "The real contents come from prepare-engine.sh and the build script." \
+              > "$d/CI-PLACEHOLDER.txt"
+          done
+          ls -d engine packaged python rust-tooling
+
       - name: Download the locked dependency set
         working-directory: app/src-tauri
         # --locked refuses to touch Cargo.lock. This is the one step allowed to
