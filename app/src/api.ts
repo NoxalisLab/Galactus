@@ -316,7 +316,13 @@ export const api = {
   hwInfo: () => invoke<HwInfo>("hw_info"),
   registry: () => invoke<ModelEntry[]>("load_registry"),
   detectRoot: () => invoke<string | null>("detect_root"),
-  pickFolder: () => invoke<string | null>("pick_folder"),
+  /**
+   * The native folder chooser. `prompt` is the sentence the panel asks, and
+   * every caller should pass one: the panel is the only thing on screen at that
+   * moment, so it is the only place left to say WHICH folder is wanted.
+   */
+  pickFolder: (prompt?: string, start?: string) =>
+    invoke<string | null>("pick_folder", { prompt, start }),
   serverStatus: () => invoke<ServerStatus>("server_status"),
   serverStart: (modelId: string, cacheGb: number | null) =>
     invoke<void>("server_start", { modelId, cacheGb }),
