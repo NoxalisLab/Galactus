@@ -574,6 +574,13 @@ textarea.mem:focus { border-color: rgba(138, 124, 255, 0.4); }
 .voldlg .bwline.bad { color: var(--bad); }
 .voldlg .bwline.bad b { color: var(--bad); }
 .voldlg .bwline.warn { color: var(--bad); min-height: 0; }
+/* A warning with nothing to warn about must not be drawn. .modal .warn carries a
+   red fill and a red border, so an empty one is a red box holding no text, and a
+   red box holding no text reads as a fault the reader cannot act on. The space
+   line above is empty whenever the chosen drives have room, which is the normal
+   case. :empty rather than a class, so it holds for every warn box in every
+   modal, including ones written later. */
+.modal .warn:empty { display: none; }
 .dellink { color: var(--dim2); }
 .dellink:hover { color: var(--bad); }
 .logpre { margin: 0 0 16px; padding: 12px 14px; border-radius: 0; background: var(--pre); border: 1px solid var(--bd); font-family: var(--mono); font-size: 11.5px; line-height: 1.7; color: #9a9aac; white-space: pre-wrap; word-break: break-word; max-height: 55vh; overflow: auto; }

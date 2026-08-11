@@ -4036,6 +4036,8 @@ async function refreshServer() {
 }
 
 let composerDraft = "";
+/** Where each view was scrolled to, so a rebuild can put it back. */
+const pageScroll: Partial<Record<View, number>> = {};
 
 /** Sidebar server pill state, shared by render() and the targeted repaint. */
 function serverPillState(): { pill: string; text: string } {
@@ -4093,6 +4095,16 @@ function render() {
   {
     const ci = document.getElementById("ci") as HTMLTextAreaElement | null;
     if (ci) composerDraft = ci.value;
+  }
+  // And a rebuild must never eat the scroll position either. An install emits a
+  // progress event every few hundred milliseconds, each one a full render, and
+  // a page that returns to the top on every one of them cannot be read at all:
+  // the card whose download you are watching is the one that scrolls away.
+  // Keyed by view, because arriving at a view you have not been looking at
+  // should start at its top, not where some other page happened to be.
+  {
+    const pg = document.querySelector(".page") as HTMLElement | null;
+    if (pg) pageScroll[view] = pg.scrollTop;
   }
   // The whole DOM is rebuilt: tear down anything attached to the old tree.
   previewPanel?.destroy(); previewPanel = null;
@@ -4194,6 +4206,14 @@ function render() {
     scrollChatDown();
     // The rebuild destroyed the activity canvas: restore the current scene.
     restoreActivity();
+  }
+  // Put the page back where the user had it. Restored synchronously, before the
+  // browser paints the new tree, so the jump to the top is never seen rather
+  // than seen and undone.
+  {
+    const pg = layout.querySelector(".page") as HTMLElement | null;
+    const want = pageScroll[view];
+    if (pg && want) pg.scrollTop = want;
   }
   wireUiSemantics(layout);
   // A rebuild must never orphan an open permission dialog. It lives on the
