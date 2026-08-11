@@ -4838,12 +4838,24 @@ async fn tool_shell_run(command: String, timeout_secs: u64) -> Result<String, St
     let child = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        // Nothing may wait on input. The app has no terminal, so a command that
+        // reads stdin (a package manager asking to confirm, a `read`, an ssh
+        // host-key question) would sit there until the deadline killed it, and
+        // the model would be told only that it timed out. Closed stdin turns
+        // that into an immediate, readable EOF.
+        .stdin(Stdio::null())
         .spawn()
         .map_err(|e| e.to_string())?;
     let deadline = Instant::now() + Duration::from_secs(timeout_secs.clamp(1, 600));
     let out = run_with_deadline(child, deadline)?;
     let Some(status) = out.status else {
-        return Ok("(timed out)".into());
+        // A deadline is not a failure and the output is not worthless. This
+        // returned the bare words "(timed out)" and threw away everything the
+        // command had printed, so `uvicorn main:app`, which had already said
+        // "Uvicorn running on http://127.0.0.1:8000", read as having produced
+        // nothing at all: the model concluded it had failed and ran it again,
+        // and again. Say what happened, and hand back what was said.
+        return Ok(timeout_report(&out.stdout, &out.stderr, timeout_secs.clamp(1, 600)));
     };
     let mut text = out.stdout;
     if !out.stderr.trim().is_empty() {
@@ -4858,6 +4870,59 @@ async fn tool_shell_run(command: String, timeout_secs: u64) -> Result<String, St
         text = format!("(exit {})", status.code().unwrap_or(-1));
     }
     Ok(text)
+}
+
+/// What a command that outlived its deadline reports back.
+///
+/// Written for a reader that will decide what to do next from these words
+/// alone. It has to carry three things: that the process was alive and was
+/// stopped (not that it crashed), everything it managed to print, and the one
+/// piece of advice that makes the next attempt different from this one. Without
+/// the last part a model retries the identical command, which is how a demo
+/// turns into a loop.
+fn timeout_report(stdout: &str, stderr: &str, secs: u64) -> String {
+    let mut text = format!(
+        "(still running after {secs}s, so it was stopped. A command that does not \
+         exit on its own, a server for instance, must be started in the background \
+         instead: append ` >/tmp/out.log 2>&1 &` and then read that log.)"
+    );
+    let printed = format!("{stdout}\n{stderr}");
+    if !printed.trim().is_empty() {
+        text.push_str("\n\nWhat it printed before it was stopped:\n");
+        text.push_str(printed.trim());
+        if text.len() > TOOL_MAX_OUTPUT {
+            text.truncate(floor_char_boundary(&text, TOOL_MAX_OUTPUT));
+            text.push_str("\n…(truncated)");
+        }
+    }
+    text
+}
+
+#[cfg(test)]
+mod shell_timeout_tests {
+    use super::timeout_report;
+
+    #[test]
+    fn a_server_that_announced_itself_is_not_reported_as_silent() {
+        // The exact line uvicorn prints, and the reason the old "(timed out)"
+        // was so costly: this sentence IS the proof the command worked.
+        let r = timeout_report("INFO: Uvicorn running on http://127.0.0.1:8000\n", "", 120);
+        assert!(r.contains("Uvicorn running on http://127.0.0.1:8000"));
+    }
+
+    #[test]
+    fn the_report_says_what_to_do_differently() {
+        // Without this the next attempt is the same attempt.
+        let r = timeout_report("", "", 120);
+        assert!(r.contains("background"), "a retry needs to differ from the try");
+        assert!(r.contains("120s"));
+    }
+
+    #[test]
+    fn stderr_is_carried_too() {
+        let r = timeout_report("", "Traceback (most recent call last):", 5);
+        assert!(r.contains("Traceback"));
+    }
 }
 
 // ---------------------------------------------------------------- MCP

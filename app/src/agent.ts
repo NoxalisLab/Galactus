@@ -679,7 +679,16 @@ function builtinTools(
       function: {
         name: "run_command",
         description:
-          "Run a shell command (zsh) on the user's machine. Output truncated to 200 KB.",
+          "Run a shell command (zsh) on the user's machine. Output truncated to 200 KB. " +
+          // Said here rather than only in the timeout message, because a model
+          // that learns this from the failure has already spent two minutes of
+          // the user's time discovering it.
+          "It waits for the command to finish, up to 120 seconds, and there is no " +
+          "terminal: nothing can answer a prompt, so pass the non-interactive flag " +
+          "(-y, --yes) when a tool would ask. A command that never exits on its own, " +
+          "a server such as uvicorn or npm run dev, MUST be backgrounded or it will be " +
+          "stopped at the deadline: run `<cmd> >/tmp/out.log 2>&1 &`, then read " +
+          "/tmp/out.log to see whether it came up.",
         parameters: {
           type: "object",
           properties: { command: { type: "string" } },
