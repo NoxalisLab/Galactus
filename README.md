@@ -253,6 +253,21 @@ build/bin/llama-cli --model GLM-5.2-UD-IQ1_S-00001-of-00006.gguf \
 
 Or use `lanceurs/LANCER-CHAT.command` for an interactive session with sane defaults. Main knobs: `GALACTUS_H4_CACHE_BYTES` (resident cache size, throughput scales with it), `GALACTUS_METAL_BITEXACT=1` (bit-exact GPU experts, the app's default), `GALACTUS_H4_CPU_MOE=1` (bit-exact CPU experts, for counter-verification), `GALACTUS_H4_QD` (read queue depth, default 32).
 
+### The cache plan
+
+The resident cache used to give every MoE layer the same number of expert slots. The layers are not the same: replayed on real routing traces, qwen3-30b serves 45.7 % of layer 0's accesses from RAM and 85 to 92 % of the accesses of the deep layers, so a slot given to layer 0 removes several times more device reads than the same slot given to layer 20. A **cache plan** carries the miss curve of every layer, measured once from a recorded run, and the engine spends the *same* arena bytes where a slot removes the most reads. Nothing asks for more memory; the plan only moves slots between layers.
+
+```bash
+# once per model: record routes, then derive the plan beside its profile
+GALACTUS_H4_ROUTES=routes.txt <a normal run>
+python3 scripts/derive-cache-plan.py --routes routes.txt --out models/<model>/cache-plan.txt
+
+# compare any policy against the current one, offline, on the recorded traces
+python3 scripts/replay-cache.py --routes routes.txt --sweep --plan cache-plans/<arch>.txt
+```
+
+The plan is picked up automatically from `cache-plan.txt` beside the model profile, or from `GALACTUS_H4_CACHE_PLAN=<path>`. Plans for the architectures measured so far are in `cache-plans/`. `GALACTUS_H4_CACHE_POLICY` selects: `auto` (the default, plan plus frequency eviction), `uniform` (the policy that shipped before, unchanged), `plan`, or `frequency`. Measured on real traces at identical arena bytes, records reaching the SSD per token fall by 2.4 to 7.7 % at the smallest cache each model can run in, and by 5 to 34 % at the cache sizes shipped today. It is never worse at any cache size, and ties exactly when the whole model fits.
+
 ### The bug worth reading about
 
 The first wired build produced fluent text, and a perplexity of 13.74 instead of 2.64. The hunt took a full day and four purpose-built instruments: layer bisection, a zero-eviction probe, a byte-level audit of 768 expert records against the GGUF, and a full-run differential fingerprint of every MoE tensor. Each cleared a suspect. The breakthrough came from a paradox, identical tensor dumps with different perplexities, which exposed the probe's own blind spot and, behind it, the real bug: `selected_experts` is a non-contiguous ggml view (`ggml_top_k`), and the remap read it linearly. Every token after the first in each micro-batch was silently routed to its neighbour's experts.

@@ -1919,23 +1919,24 @@ index f14ee079..febc6269 100644
 +    }
 +}
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
-index 320784c3..ff19bbc8 100644
+index 320784c3..170e4354 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
-@@ -19,6 +19,12 @@ add_library(llama
+@@ -19,6 +19,13 @@ add_library(llama
              llama-cparams.cpp
              llama-grammar.cpp
              llama-graph.cpp
 +            llama-galactus-h4.cpp
 +            ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/h4/h4-core.cpp
 +            ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/h4/h4-profile.cpp
++            ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/h4/h4-cache-plan.cpp
 +            ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/h4/h4-expert-cache.cpp
 +            ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/h4/h4-expert-store.cpp
 +            ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/h4/h4-reader.cpp
              llama-hparams.cpp
              llama-impl.cpp
              llama-io.cpp
-@@ -52,6 +58,7 @@ set_target_properties(llama PROPERTIES
+@@ -52,6 +59,7 @@ set_target_properties(llama PROPERTIES
  target_include_directories(llama PRIVATE .)
  target_include_directories(llama PUBLIC ../include)
  target_compile_features   (llama PRIVATE cxx_std_17) # don't bump
@@ -2016,10 +2017,10 @@ index 5018170e..542552b5 100644
  
 diff --git a/src/llama-galactus-h4.cpp b/src/llama-galactus-h4.cpp
 new file mode 100644
-index 00000000..78dc2992
+index 00000000..445cb229
 --- /dev/null
 +++ b/src/llama-galactus-h4.cpp
-@@ -0,0 +1,865 @@
+@@ -0,0 +1,866 @@
 +#include "llama-galactus-h4.h"
 +
 +#include "h4-expert-cache.hpp"
@@ -2347,8 +2348,9 @@ index 00000000..78dc2992
 +        std::vector<std::uint32_t> distinct(keys);
 +        std::sort(distinct.begin(), distinct.end());
 +        distinct.erase(std::unique(distinct.begin(), distinct.end()), distinct.end());
-+        const auto quota = s.store->slots_per_layer();
-+        const auto probation = s.store->cache().probation_quota();
++        const auto quota = s.store->slots_of(static_cast<std::uint32_t>(layer));
++        const auto probation =
++            s.store->cache().probation_quota_of(static_cast<std::uint32_t>(layer));
 +        const auto bound = std::min(quota, probation);
 +        if (distinct.size() > bound) {
 +            const auto used = std::max(1U, ModelProfile::active().used);
@@ -2565,22 +2567,27 @@ index 00000000..78dc2992
 +        s.store = std::make_unique<ExpertStore>(capacity, protected_fraction, *s.reader, *s.layout);
 +        std::fprintf(stderr, "galactus_h4: fraction protegee %.2f\n", protected_fraction);
 +        std::fprintf(stderr,
-+                     "galactus_h4: magasin construit, %u experts par couche, arene %llu octets\n",
-+                     s.store->slots_per_layer(),
++                     "galactus_h4: magasin construit, jusqu'a %u experts par couche, "
++                     "arene %llu octets\n",
++                     s.store->max_slots_per_layer(),
 +                     static_cast<unsigned long long>(s.store->slot_bytes()));
 +        // Observation only: the shape of the cache the hit rates below are net
 +        // of. A route file without it cannot be read after the fact.
 +        RouteObserver::instance().note_configuration(
 +            capacity, protected_fraction, s.store->cache().quota_per_layer(),
-+            s.store->cache().probation_quota(), s.store->slots_per_layer());
++            s.store->cache().min_probation_quota(), s.store->max_slots_per_layer());
 +    }
 +
 +    const std::uint32_t layer_index = static_cast<std::uint32_t>(layer) - ExpertCache::first_layer();
 +    const std::uint64_t record = frozen_layer_record_bytes()[layer_index];
 +    const std::uint64_t matrix_bytes = ggml_row_size(type, ne0) * static_cast<std::uint64_t>(ne1);
 +
-+    auto * tensor = ggml_new_tensor_3d(s.context, type, ne0, ne1,
-+                                       static_cast<int64_t>(s.store->slots_per_layer()));
++    // ne[2] est le nombre de places de CETTE couche : un plan de cache en
++    // donne plus la ou une place enleve le plus de lectures, et le tenseur
++    // d'experts d'une couche doit decrire l'arene de cette couche.
++    auto * tensor = ggml_new_tensor_3d(
++        s.context, type, ne0, ne1,
++        static_cast<int64_t>(s.store->slots_of(static_cast<std::uint32_t>(layer))));
 +    tensor->nb[2] = record;   // pas inter-expert = l'enregistrement du pack
 +    ggml_format_name(tensor, "galactus.blk.%d.%s_exps", layer, role);
 +    // L'offset du role dans l'enregistrement ne peut pas dependre de l'ordre
@@ -2674,12 +2681,7 @@ index 00000000..78dc2992
 +    // (quota x enregistrement, ~1,5 Go) : c'est CETTE taille qui doit etre
 +    // le chevauchement, sinon la plaque qui tombe sur une frontiere devient
 +    // introuvable (mesure : couche 74, 'buffer is nil', a ~86 Go).
-+    std::uint64_t max_record = 0;
-+    for (const auto record : frozen_layer_record_bytes()) {
-+        max_record = std::max(max_record, record);
-+    }
-+    const std::uint64_t max_slab =
-+        max_record * static_cast<std::uint64_t>(s.store->slots_per_layer());
++    const std::uint64_t max_slab = s.store->max_slab_bytes();
 +    s.arena_buffer = ggml_backend_dev_buffer_from_host_ptr(
 +        device, arena, s.store->slot_bytes(), max_slab);
 +    if (s.arena_buffer == nullptr) {

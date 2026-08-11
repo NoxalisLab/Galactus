@@ -36,6 +36,15 @@ tests/
 !scripts/tests/
 scripts/tests/*
 !scripts/tests/test-p0-split-differential.py
+# Same again, two more files, same reason: CMake registers them as ctest tests
+# (galactus-cache-plan-differential, galactus-replay-cache-harness). The first
+# is the only thing that keeps the C++ slot allocator and the Python one that
+# produced every published measurement saying the same word; the second is the
+# only thing that keeps the replay harness reproducing the engine to the byte.
+# Neither can be checked from one side alone, and a checkout without them
+# fails the test run rather than skipping it.
+!scripts/tests/test-cache-plan-differential.py
+!scripts/tests/test-replay-cache.py
 # And the directory the bare rule above actually names. CMakeLists.txt calls
 # add_executable on all three sources here and registers them as ctest tests
 # (galactus-b2c-sha256-file-runtime, galactus-c1-contract-runtime,
