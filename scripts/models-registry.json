@@ -16,7 +16,7 @@
       "record_bytes": 13221888,
       "min_cache_bytes": 7616207616,
       "status": "certified_bit_transparent",
-      "certified_date": "2026-08-05",
+      "certified_date": "2026-08-11",
       "native_fit_ram_gb": 80,
       "measured": [
         {
@@ -94,7 +94,21 @@
         "reasoning",
         "general"
       ],
-      "min_ram_gb": 16
+      "min_ram_gb": 16,
+      "certified_ppl": {
+        "stock": 30.8129,
+        "wired": 30.8129,
+        "tensors_identical": 5911,
+        "corpus": "corpus/materialized/stage1/long-context-multifieldqa-zh-0029.txt",
+        "corpus_sha256": "2baf18f90cd4b6e0",
+        "seed": 42,
+        "ctx": 512,
+        "batch": 512,
+        "ubatch": 2,
+        "regime": "cross-check path (CPU experts and biases)",
+        "date": "2026-08-11",
+        "recorded_by": "scripts/certify.py"
+      }
     },
     {
       "id": "glm-5.2-744b",
@@ -638,8 +652,22 @@
           "Qwen3-Coder-30B-A3B-Instruct-Q8_0.gguf"
         ]
       },
-      "certified_date": "2026-08-09",
-      "measured_note": "MacBook Pro M5 Max, 128 GB, internal SSD, shipped path (Metal bit-exact experts), batch 512, planner ubatch, 192 predicted tokens on a 24-paragraph prompt, bench 2026-08-10 by scripts/bench-curve.py; cache = app planning ceiling per Mac tier, curve stops at full residency (30.80 GB)"
+      "certified_date": "2026-08-11",
+      "measured_note": "MacBook Pro M5 Max, 128 GB, internal SSD, shipped path (Metal bit-exact experts), batch 512, planner ubatch, 192 predicted tokens on a 24-paragraph prompt, bench 2026-08-10 by scripts/bench-curve.py; cache = app planning ceiling per Mac tier, curve stops at full residency (30.80 GB)",
+      "certified_ppl": {
+        "stock": 12.5312,
+        "wired": 12.5312,
+        "tensors_identical": 5654,
+        "corpus": "corpus/materialized/stage1/long-context-multifieldqa-zh-0029.txt",
+        "corpus_sha256": "2baf18f90cd4b6e0",
+        "seed": 42,
+        "ctx": 512,
+        "batch": 512,
+        "ubatch": 2,
+        "regime": "cross-check path (CPU experts and biases)",
+        "date": "2026-08-11",
+        "recorded_by": "scripts/certify.py"
+      }
     },
     {
       "id": "olmoe-1b-7b",
