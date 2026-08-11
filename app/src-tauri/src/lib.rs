@@ -1640,7 +1640,7 @@ fn read_tool_verdict(body: &str) -> Option<bool> {
 
 #[cfg(test)]
 mod folder_picker_tests {
-    use super::{applescript_string, default_location_clause};
+    use super::applescript_string;
 
     #[test]
     fn a_quote_in_a_translated_prompt_cannot_end_the_literal() {
@@ -1650,32 +1650,6 @@ mod folder_picker_tests {
         assert_eq!(applescript_string(r"a\b"), r"a\\b");
     }
 
-    #[test]
-    fn a_missing_start_folder_is_dropped_rather_than_passed_on() {
-        // AppleScript raises on a default location that does not exist, and the
-        // raise takes the whole chooser with it: the click would look ignored,
-        // which is the very failure this parameter exists to fix.
-        let clause = default_location_clause(Some("/nope/definitely/not/here"));
-        assert!(!clause.contains("/nope/"), "a vanished folder must not reach the script");
-    }
-
-    #[test]
-    fn an_existing_start_folder_is_where_the_chooser_opens() {
-        let clause = default_location_clause(Some("/tmp"));
-        assert!(clause.contains("default location"));
-        assert!(clause.contains("/tmp"));
-    }
-
-    #[test]
-    fn no_start_folder_falls_back_to_home_and_never_to_the_app_folder() {
-        // The default before this was "wherever the process is", which is the
-        // Galactus folder: the one place a user's own project is never kept.
-        let clause = default_location_clause(None);
-        let home = std::env::var("HOME").unwrap_or_default();
-        if !home.is_empty() && std::path::Path::new(&home).is_dir() {
-            assert!(clause.contains(&home), "the fallback is the user's home");
-        }
-    }
 }
 
 #[cfg(test)]
@@ -5284,22 +5258,32 @@ fn detect_root() -> Option<String> {
 fn pick_folder(prompt: Option<String>, start: Option<String>) -> Result<Option<String>, String> {
     let text = prompt.unwrap_or_default();
     let text = if text.trim().is_empty() { "Choose a folder" } else { text.trim() };
+    // ONE -e, and nothing in it but the chooser. Two things were added here and
+    // both were reverted the same afternoon, after a user reported that a picker
+    // which had always worked had stopped opening at all:
+    //
+    //   - `tell me to activate`, to raise the panel above the app window. It
+    //     sends an Apple Event, and this app is signed with a hardened runtime
+    //     and no NSAppleEventsUsageDescription, so from inside the bundle that
+    //     is a different question than it is from a terminal, where it works.
+    //   - `default location`, so the panel would not open inside the Galactus
+    //     folder. Correct in intent, and it is the change that has to come back,
+    //     but it came back WITH the activation and the two cannot be told apart
+    //     from a report that says "it does not work".
+    //
+    // Both behaved perfectly when run from a shell, which is exactly why they
+    // shipped. A picker that opens in the wrong folder is a nuisance; a picker
+    // that does not open is the end of the road, so this stays minimal until the
+    // difference between the two contexts is measured rather than reasoned about.
     let out = Command::new("osascript")
-        // Best effort, in its own try: the chooser belongs to osascript, which
-        // is a background process, so its panel opens BEHIND the app window and
-        // the click reads as having done nothing. Activation must not be able to
-        // take the chooser down with it if it is ever refused, hence the try:
-        // an unhandled error here would return no folder and look identical to
-        // the bug it is meant to fix.
-        .args(["-e", "try", "-e", "tell me to activate", "-e", "end try"])
         .arg("-e")
         .arg(format!(
-            "POSIX path of (choose folder with prompt \"{}\"{})",
-            applescript_string(text),
-            default_location_clause(start.as_deref())
+            "POSIX path of (choose folder with prompt \"{}\")",
+            applescript_string(text)
         ))
         .output()
         .map_err(|e| e.to_string())?;
+    let _ = start;
     if !out.status.success() {
         return Ok(None); // user cancelled
     }
@@ -5316,32 +5300,6 @@ fn applescript_string(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-/// Where the chooser opens, as an AppleScript clause, or nothing.
-///
-/// `choose folder` with no default location opens wherever the process happens
-/// to be, and the process is the app, so every picker in Galactus opened inside
-/// the Galactus folder. That is the one folder a user is NOT looking for when
-/// they are choosing a project to work on. The caller passes the folder that
-/// makes sense for it (the current workspace, say); the home folder is the
-/// fallback, because it is where a person's own work lives.
-///
-/// A path that does not exist is dropped rather than passed on: AppleScript
-/// raises on a bad default location, and the whole chooser would fail with it.
-fn default_location_clause(start: Option<&str>) -> String {
-    let candidate = start
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-        .filter(|p| p.is_dir())
-        .or_else(|| std::env::var_os("HOME").map(PathBuf::from).filter(|p| p.is_dir()));
-    match candidate {
-        Some(p) => format!(
-            " default location (POSIX file \"{}\")",
-            applescript_string(&p.display().to_string())
-        ),
-        None => String::new(),
-    }
-}
 
 // ---------------------------------------------------------------- memory + obsidian
 
