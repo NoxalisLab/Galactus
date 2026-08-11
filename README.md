@@ -26,6 +26,10 @@ The cache is elastic. Give it 5.06 GB and gpt-oss-120b answers at 3.2 tok/s; giv
 
 That last point is not a slogan. A differential probe fingerprints every MoE tensor over a full perplexity run and finds zero divergence against stock llama.cpp. The GPU path is held to the same standard: the Metal expert kernels replicate the CPU integer pipeline exactly, verified across all 11 expert quantization types in the catalog, 32768 of 32768 bits identical per type, maximum absolute difference 0.0.
 
+![Certification](docs/media/certify.gif)
+
+*`certify.py` on Mellum2: every MoE tensor compared, zero divergence, identical perplexity. 2x.*
+
 ### What that buys, measured
 
 Every throughput below was measured on real hardware and lives in the model registry the app reads at runtime. One entry carries no curve yet, GLM-5.2 744B, which has a single measured point: it is certified bit-transparent, which is a different claim and the one that gates availability. Minimum RAM is what the app will let you install on, derived from measured resident footprint, not from arithmetic.
@@ -57,7 +61,9 @@ A native macOS app for Apple Silicon, self-contained. The patched engine and its
 
 Grab `Galactus_x.y.z_aarch64.dmg` from the Releases page, drag it to Applications, launch it.
 
-> *Video placeholder: two-minute tour of the app.*
+![The app](docs/media/tour.gif)
+
+*The app on this Mac, at 2x.*
 
 ### Models that fit, told honestly
 
@@ -65,17 +71,25 @@ The catalog shows what actually runs on **your** Mac, with speeds interpolated f
 
 Installing a large model offers a mono or dual-SSD layout. The app detects candidate volumes, measures each drive's real sequential throughput with cache-bypassing reads, and shows the verdict before you confirm: striping across both when both pull their weight, mono on the fast drive when the slow one would bottleneck the pair. Deleting is symmetric and conservative, packs living outside the app's own store are spared and reported rather than silently removed.
 
-> *Video placeholder: the catalog on this Mac, then installing a model across two SSDs with the bandwidth probe and its verdict on screen.*
+![Installing a model](docs/media/install.gif)
+
+*Installing a model: download, profile, plan, pack. Nothing is typed. 6x.*
 
 ### An agent, not a textbox
 
 The chat is a full agent loop with three autonomy levels, manual, assisted and autonomous, cycled with Shift+Tab. It reads and writes files, runs commands, browses documents, searches its local knowledge base, calls skills, and delegates to teammates. Every file write shows a git-style diff in its tool card, including auto-approved ones, and permission prompts carry the diff before you allow anything.
 
+![Permissions](docs/media/permissions.gif)
+
+*Nothing runs unasked: the diff is on screen before you allow it. 4x.*
+
 **Teams of sub-agents.** The agent can spawn teammates, brief them, and ask them questions. Each teammate gets a clean context and **its own visible thread**, so a team of engineers working in parallel is something you read, not something you infer from a summary. Delegation depth is bounded and cycles are refused.
 
 While the model is writing you keep typing. Messages queue, appear in the thread immediately, and run turn by turn. Context is managed adaptively: large tool outputs spill to scratch files the model rereads on demand, knowledge-base results are fitted to a token budget computed from the live window, and long threads are summarized by the model itself before the window overflows. Conversations do not die at the context edge, and they survive a restart.
 
-> *Video placeholder: the agent reading a folder, patching a file with visible diffs, then a team of teammates working in parallel.*
+![The agent at work](docs/media/agent.gif)
+
+*The agent in the Code view, reading and patching. 6x.*
 
 ### The Code view
 

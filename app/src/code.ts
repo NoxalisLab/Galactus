@@ -449,10 +449,7 @@ export function pendingPaths(): string[] {
 // ---------------------------------------------------------------- workspace
 
 export async function chooseWorkspace(): Promise<void> {
-  // Opens on the folder already being worked in, so "change folder" starts from
-  // where you are rather than from wherever the process happens to sit, which
-  // was the Galactus folder and is the one place a project is never kept.
-  const p = await api.pickFolder(t("pick.workspace"), root ?? undefined);
+  const p = await api.pickFolder();
   if (!p) return;
   await setWorkspace(p);
 }

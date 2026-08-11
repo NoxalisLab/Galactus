@@ -1639,20 +1639,6 @@ fn read_tool_verdict(body: &str) -> Option<bool> {
 }
 
 #[cfg(test)]
-mod folder_picker_tests {
-    use super::applescript_string;
-
-    #[test]
-    fn a_quote_in_a_translated_prompt_cannot_end_the_literal() {
-        // French and English both use apostrophes freely, and a translator has
-        // no reason to know the sentence ends up inside an AppleScript literal.
-        assert_eq!(applescript_string(r#"Choose "the" folder"#), r#"Choose \"the\" folder"#);
-        assert_eq!(applescript_string(r"a\b"), r"a\\b");
-    }
-
-}
-
-#[cfg(test)]
 mod tool_probe_tests {
     use super::{probe_body, read_tool_verdict, PROBE_TOKEN_BUDGETS};
 
@@ -5248,56 +5234,18 @@ fn detect_root() -> Option<String> {
 }
 
 /// Native macOS folder chooser via osascript. Returns None on cancel.
-///
-/// `prompt` is what the panel asks for. It used to be the fixed sentence
-/// "Select your Galactus folder" at all ten call sites, so a user changing the
-/// Code workspace, choosing an Obsidian vault or adding a knowledge folder was
-/// asked for the Galactus folder every time, which is a different thing and the
-/// one answer that would have been wrong.
 #[tauri::command]
-fn pick_folder(prompt: Option<String>, start: Option<String>) -> Result<Option<String>, String> {
-    let text = prompt.unwrap_or_default();
-    let text = if text.trim().is_empty() { "Choose a folder" } else { text.trim() };
-    // ONE -e, and nothing in it but the chooser. Two things were added here and
-    // both were reverted the same afternoon, after a user reported that a picker
-    // which had always worked had stopped opening at all:
-    //
-    //   - `tell me to activate`, to raise the panel above the app window. It
-    //     sends an Apple Event, and this app is signed with a hardened runtime
-    //     and no NSAppleEventsUsageDescription, so from inside the bundle that
-    //     is a different question than it is from a terminal, where it works.
-    //   - `default location`, so the panel would not open inside the Galactus
-    //     folder. Correct in intent, and it is the change that has to come back,
-    //     but it came back WITH the activation and the two cannot be told apart
-    //     from a report that says "it does not work".
-    //
-    // Both behaved perfectly when run from a shell, which is exactly why they
-    // shipped. A picker that opens in the wrong folder is a nuisance; a picker
-    // that does not open is the end of the road, so this stays minimal until the
-    // difference between the two contexts is measured rather than reasoned about.
+fn pick_folder() -> Result<Option<String>, String> {
     let out = Command::new("osascript")
         .arg("-e")
-        .arg(format!(
-            "POSIX path of (choose folder with prompt \"{}\")",
-            applescript_string(text)
-        ))
+        .arg("POSIX path of (choose folder with prompt \"Select your Galactus folder\")")
         .output()
         .map_err(|e| e.to_string())?;
-    let _ = start;
     if !out.status.success() {
         return Ok(None); // user cancelled
     }
     let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
     Ok(if p.is_empty() { None } else { Some(p) })
-}
-
-/// Escape a string for the inside of an AppleScript double-quoted literal.
-///
-/// The prompt is now caller-supplied, and a caller is a translation file. A
-/// quote or a backslash in a translated sentence would otherwise end the literal
-/// and turn the rest into script.
-fn applescript_string(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 
