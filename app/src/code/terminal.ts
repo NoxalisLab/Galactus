@@ -1726,6 +1726,15 @@ export interface TerminalControllerDeps {
   /** Ask the view to repaint. Called on output, so it must be cheap or throttled. */
   repaint(): void;
   toast?(message: string): void;
+  /**
+   * The last session just closed, by the user or by its own exit.
+   *
+   * A pane holding no terminal has nothing to show and nothing to do: it sat
+   * there taking a third of the editor to say "no terminal open", which is a
+   * sentence about itself rather than about the work. Closing the last tab is
+   * how a person says they are done with the terminal, so the pane goes with it.
+   */
+  onEmpty?(): void;
 }
 
 /**
@@ -1892,6 +1901,9 @@ export class TerminalController {
       // The child may already be gone; killing it twice is not an error.
     }
     this.deps.repaint();
+    // After the repaint, so a view that closes the pane does so over a tree that
+    // already reflects the session being gone.
+    if (!this.sessions.list().length) this.deps.onEmpty?.();
   }
 
   /**
@@ -1971,6 +1983,7 @@ export class TerminalPanel {
       root: deps.root,
       repaint: () => this.queueRepaint(),
       toast: deps.toast,
+      onEmpty: () => deps.onEmpty?.(),
     });
     this.root = elt(`<div class="term" tabindex="0">
       <div class="term-tabs" role="tablist"></div>

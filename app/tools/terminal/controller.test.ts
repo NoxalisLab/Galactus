@@ -18,12 +18,15 @@ interface Rig {
   ctl: TerminalController;
   repaints: () => number;
   toasts: string[];
+  /** One entry per time the controller reported it had no session left. */
+  empties: number[];
 }
 
 function rig(root: string | null = "/work"): Rig {
   const host = new FakeTerminalHost();
   let repaints = 0;
   const toasts: string[] = [];
+  const empties: number[] = [];
   const ctl = new TerminalController({
     host,
     root: () => root,
@@ -31,8 +34,9 @@ function rig(root: string | null = "/work"): Rig {
       repaints++;
     },
     toast: (m) => toasts.push(m),
+    onEmpty: () => empties.push(1),
   });
-  return { host, ctl, repaints: () => repaints, toasts };
+  return { host, ctl, repaints: () => repaints, toasts, empties };
 }
 
 // ---------------------------------------------------------------- opening
@@ -332,6 +336,30 @@ test("closing the active tab hands the focus to another one", async () => {
   assert.equal(ctl.activeId, a.id);
   await ctl.close(a.id);
   assert.equal(ctl.activeId, null);
+});
+
+test("the view is told when the last session goes, and only then", async () => {
+  // The pane that holds the terminal has nothing left to show at that moment.
+  // Before this, it stayed open displaying a sentence about its own emptiness,
+  // taking a third of the editor to say nothing about the work.
+  const { ctl, empties } = rig();
+  const a = (await ctl.open("user", 40, 5))!;
+  const b = (await ctl.open("user", 40, 5))!;
+  await ctl.close(a.id);
+  assert.deepEqual(empties, [], "one tab left is not empty");
+  await ctl.close(b.id);
+  assert.deepEqual(empties, [1], "the last one is");
+});
+
+test("closing a session that is not there says nothing", async () => {
+  // close() returns early on an unknown id, and an early return must not be
+  // able to report an emptiness that did not just happen.
+  const { ctl, empties } = rig();
+  const s = (await ctl.open("user", 40, 5))!;
+  await ctl.close("t404");
+  assert.deepEqual(empties, [], "nothing closed, nothing to report");
+  await ctl.close(s.id);
+  assert.deepEqual(empties, [1]);
 });
 
 test("closing an already exited session still kills and forgets", async () => {

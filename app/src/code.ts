@@ -2232,6 +2232,15 @@ function mountTerminal(wrap: HTMLElement): void {
       root: () => root,
       repaint: () => undefined, // the panel drives its own frame-scheduled paint
       toast: (m) => deps?.toast(m),
+      // Closing the last tab closes the pane. The panel object survives, so the
+      // Terminal button reopens instantly with a fresh shell; what goes is the
+      // third of the editor that was being spent on a sentence saying there was
+      // no terminal.
+      onEmpty: () => {
+        if (!termOpen) return;
+        termOpen = false;
+        mountTerminal(wrap);
+      },
       cell: measureCell,
     });
   }
