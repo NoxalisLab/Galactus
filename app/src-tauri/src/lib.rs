@@ -1536,21 +1536,57 @@ fn server_status() -> ServerStatus {
 /// question plainly calls for one. A model that answers in prose here will
 /// answer in prose when asked to read a file.
 fn probe_tool_calling(port: u16) -> Option<bool> {
-    const BODY: &str = r#"{
+    // Two budgets. The first is what an ordinary model needs; the second is for
+    // one that thinks at length before it acts, and is only ever paid when the
+    // first answer was cut off mid-sentence.
+    for cap in PROBE_TOKEN_BUDGETS {
+        let body = probe_body(cap);
+        let out = Command::new("curl")
+            .args(["-s", "--max-time", "180", "-H", "Content-Type: application/json", "-d", &body])
+            .arg(format!("http://127.0.0.1:{port}/v1/chat/completions"))
+            .output()
+            .ok()?;
+        match read_tool_verdict(&String::from_utf8_lossy(&out.stdout)) {
+            Some(v) => return Some(v),
+            // None means the answer was truncated, so it says nothing about the
+            // model. Buy more room and ask again.
+            None => continue,
+        }
+    }
+    None
+}
+
+/// Token budgets for the capability probe, tried in order.
+///
+/// It was ONE budget of 64, and that number is where this bug lived. A reasoning
+/// model spends its opening tokens thinking, so it was cut off long before it
+/// reached the tool call, answered with no `tool_calls`, and was recorded as
+/// incapable. Qwen3.6 and Mellum2 are both thinking models, and both had the
+/// Code and Runs tabs locked against them by a measurement of nothing but the
+/// budget. 64 tokens does not measure whether a model can call a tool; it
+/// measures whether it can do so while barely being allowed to speak.
+const PROBE_TOKEN_BUDGETS: [u32; 2] = [512, 4096];
+
+/// The probe request, at a given token budget.
+///
+/// `enable_thinking:false` is passed through `chat_template_kwargs`, which the
+/// Qwen family honours and every other template ignores: a model that can be
+/// asked to skip its reasoning for one question answers this one in a few
+/// tokens. It is a shortcut, not the fix, which is why the budgets above are
+/// sized to work even when it is ignored.
+fn probe_body(max_tokens: u32) -> String {
+    format!(
+        r#"{{
       "model":"galactus-local",
-      "messages":[{"role":"user","content":"What time is it right now? Use the tool."}],
-      "tools":[{"type":"function","function":{
+      "messages":[{{"role":"user","content":"What time is it right now? Use the tool."}}],
+      "tools":[{{"type":"function","function":{{
         "name":"get_current_time",
         "description":"Return the current time. Call this whenever the user asks what time it is.",
-        "parameters":{"type":"object","properties":{},"required":[]}}}],
-      "tool_choice":"auto","max_tokens":64,"stream":false,"temperature":0
-    }"#;
-    let out = Command::new("curl")
-        .args(["-s", "--max-time", "120", "-H", "Content-Type: application/json", "-d", BODY])
-        .arg(format!("http://127.0.0.1:{port}/v1/chat/completions"))
-        .output()
-        .ok()?;
-    read_tool_verdict(&String::from_utf8_lossy(&out.stdout))
+        "parameters":{{"type":"object","properties":{{}},"required":[]}}}}}}],
+      "tool_choice":"auto","max_tokens":{max_tokens},"stream":false,"temperature":0,
+      "chat_template_kwargs":{{"enable_thinking":false}}
+    }}"#
+    )
 }
 
 /// Read the verdict out of one chat-completions answer.
@@ -1576,18 +1612,76 @@ fn read_tool_verdict(body: &str) -> Option<bool> {
         .and_then(|c| c.get("message"))
         .and_then(|m| m.get("tool_calls"))
         .and_then(|t| t.as_array());
-    match calls {
-        // Well formed means at least one call that actually names a function.
-        Some(a) => Some(a.iter().any(|c| {
+    let named = |a: &Vec<serde_json::Value>| {
+        a.iter().any(|c| {
             c.pointer("/function/name").and_then(|n| n.as_str()).is_some_and(|n| !n.is_empty())
-        })),
-        None => Some(false),
+        })
+    };
+    if let Some(a) = calls {
+        if named(a) {
+            return Some(true);
+        }
     }
+    // No call. Before calling that a no, ask whether the model was allowed to
+    // finish. finish_reason "length" means the budget ran out mid-answer, and an
+    // answer that was cut off is evidence about the budget, not about the model:
+    // a reasoning model reaches its tool call after its thinking, so a short
+    // budget produced a confident, permanent, wrong "cannot call tools" that
+    // locked the Code and Runs tabs. Unknown, so the caller can buy more room.
+    let truncated = v
+        .pointer("/choices/0/finish_reason")
+        .and_then(|f| f.as_str())
+        .is_some_and(|f| f == "length");
+    if truncated {
+        return None;
+    }
+    Some(false)
 }
 
 #[cfg(test)]
 mod tool_probe_tests {
-    use super::read_tool_verdict;
+    use super::{probe_body, read_tool_verdict, PROBE_TOKEN_BUDGETS};
+
+    #[test]
+    fn a_truncated_answer_is_not_a_verdict() {
+        // What a thinking model returns when the budget ends inside its
+        // reasoning: no call, and finish_reason saying why. Reading this as
+        // "cannot call tools" is what locked the Code tab on Qwen3.6.
+        let body = r#"{"choices":[{"finish_reason":"length","message":{
+            "role":"assistant","content":"","reasoning_content":"The user wants the time, so I should"}}]}"#;
+        assert_eq!(read_tool_verdict(body), None, "truncation says nothing about the model");
+    }
+
+    #[test]
+    fn a_complete_answer_with_no_call_is_a_definite_no() {
+        // The distinction the test above depends on: a model that finished its
+        // sentence and still did not reach for the tool really cannot be driven.
+        let body = r#"{"choices":[{"finish_reason":"stop","message":{
+            "role":"assistant","content":"I do not have access to the current time."}}]}"#;
+        assert_eq!(read_tool_verdict(body), Some(false));
+    }
+
+    #[test]
+    fn the_probe_gives_a_reasoning_model_room_to_reach_its_tool_call() {
+        // 64 was the shipped value and it measured the budget, not the model.
+        assert!(
+            PROBE_TOKEN_BUDGETS[0] >= 256,
+            "a thinking model spends its opening tokens thinking",
+        );
+        assert!(
+            PROBE_TOKEN_BUDGETS[1] > PROBE_TOKEN_BUDGETS[0],
+            "the retry must buy more room than the first attempt",
+        );
+        for cap in PROBE_TOKEN_BUDGETS {
+            let body = probe_body(cap);
+            assert!(body.contains(&format!("\"max_tokens\":{cap}")));
+            // Auto on purpose: forcing the call would measure the grammar
+            // engine, not whether the model reaches for a tool by itself.
+            assert!(body.contains("\"tool_choice\":\"auto\""));
+            assert!(body.contains("\"enable_thinking\":false"));
+            assert!(serde_json::from_str::<serde_json::Value>(&body).is_ok(), "probe body is JSON");
+        }
+    }
 
     #[test]
     fn a_real_tool_call_reads_as_capable() {

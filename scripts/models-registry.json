@@ -851,13 +851,15 @@
         "stock": 6.7049,
         "wired": 6.7049,
         "corpus": "corpus/materialized/stage1/long-context-multifieldqa-zh-0029.txt",
-        "corpus_sha256": "2baf18f90cd4b6e0",
+        "corpus_sha256": "2baf18f90cd4b6e09411f3e870e5d734943fc07828d5a0e3b6d8b527f485aa33",
+        "corpus_bytes": 20737,
         "seed": 42,
         "ctx": 512,
         "batch": 512,
         "ubatch": 2,
-        "regime": "cross-check path (CPU experts and biases)",
+        "regime": "llama-perplexity, CPU expert reference: --n-cpu-moe 99 --no-repack --fit off --chunks 1, stock against wired (GALACTUS_H4=1, --no-mmap)",
         "date": "2026-08-11",
+        "run": "20260811T092803Z",
         "recorded_by": "scripts/certify.py"
       },
       "measured": [
