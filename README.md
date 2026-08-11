@@ -115,11 +115,11 @@ A local BM25 index turns any folders you pick into a searchable knowledge base, 
 
 The app ships **a 50-note starter vault**, seeded on first launch and never overwritten afterwards: conventions, working practices, and trade-specific notes. Connect it, or your own Obsidian vault, and the agent reads and writes notes with the same diff discipline. The Constellation view renders the vault's wikilink graph as a navigable 3D starfield, click a star to read or edit the note.
 
-![Memory, knowledge and the vault](docs/media/memory.gif)
+![The vault constellation](docs/media/memory.gif)
 
-*What Galactus keeps: persistent memory scoped globally or per workspace, the folders it indexes for offline search, and an existing Obsidian vault read and written in place. 2x.*
+*The starter vault as a graph, 50 notes and 255 links, a note opened from it, and the page that owns all of it: persistent memory with its scope, the folders indexed for offline search, and the vault read and written in place. 2x.*
 
-> *Video placeholder: dictating a question and hearing the answer spoken back, and the vault constellation.*
+> *Video placeholder: dictating a question and hearing the answer spoken back.*
 
 ### Skills
 
