@@ -165,6 +165,19 @@ fn galactus_root() -> Result<PathBuf, String> {
     if let Some(root) = map.get("root").cloned().filter(|s| !s.is_empty()) {
         let p = PathBuf::from(root);
         if p.join("scripts/models-registry.json").exists() {
+            // The refresh used to live inside provision_default_root, which
+            // only runs when NO root is configured. Every user who had ever
+            // launched an older build had one, so the branch that keeps the
+            // catalogue current was exactly the branch they never took: their
+            // model list was frozen at whatever shipped with their first
+            // install, and two new certified models were invisible to them.
+            // Once per process: this is called on nearly every command.
+            static ONCE: std::sync::Once = std::sync::Once::new();
+            ONCE.call_once(|| {
+                if !root_is_a_checkout(&p) {
+                    let _ = refresh_policy_files(&p);
+                }
+            });
             return Ok(p);
         }
     }
@@ -281,10 +294,25 @@ fn provision_default_root() -> Result<PathBuf, String> {
     std::fs::create_dir_all(root.join("artifacts/h4/packs")).map_err(|e| e.to_string())?;
     let res = resource_dir()
         .ok_or("Galactus folder is not set and the app bundle carries no packaged data")?;
+    let _ = res;
+    refresh_policy_files(&root)?;
+    Ok(root)
+}
+
+/// The files that belong to the application rather than to the user.
+///
+/// The catalogue, the profiler and the two pack scripts are policy and
+/// implementation: an upgraded app must not keep running the registry, the
+/// hardware floor or the installer that shipped with its FIRST installation.
+///
+/// Copy then rename, so a launch interrupted halfway leaves the previous file
+/// whole rather than a truncated one.
+fn refresh_policy_files(root: &Path) -> Result<(), String> {
+    let res = resource_dir()
+        .ok_or("Galactus folder is not set and the app bundle carries no packaged data")?;
     let src = res.join("packaged/scripts");
-    // These files are application policy and implementation, not user data.
-    // Refresh them on every launch so an upgraded app cannot keep executing an
-    // obsolete hardware floor or installer from its first installation.
+    let scripts = root.join("scripts");
+    std::fs::create_dir_all(&scripts).map_err(|e| e.to_string())?;
     for f in [
         "models-registry.json",
         "moe-profile.py",
@@ -296,7 +324,20 @@ fn provision_default_root() -> Result<PathBuf, String> {
         std::fs::copy(src.join(f), &temporary).map_err(|e| format!("refresh {f}: {e}"))?;
         std::fs::rename(&temporary, &destination).map_err(|e| format!("activate {f}: {e}"))?;
     }
-    Ok(root)
+    Ok(())
+}
+
+/// Whether this root is one the app may overwrite policy files inside.
+///
+/// A checkout is somebody's working tree: its registry is edited, measured into
+/// and committed, and an app that copied its bundled copy over it would destroy
+/// work between two launches. A provisioned folder, or any plain folder a user
+/// pointed the app at, holds no such history and must be kept current.
+///
+/// The test is the presence of a `.git` entry, not a guess from the path. It is
+/// a file as well as a directory: a worktree carries `.git` as a file.
+fn root_is_a_checkout(root: &Path) -> bool {
+    root.join(".git").exists()
 }
 
 // ---------------------------------------------------------------- hardware
@@ -1636,6 +1677,50 @@ fn read_tool_verdict(body: &str) -> Option<bool> {
         return None;
     }
     Some(false)
+}
+
+#[cfg(test)]
+mod policy_refresh_tests {
+    use super::root_is_a_checkout;
+    use std::path::PathBuf;
+
+    fn scratch(name: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!("galactus-refresh-{name}"));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    #[test]
+    fn a_checkout_is_never_overwritten() {
+        // Somebody's working tree: the registry there is edited, measured into
+        // and committed, and a copy from the bundle would destroy that between
+        // two launches.
+        let p = scratch("dir");
+        std::fs::create_dir_all(p.join(".git")).unwrap();
+        assert!(root_is_a_checkout(&p));
+        let _ = std::fs::remove_dir_all(&p);
+    }
+
+    #[test]
+    fn a_worktree_counts_as_a_checkout_too() {
+        // git puts a FILE named .git in a linked worktree, not a directory, and
+        // a test for is_dir would have written straight into one.
+        let p = scratch("worktree");
+        std::fs::write(p.join(".git"), "gitdir: /elsewhere/.git/worktrees/x").unwrap();
+        assert!(root_is_a_checkout(&p));
+        let _ = std::fs::remove_dir_all(&p);
+    }
+
+    #[test]
+    fn a_plain_folder_is_refreshed() {
+        // The provisioned folder, and any folder a user pointed the app at:
+        // no history to lose, and a catalogue that has to stay current.
+        let p = scratch("plain");
+        std::fs::create_dir_all(p.join("scripts")).unwrap();
+        assert!(!root_is_a_checkout(&p));
+        let _ = std::fs::remove_dir_all(&p);
+    }
 }
 
 #[cfg(test)]
