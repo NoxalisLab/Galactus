@@ -119,8 +119,6 @@ The app ships **a 50-note starter vault**, seeded on first launch and never over
 
 *The starter vault as a graph, 50 notes and 255 links, a note opened from it, and the page that owns all of it: persistent memory with its scope, the folders indexed for offline search, and the vault read and written in place. 2x.*
 
-> *Video placeholder: dictating a question and hearing the answer spoken back.*
-
 ### Skills
 
 Thirty packaged skills are callable from the composer with `/`, covering development (senior dev, code review, methodical debugging, refactoring, writing tests, API design, SQL, regular expressions, git surgery), operations (Docker, Kubernetes, Terraform, remote servers over SSH, production incidents, log analysis, performance profiling), data and AI, and professional work (document analysis, sourced research, professional writing, technical translation, meeting minutes, spreadsheets, LaTeX, accessibility, UI/UX, portfolio tracking, sensitive data, mac automation, local prompting). A one-shot deep-research arm sits alongside them.
@@ -172,8 +170,6 @@ galactus status | stop
 ```
 
 `serve` accepts `--ram eco|balanced|perf`, `--cpu-moe`, `--slots N` and `--port N`, and prints the chosen regime and the pack layout before the endpoint comes up.
-
-> *Video placeholder: a CLI session, help, catalog and server state.*
 
 ---
 
