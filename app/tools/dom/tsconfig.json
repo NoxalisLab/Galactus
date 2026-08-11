@@ -24,6 +24,7 @@
     "runsview.test.ts",
     "learnedview.test.ts",
     "reasoning.test.ts",
+    "installprogress.test.ts",
     "mainmode.test.ts"
   ]
 }

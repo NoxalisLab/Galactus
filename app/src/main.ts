@@ -2799,7 +2799,7 @@ function modelsView(): HTMLElement {
     const prog = installProgress.get(m.id);
     const bar = tps ? Math.min(100, Math.max(6, (tps / maxTps) * 100)) : 0;
     const speedColor = !v.ok ? "var(--dim)" : "var(--acc-tx)";
-    const card = el(`<div class="mcard ${certification.canExecute ? "" : "uncertified"}">
+    const card = el(`<div class="mcard ${certification.canExecute ? "" : "uncertified"}" data-mcard="${esc(m.id)}">
       <div class="top">
         <div class="info">
           <div class="nm"><b>${esc(m.name)}</b><span class="chip-cert ${certification.canExecute ? "" : "pending"}">${certification.canExecute ? "✓" : "◷"} ${esc(certLabel)}</span></div>
@@ -2809,8 +2809,8 @@ function modelsView(): HTMLElement {
       </div>
       <div class="bar"><div style="width:${bar}%"></div></div>
       <div class="brief" data-brief="${esc(m.id)}"></div>
-      <div class="foot"><span class="n">${prog ? `<b style="color:var(--acc-tx)">${Math.round(prog.pct)}%</b> · ${esc(installLabel(prog.label))}` : esc(v.note || (m.installed ? t("models.installed") : (m.arch + " · " + (m.experts_used ?? "?") + " active")))}</span><span data-a></span></div>
-      ${prog ? `<div class="bar" style="margin-top:2px"><div style="width:${prog.pct}%"></div></div>` : ""}
+      <div class="foot"><span class="n" data-plabel>${prog ? `<b style="color:var(--acc-tx)">${Math.round(prog.pct)}%</b> · ${esc(installLabel(prog.label))}` : esc(v.note || (m.installed ? t("models.installed") : (m.arch + " · " + (m.experts_used ?? "?") + " active")))}</span><span data-a></span></div>
+      ${prog ? `<div class="bar" data-prog style="margin-top:2px"><div style="width:${prog.pct}%"></div></div>` : ""}
     </div>`);
     const slot = card.querySelector<HTMLElement>("[data-a]")!;
     if (!v.ok) { /* no action */ }
@@ -2953,6 +2953,12 @@ async function paintBriefs(wrap: HTMLElement, models: ModelEntry[]): Promise<voi
     } catch {
       continue; // no recommendation is strictly better than a wrong one
     }
+    // A command that RESOLVES with null gets past that catch, and machineBrief
+    // reads rec.mode on its first line. The planner answers null whenever it has
+    // nothing to say about a model, so this was a crash reachable from ordinary
+    // data rather than from a fault, and it took the whole models page with it.
+    // Same treatment as a throw: say nothing about this card.
+    if (!rec) continue;
     // Matched on the dataset rather than through a selector built from the id:
     // a model id is registry data, and building a selector out of data is how
     // a quoting bug becomes a broken query.
@@ -4213,7 +4219,15 @@ function render() {
   {
     const pg = layout.querySelector(".page") as HTMLElement | null;
     const want = pageScroll[view];
-    if (pg && want) pg.scrollTop = want;
+    if (pg && want) {
+      pg.scrollTop = want;
+      // Again after layout. A scrollTop written into a subtree the engine has
+      // not measured yet is clamped to whatever height it currently believes,
+      // which for a fresh tree can be zero, and the assignment above silently
+      // becomes a scroll to the top. The second write lands once the height is
+      // real. It is a no-op whenever the first one worked.
+      requestAnimationFrame(() => { if (pg.scrollTop !== want) pg.scrollTop = want; });
+    }
   }
   wireUiSemantics(layout);
   // A rebuild must never orphan an open permission dialog. It lives on the
@@ -4233,6 +4247,41 @@ function paintTeamStrip(): void {
   if (!strip) return;
   if (sess.sub || !sess.conv.team.length) { strip.remove(); return; }
   strip.innerHTML = el(teamStripHtml(sess.conv)).innerHTML;
+}
+
+/**
+ * Move one model card's install bar, in place, touching nothing else.
+ *
+ * WHY THIS EXISTS RATHER THAN ANOTHER render(). A download emits a progress
+ * event every few hundred milliseconds and each one used to rebuild the entire
+ * application: sidebar, navigation, every card. The user watching the model they
+ * are installing lost their place on every tick, because the tree holding their
+ * scroll position no longer existed. Preserving the scroll across the rebuild
+ * treats the symptom; the disease is rebuilding a thousand nodes to move one bar
+ * two pixels.
+ *
+ * Returns false when the card is not on screen in its downloading shape, which
+ * is the FIRST tick (the card still shows a Download button that must become a
+ * cancel button) and any tick arriving while another view is open. The caller
+ * falls back to a full render for those, so the in-place path only ever handles
+ * the case it can handle completely.
+ */
+function paintInstallProgress(id: string): boolean {
+  const prog = installProgress.get(id);
+  if (!prog) return false;
+  // Found by walking rather than by selector: a model id goes into an attribute
+  // selector unescaped otherwise, and CSS.escape is not in the test DOM.
+  const cards = document.querySelectorAll<HTMLElement>("[data-mcard]");
+  let card: HTMLElement | null = null;
+  cards.forEach((c) => { if (c.dataset.mcard === id) card = c; });
+  if (!card) return false;
+  const bar = (card as HTMLElement).querySelector<HTMLElement>("[data-prog] > div");
+  const label = (card as HTMLElement).querySelector<HTMLElement>("[data-plabel]");
+  if (!bar || !label) return false;
+  bar.style.width = `${prog.pct}%`;
+  label.innerHTML =
+    `<b style="color:var(--acc-tx)">${Math.round(prog.pct)}%</b> · ${esc(installLabel(prog.label))}`;
+  return true;
 }
 
 /** Repaint only the sidebar (conversation list) without touching the thread. */
@@ -4562,7 +4611,13 @@ async function boot() {
       installProgress.delete(p.model_id);
       if (p.phase === "error") toast(t("install.failed").replace("%s", String(p.label ?? "")));
       api.registry().then((r) => { registry = r; render(); }).catch(() => render());
-    } else { installProgress.set(p.model_id, { pct: p.pct, label: p.label }); if (view === "models") render(); }
+    } else {
+      installProgress.set(p.model_id, { pct: p.pct, label: p.label });
+      // In place when the card already shows a bar, which is every tick but the
+      // first. The first one needs a full render, because the Download button
+      // has to become a cancel button.
+      if (view === "models" && !paintInstallProgress(p.model_id)) render();
+    }
   });
   await onEvent("galactus://voice", (p: any) => {
     const inp = document.getElementById("ci") as HTMLTextAreaElement | null;
