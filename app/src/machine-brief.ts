@@ -76,6 +76,8 @@ export interface MachineBrief {
   slots: number;
   residentGb: number;
   budgetGb: number;
+  /** The planner's own words, on a refusal only. Rendered verbatim. */
+  reason?: string;
 }
 
 function gb(bytes: number): number {
@@ -103,7 +105,16 @@ export function machineBrief(rec: RecommendationBrief): MachineBrief {
     residentGb: gb(rec.resident_bytes),
     budgetGb: gb(rec.budget_bytes),
   };
-  if (rec.blocked) return { tone: "blocked", key: "brief.blocked", ...common };
+  // A refusal carries its own sentence, written by the planner, which is the
+  // only thing that knows WHY it said no: not enough free memory and by how
+  // much, or a model below this Mac's floor, or a volume that vanished. The
+  // first version of this threw that string away and rendered a fixed memory
+  // template instead, whose numbers came from a struct the refusal path never
+  // fills. A user testing it read "it needs about 0.0 GB and your Mac can
+  // spare 57.8 GB", which is a sentence that argues against itself.
+  if (rec.blocked) {
+    return { tone: "blocked", key: "brief.blocked", reason: rec.blocked, ...common };
+  }
   if (rec.mode !== rec.requested_mode) return { tone: "adjusted", key: "brief.adjusted", ...common };
   return { tone: "ok", key: "brief.ok", ...common };
 }

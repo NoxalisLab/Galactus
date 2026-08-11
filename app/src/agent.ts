@@ -99,6 +99,16 @@ export interface PlanStep {
 
 export interface AgentHooks {
   onAssistantDelta: (text: string) => void;
+  /**
+   * The model's thoughts, live, before any of the answer exists.
+   *
+   * OPTIONAL because most consumers do not want them. A chat window does: it
+   * is the only thing moving during the thirty seconds a reasoning model
+   * spends before its first word, and without it a working model and a hung
+   * application look identical. A run's transcript does not: a record is a
+   * record of what was decided and done, not of what was considered.
+   */
+  onReasoningDelta?: (text: string) => void;
   onAssistantDone: () => void;
   onToolStart: (name: string, detail: string) => void;
   onToolResult: (name: string, result: string) => void;
@@ -1483,6 +1493,16 @@ export class Agent {
       onDelta: (text) => {
         assistantText += text;
         this.hooks.onAssistantDelta(text);
+      },
+      // Thoughts go to the screen and NOWHERE ELSE. They are deliberately not
+      // added to `assistantText`, which becomes the assistant message pushed
+      // into `this.messages`: re-sending a model its own previous thinking
+      // spends context on working notes it has already used, and llama.cpp's
+      // own templates only ever re-render reasoning for the turn in flight.
+      // It also keeps the context-overflow retry honest, which decides on
+      // `assistantText.length === 0` meaning "no answer was produced yet".
+      onReasoning: (text) => {
+        this.hooks.onReasoningDelta?.(text);
       },
       onToolCalls: (calls) => {
         toolCalls = calls;

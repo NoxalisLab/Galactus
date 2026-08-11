@@ -678,8 +678,25 @@ def update_registry(model_id: str, points: list[dict], note: str) -> None:
         PACKAGED_REGISTRY.write_text(REGISTRY.read_text(encoding="utf-8"), encoding="utf-8")
 
 
+def select_tiers(tiers: list[dict], only: set[str]) -> list[dict]:
+    """The tiers named on the command line, in the order the sweep would take them.
+
+    A Mac tier is named by its gigabytes. The two small tiers are named by the
+    word cache, because they model a cache smaller than any Mac and therefore
+    carry no mac_gb to be called by. Without a name they could never be measured
+    on their own, so a curve whose only doubtful point was one of them forced a
+    re-run of every tier, and re-measuring a tier that already agreed with itself
+    is how a settled point turns unsettled again.
+    """
+    if not only:
+        return tiers
+    want = {int(x) for x in only if x != "cache"}
+    return [t for t in tiers
+            if (t["mac_gb"] in want) or (t["mac_gb"] is None and "cache" in only)]
+
+
 def bench(model_id: str, predict: int, dry_run: bool, write_registry: bool,
-          regime: str, force: bool, only_mac: set[int], repeats: int) -> int:
+          regime: str, force: bool, only_mac: set[str], repeats: int) -> int:
     if not dry_run and not LLAMA_CLI.is_file():
         die(f"{LLAMA_CLI} is missing: build the engine first "
             f"(cmake --build third_party/llama.cpp/build --target llama-cli -j)")
@@ -699,7 +716,7 @@ def bench(model_id: str, predict: int, dry_run: bool, write_registry: bool,
 
     tiers = build_tiers(registry, geo)
     if only_mac:
-        tiers = [x for x in tiers if x["mac_gb"] in only_mac]
+        tiers = select_tiers(tiers, only_mac)
         if not tiers:
             die(f"no tier of {model_id} matches --only-mac {sorted(only_mac)}: "
                 f"run --dry-run to see the tiers this model has")
@@ -885,9 +902,11 @@ def main() -> int:
                     help="print the tiers and the plan, measure nothing")
     ap.add_argument("--update-registry", action="store_true",
                     help="write the curve into both copies of models-registry.json")
-    ap.add_argument("--only-mac", type=int, nargs="+", metavar="GB",
-                    help="measure only these Mac tiers and merge them into the stored curve, "
-                         "for finishing a long sweep one tier at a time")
+    ap.add_argument("--only-mac", nargs="+", metavar="GB",
+                    help="measure only these tiers and merge them into the stored curve, "
+                         "for finishing a long sweep one tier at a time. A number names a Mac "
+                         "tier; the word cache names the small diagnostic tiers, which belong "
+                         "to no Mac and so have no number to be called by")
     ap.add_argument("--repeat", type=int, default=REPEATS, metavar="N",
                     help=f"measure each tier N times and keep the best (default {REPEATS}). "
                          "Interference only slows a run down, so the best pass is the "
@@ -899,8 +918,15 @@ def main() -> int:
                          "planner micro-batch (default). crosscheck: CPU experts at micro-batch "
                          "1, the path that proves the kernels and that the app does not take")
     args = ap.parse_args()
+    only = set(args.only_mac or [])
+    # argparse took integers until the word cache had to be spellable too, so the
+    # type check that came free now has to be done here, before a typo reaches
+    # int() and reports itself as a traceback instead of as a mistake.
+    bad = sorted(x for x in only if x != "cache" and not x.isdigit())
+    if bad:
+        die(f"--only-mac takes gigabyte numbers or the word cache, not {', '.join(bad)}")
     return bench(args.model, args.predict, args.dry_run, args.update_registry,
-                 args.regime, args.force, set(args.only_mac or []), max(1, args.repeat))
+                 args.regime, args.force, only, max(1, args.repeat))
 
 
 if __name__ == "__main__":

@@ -136,3 +136,23 @@ test("every key this module can emit exists in both languages", () => {
     assert.ok(i18n.includes(`"${key}"`), `missing i18n key: ${key}`);
   }
 });
+
+test("a refusal is shown in the planner's own words, not a template", () => {
+  // A user testing the build read: "it needs about 0.0 GB and your Mac can
+  // spare 57.8 GB". The refusal path never fills resident_bytes, so the fixed
+  // memory template rendered a zero and argued against itself. The planner is
+  // the only thing that knows why it said no, and it already writes a sentence.
+  const why =
+    "not enough free memory to start this model right now: its smallest " +
+    "footprint (eco) needs 96.4 GB and this Mac can spare 57.8 GB";
+  const b = machineBrief(rec({ blocked: why, resident_bytes: 0 }));
+  assert.equal(b.tone, "blocked");
+  assert.equal(b.reason, why, "the planner's sentence must survive to the card");
+});
+
+test("a brief that is not a refusal carries no reason to render", () => {
+  // The renderer prefers reason over the template, so a stray reason on a
+  // healthy brief would replace a correct sentence with a stale one.
+  assert.equal(machineBrief(rec()).reason, undefined);
+  assert.equal(machineBrief(rec({ mode: "eco", requested_mode: "perf" })).reason, undefined);
+});

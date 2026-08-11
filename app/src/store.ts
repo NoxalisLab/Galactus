@@ -18,10 +18,22 @@
 import { api, ChatMessage } from "./api";
 import type { PlanStep } from "./agent";
 import { isRunId } from "./runrecord";
+import { appendReasoning as growThought, hasReasoning } from "./reasoning";
 
 export type ChatItem =
   | { kind: "user"; text: string; /** Set when another agent of the team sent this. */ from?: string }
   | { kind: "assistant"; text: string }
+  /**
+   * What the model thought before it wrote anything. `done` is false only
+   * while it streams: the moment the answer, a tool call or the end of the
+   * turn arrives, the block settles and the answer takes the reading surface.
+   *
+   * STORED, like every other item, and for the same reason: a conversation
+   * that reopens with its answers but not the thinking that produced them
+   * loses something the reader watched happen. It is NOT put in `history`,
+   * so it never re-enters the model's context. See agent.ts.
+   */
+  | { kind: "reasoning"; text: string; done: boolean }
   | { kind: "tool"; name: string; arg: string; result: string; done: boolean; path?: string }
   | { kind: "error"; text: string }
   | { kind: "notice"; text: string }
@@ -213,6 +225,11 @@ function settleInterrupted(items: ChatItem[]): ChatItem[] {
       it.done = true;
       it.failed = true;
       if (it.answer === "") it.answer = INTERRUPTED;
+    } else if (it.kind === "reasoning" && !it.done) {
+      // A block stored mid-thought would reopen expanded and animated, as if
+      // a model that died with the process were still thinking. It settles
+      // instead, and keeps whatever it had got to.
+      it.done = true;
     }
   }
   return items;
@@ -412,12 +429,57 @@ function touch(th: ThreadTarget): void {
 }
 
 export function pushUser(th: ThreadTarget, text: string, from?: string): void {
+  settleReasoning(th);
   th.data.items.push(from ? { kind: "user", text, from } : { kind: "user", text });
   touch(th);
 }
 
+/**
+ * Append streamed reasoning to the trailing block, opening one if needed.
+ *
+ * EVERY chunk is accumulated, including the ones that are not yet readable.
+ * The first chunk of a stream can be half a delimiter ("<thi", with "nk>ok"
+ * to follow), and a store that refused to open a block for it would then open
+ * one on the second chunk and put "nk>ok" on screen as if the model had
+ * written it. Whether there is anything worth SHOWING is a separate question,
+ * asked by the view on every repaint and by `settleReasoning` at the end.
+ */
+export function appendReasoning(th: ThreadTarget, text: string): void {
+  const last = th.data.items[th.data.items.length - 1];
+  if (last && last.kind === "reasoning" && !last.done) {
+    last.text = growThought(last.text, text);
+    return;
+  }
+  th.data.items.push({ kind: "reasoning", text: growThought("", text), done: false });
+}
+
+/**
+ * The thinking gives way: close the trailing block, or drop it if it held
+ * nothing.
+ *
+ * Called by everything that can follow a thought (the answer, a tool call, a
+ * teammate, a notice, an error, the end of the turn), so no stored block can
+ * be left claiming to still be streaming while something else is on screen.
+ *
+ * Dropping rather than closing is what keeps a model that emitted only
+ * whitespace, or only its own delimiters, out of the conversation file, out of
+ * its markdown export and out of the Rust side's conversation search. A block
+ * that carried nothing is not a block that is empty; it is a block that never
+ * happened.
+ */
+export function settleReasoning(th: ThreadTarget): void {
+  const last = th.data.items[th.data.items.length - 1];
+  if (!last || last.kind !== "reasoning" || last.done) return;
+  if (!hasReasoning(last.text)) {
+    th.data.items.pop();
+    return;
+  }
+  last.done = true;
+}
+
 /** Append streamed text to the trailing assistant item, creating it if needed. */
 export function appendAssistant(th: ThreadTarget, text: string): void {
+  settleReasoning(th);
   const last = th.data.items[th.data.items.length - 1];
   if (last && last.kind === "assistant") last.text += text;
   else th.data.items.push({ kind: "assistant", text });
@@ -434,6 +496,7 @@ export function lastAssistantText(td: ThreadData): string {
 }
 
 export function pushTool(th: ThreadTarget, name: string, arg: string, path?: string): void {
+  settleReasoning(th);
   th.data.items.push({ kind: "tool", name, arg, result: "", done: false, path });
 }
 
@@ -455,6 +518,7 @@ export function completeTool(th: ThreadTarget, result: string): void {
  * a question and an answer drift apart.
  */
 export function pushAgentBlock(th: ThreadTarget, sub: SubAgent, ask: string): void {
+  settleReasoning(th);
   th.data.items.push({
     kind: "agent",
     agentId: sub.id,
@@ -482,11 +546,13 @@ export function completeAgentBlock(th: ThreadTarget, agentId: string, answer: st
 
 /** A discreet system line in the thread (task switched, model swapping…). */
 export function pushNotice(th: ThreadTarget, text: string): void {
+  settleReasoning(th);
   th.data.items.push({ kind: "notice", text });
   touch(th);
 }
 
 export function pushError(th: ThreadTarget, text: string): void {
+  settleReasoning(th);
   th.data.items.push({ kind: "error", text });
   touch(th);
 }
@@ -502,8 +568,17 @@ export function syncHistory(th: ThreadTarget, history: ChatMessage[], contextSum
   if (contextSummary) th.data.contextSummary = contextSummary;
 }
 
-/** Drop a trailing assistant item that never received any text. */
+/**
+ * Close the turn's tail: drop what carries nothing, settle what is still open.
+ *
+ * A trailing assistant item that never received a token is dropped, as it
+ * always was, and whatever reasoning was under it is then settled by the same
+ * rule as everywhere else. A turn that thought and was stopped mid-thought
+ * keeps its thought; a turn whose reasoning channel carried only whitespace
+ * leaves nothing behind.
+ */
 export function trimEmptyTail(th: ThreadTarget): void {
   const last = th.data.items[th.data.items.length - 1];
   if (last && last.kind === "assistant" && last.text.trim() === "") th.data.items.pop();
+  settleReasoning(th);
 }

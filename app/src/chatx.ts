@@ -25,6 +25,7 @@
 // ---------------------------------------------------------------------------
 
 import { t, getLang } from "./i18n";
+import { visibleReasoning } from "./reasoning";
 import type { Conversation, ConvMeta, ChatItem } from "./store";
 
 // ================================================================ markdown export
@@ -69,6 +70,13 @@ function renderItem(it: ChatItem): string {
       return `**${t("chat.you")}**\n\n${it.text.trim()}`;
     case "assistant":
       return `**${t("chatx.exportAssistant")}**\n\n${it.text.trim()}`;
+    case "reasoning": {
+      // Quoted, like a tool result, because it is working material and not the
+      // answer. A block whose channel carried nothing readable exports nothing
+      // at all rather than an empty heading.
+      const body = quoted(visibleReasoning(it.text), 2000);
+      return body === "" ? "" : `> **${t("chatx.exportReasoning")}**\n>\n${body}`;
+    }
     case "tool": {
       const head = `> **${t("chatx.exportTool")}, ${toolLabel(it.name)}**` + (it.arg ? ` \`${it.arg}\`` : "");
       const body = it.done ? quoted(it.result) : "> " + t("chat.running");
@@ -87,6 +95,12 @@ function renderItem(it: ChatItem): string {
       return [head, ask, ans].filter((x) => x !== "").join("\n>\n");
     }
   }
+}
+
+/** Ajoute un item rendu, sauf quand il ne rend rien. */
+function pushItem(parts: string[], it: ChatItem): void {
+  const out = renderItem(it);
+  if (out !== "") parts.push(out);
 }
 
 /**
@@ -111,7 +125,9 @@ export function exportConversationMarkdown(conv: Conversation): string {
   }
 
   parts.push("---");
-  for (const it of conv.items) parts.push(renderItem(it));
+  // An item can render to nothing (a reasoning block whose channel carried
+  // only whitespace); pushing it would open a blank gap in the file.
+  for (const it of conv.items) pushItem(parts, it);
 
   // The team's threads, in full. Exporting only the parent would drop exactly
   // the part the sub-agents did, which is what the user recruited them for.
@@ -119,7 +135,7 @@ export function exportConversationMarkdown(conv: Conversation): string {
     parts.push("---", `## ${t("chatx.exportAgent")} · ${sub.name}${sub.role ? ` (${sub.role})` : ""}`);
     if (sub.brief.trim() !== "") parts.push(`> ${sub.brief.trim().split("\n").join("\n> ")}`);
     if (sub.items.length === 0) parts.push(`*${t("chatx.exportEmptyAgent")}*`);
-    for (const it of sub.items) parts.push(renderItem(it));
+    for (const it of sub.items) pushItem(parts, it);
   }
 
   return parts.join("\n\n") + "\n";

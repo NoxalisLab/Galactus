@@ -1415,6 +1415,32 @@ fn server_state() -> &'static Mutex<ServerState> {
 
 /// Context window every slot must keep, whatever the slot count.
 const CTX_PER_SLOT: u32 = 8192;
+
+/// How the engine is told to parse a chat turn, in one place.
+///
+/// `--jinja` has always been here. `--reasoning-format deepseek` is the flag
+/// that lets the app show a model thinking, and the three values are NOT
+/// interchangeable:
+///
+///   none             leaves the thoughts unparsed inside `message.content`,
+///                    so the answer arrives with raw `<think>` tags in it.
+///   deepseek-legacy  extracts them AND re-inlines them into the content while
+///                    streaming (server-schema.cpp sets `reasoning_in_content`
+///                    for exactly this value), so the tags come back on screen.
+///   deepseek         puts them in `message.reasoning_content`, including in
+///                    every streaming delta, and leaves `content` holding the
+///                    answer alone. The only one of the three that lets the
+///                    two be shown differently.
+///
+/// It is passed EXPLICITLY even though this build already defaults to it
+/// (`common_params::reasoning_format` in common/common.h). The flag's own help
+/// text in common/arg.cpp announces a different default, "auto", so the
+/// default is a thing two parts of llama.cpp disagree about, and a vendored
+/// dependency is bumped by whoever is bumping it. Stating the value costs two
+/// arguments and removes the app's most visible behaviour from that argument.
+fn chat_parsing_args() -> [&'static str; 3] {
+    ["--jinja", "--reasoning-format", "deepseek"]
+}
 /// Hard ceiling on slots: past this the KV cache stops being free and a Mac
 /// with a big model would pay it in evictions.
 const MAX_SLOTS: u32 = 4;
@@ -3272,6 +3298,46 @@ async fn engine_diagnose(message: String) -> EngineDiagnosis {
 }
 
 #[cfg(test)]
+mod chat_parsing_tests {
+    use super::chat_parsing_args;
+
+    #[test]
+    fn the_engine_is_told_to_separate_thinking_from_the_answer() {
+        // Without this pair the thoughts either never leave `content` or are
+        // re-inlined into it, and the app is back to showing nothing while a
+        // model reasons for half a minute.
+        let args = chat_parsing_args();
+        let at = args
+            .iter()
+            .position(|a| *a == "--reasoning-format")
+            .expect("the engine must be told which reasoning format to use");
+        assert_eq!(
+            args.get(at + 1),
+            Some(&"deepseek"),
+            "the value has to follow the flag, or llama-server reads the next flag as it"
+        );
+    }
+
+    #[test]
+    fn the_legacy_format_is_never_the_one_asked_for() {
+        // deepseek-legacy extracts the thoughts AND re-inlines them into the
+        // content while streaming, which puts raw <think> tags back on screen.
+        // It reads like a harmless synonym and is the one wrong answer here.
+        assert!(
+            !chat_parsing_args().contains(&"deepseek-legacy"),
+            "deepseek-legacy re-inlines thinking into the streamed content"
+        );
+    }
+
+    #[test]
+    fn the_template_engine_stays_on() {
+        // The reasoning format is only consulted on the jinja path: without
+        // --jinja the server never runs the parser that fills reasoning_content.
+        assert!(chat_parsing_args().contains(&"--jinja"));
+    }
+}
+
+#[cfg(test)]
 mod engine_failure_tests {
     use super::classify_engine_failure;
 
@@ -3544,7 +3610,7 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
         // One slot per conversation the app is allowed to run at once.
         .arg("--parallel")
         .arg(slots.to_string())
-        .arg("--jinja")
+        .args(chat_parsing_args())
         .stdout(Stdio::from(log_out))
         .stderr(Stdio::from(log_err));
     let child = cmd.spawn().map_err(|e| format!("spawn llama-server: {e}"))?;

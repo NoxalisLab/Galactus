@@ -34,6 +34,32 @@ const SRC = "src-tauri/src";
  * elsewhere proves nothing about the test that is supposed to cover it.
  */
 const MUTATIONS = [
+  // ------------------------------------------------- the engine command line
+  {
+    group: "engine: the reasoning channel is asked for at all",
+    file: `${SRC}/lib.rs`,
+    // The arity is kept: dropping an element changes the return type and the
+    // crate stops compiling, which is a build failure and not a red test.
+    from: '["--jinja", "--reasoning-format", "deepseek"]',
+    to: '["--jinja", "--jinja", "deepseek"]',
+    tests: [
+      "chat_parsing_tests::the_engine_is_told_to_separate_thinking_from_the_answer",
+    ],
+  },
+  {
+    group: "engine: the legacy format re-inlines thinking into the answer",
+    file: `${SRC}/lib.rs`,
+    from: '["--jinja", "--reasoning-format", "deepseek"]',
+    to: '["--jinja", "--reasoning-format", "deepseek-legacy"]',
+    tests: ["chat_parsing_tests::the_legacy_format_is_never_the_one_asked_for"],
+  },
+  {
+    group: "engine: the template engine the reasoning parser needs stays on",
+    file: `${SRC}/lib.rs`,
+    from: '["--jinja", "--reasoning-format", "deepseek"]',
+    to: '["--reasoning-format", "deepseek", "--no-jinja"]',
+    tests: ["chat_parsing_tests::the_template_engine_stays_on"],
+  },
   // ------------------------------------------------------------- scheduler
   {
     group: "scheduler: a batch past the grace window fires nothing",

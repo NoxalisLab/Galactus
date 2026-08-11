@@ -155,6 +155,12 @@ const dict: Record<string, { en: string; fr: string }> = {
   "px.thinking": { en: "thinking", fr: "réfléchit" },
   "px.queued": { en: "waiting for a free slot", fr: "attend un créneau libre" },
   "px.responding": { en: "writing the reply", fr: "rédige la réponse" },
+  // Distinct from px.thinking on purpose: "thinking" is what the app says
+  // while it waits for a first token of anything, and this is what it says
+  // once the model's own thoughts are actually arriving on screen.
+  "px.reasoning": { en: "reasoning out loud", fr: "raisonne à voix haute" },
+  "chat.reasoning": { en: "Reasoning", fr: "Raisonnement" },
+  "chat.reasoningLive": { en: "live", fr: "en direct" },
   "tool.osearch": { en: "Search vault", fr: "Chercher dans le coffre" },
   "tool.oread": { en: "Read note", fr: "Lire la note" },
   "tool.owrite": { en: "Write note", fr: "Écrire la note" },
@@ -648,6 +654,7 @@ const dict: Record<string, { en: string; fr: string }> = {
   // chat extras (export + live stats)
   "chatx.exportAssistant": { en: "Galactus", fr: "Galactus" },
   "chatx.exportTool": { en: "Tool", fr: "Outil" },
+  "chatx.exportReasoning": { en: "Reasoning", fr: "Raisonnement" },
   "chatx.exportError": { en: "Error", fr: "Erreur" },
   "chatx.exportAgent": { en: "Sub-agent", fr: "Sous-agent" },
   "chatx.exportEmptyAgent": { en: "(nothing was asked of this sub-agent)", fr: "(rien n'a été demandé à ce sous-agent)" },

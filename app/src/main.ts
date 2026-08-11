@@ -19,6 +19,7 @@ import { CATALOG, ConnectorPreset, EnabledConnector, loadEnabled, saveEnabled } 
 import { getLang, Lang, setLang, t } from "./i18n";
 import { PixelMode, PixelViz } from "./pixel";
 import { renderMarkdown, wireCodeCopy } from "./markdown";
+import { reasoningGist, visibleReasoning } from "./reasoning";
 import { Cosmos } from "./cosmos";
 import { detectPreviewable, PreviewKind, PreviewPanel } from "./preview";
 import { currentTask, loadTasks, pickModelFor, setCurrentTask, TaskDef, TaskId } from "./tasks";
@@ -1660,6 +1661,37 @@ function assistantBodyEl(): { row: HTMLElement; body: HTMLElement } {
   return { row, body: row.querySelector(".body")! };
 }
 
+/**
+ * The model's thinking, dimmer than its answer, and giving way to it.
+ *
+ * WHAT "REPLACE" MEANS HERE. While the thoughts stream the block is open and
+ * is the only thing on screen, which is the whole point: it is what tells a
+ * reader that a model taking thirty seconds is working rather than stuck. The
+ * moment the answer starts, the block closes to a single quiet line and the
+ * answer takes the reading surface. The thinking is therefore replaced where
+ * it matters, on screen, without being destroyed: someone who wants to check
+ * what the model reasoned reopens it, and someone who does not never sees it
+ * again. Deleting it would have made that second reader impossible to serve.
+ *
+ * Returns null when the channel carried nothing readable, which is what most
+ * turns of most models produce. No block, no heading, no empty frame.
+ */
+function reasoningCardEl(it: Extract<ChatItem, { kind: "reasoning" }>): HTMLElement | null {
+  const text = visibleReasoning(it.text);
+  if (text.trim() === "") return null;
+  const live = !it.done;
+  // Open while it streams, closed once it has settled. The gist only appears
+  // on a settled block: while the block is open the text is right there, and a
+  // header repeating its first line would be the same words twice.
+  const gist = live ? "" : reasoningGist(it.text);
+  const card = el(`<div class="think${live ? " open" : ""}">
+    <div class="think-h">${I.mem}<span class="nm">${esc(t("chat.reasoning"))}</span><span class="arg">${esc(gist)}</span><span class="st">${live ? esc(t("chat.reasoningLive")) : ""}</span><span class="chev">▾</span></div>
+    <div class="think-b"><div class="think-t">${esc(text)}</div></div>
+  </div>`);
+  card.querySelector(".think-h")!.addEventListener("click", () => card.classList.toggle("open"));
+  return card;
+}
+
 function toolCardEl(it: Extract<ChatItem, { kind: "tool" }>): HTMLElement {
   const icon = it.name === "run_command" ? I.term : I.file;
   const status = it.done ? t("chat.done") : t("chat.running");
@@ -1768,6 +1800,15 @@ function paintChat(): void {
       wireCodeCopy(md, t("chat.copied"));
       addPreviewButtons(md);
       body.appendChild(md);
+    } else if (it.kind === "reasoning") {
+      const card = reasoningCardEl(it);
+      // The group is opened only when there IS a card, so a turn whose
+      // reasoning channel said nothing does not leave an empty avatar row
+      // hanging above the answer.
+      if (card) {
+        if (!body) { const r = assistantBodyEl(); log.appendChild(r.row); body = r.body; }
+        body.appendChild(card);
+      }
     } else if (it.kind === "tool") {
       if (!body) { const r = assistantBodyEl(); log.appendChild(r.row); body = r.body; }
       body.appendChild(toolCardEl(it));
@@ -1918,6 +1959,17 @@ async function ensureAgent(sess: Thread): Promise<void> {
         // a fresh action scene finishes its hold before this applies).
         onThreadActivity(sess, "responding", t("px.responding"));
         store.appendAssistant(sess, text);
+        repaint();
+      },
+      // The first thing that moves on a reasoning turn, and the reason this
+      // whole path exists. It runs on the model's FIRST thought token, long
+      // before any answer: the block appears, and the activity label stops
+      // saying the generic "thinking" and says the model is reasoning out
+      // loud, which is a claim the screen can now back up.
+      onReasoningDelta: (text) => {
+        if (!mine()) return;
+        store.appendReasoning(sess, text);
+        onThreadActivity(sess, "thinking", t("px.reasoning"));
         repaint();
       },
       onAssistantDone: () => {
@@ -2909,7 +2961,9 @@ async function paintBriefs(wrap: HTMLElement, models: ModelEntry[]): Promise<voi
     );
     if (!slot || !slot.isConnected) continue;
     const b = machineBrief(rec);
-    const sentence = t(b.key)
+    // A refusal is rendered verbatim: the planner already wrote the only
+    // sentence that carries the real numbers.
+    const sentence = b.reason ? b.reason : t(b.key)
       .replace("%m", t(b.modeKey))
       .replace("%q", t(b.requestedModeKey))
       .replace("%n", String(b.slots))

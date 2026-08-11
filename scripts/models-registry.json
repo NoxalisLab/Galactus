@@ -794,6 +794,165 @@
         }
       ],
       "measured_note": "MacBook Pro M5 Max, 128 GB, internal SSD, shipped path (Metal bit-exact experts), batch 512, planner ubatch, 192 predicted tokens on a 24-paragraph prompt, bench 2026-08-10 by scripts/bench-curve.py; cache = app planning ceiling per Mac tier, curve stops at full residency (24.38 GB)"
+    },
+    {
+      "id": "mellum2-12b",
+      "name": "Mellum2 12B-A2.5B Thinking (Q4_K_M)",
+      "arch": "mellum",
+      "gguf_bytes": 8071295040,
+      "layers_moe": 28,
+      "experts": 64,
+      "experts_used": 8,
+      "status": "certified_bit_transparent",
+      "expert_bytes_total": 7413432320,
+      "non_expert_bytes": 657862720,
+      "min_ram_gb": 16,
+      "download": {
+        "base": "https://huggingface.co/JetBrains/Mellum2-12B-A2.5B-Thinking-GGUF-Q4_K_M/resolve/main",
+        "files": [
+          "Mellum2-12B-A2.5B-Thinking-Q4_K_M.gguf"
+        ]
+      },
+      "tasks": [
+        "code",
+        "scripting",
+        "reasoning"
+      ],
+      "certified_date": "2026-08-11",
+      "certified_ppl": {
+        "stock": 6.7049,
+        "wired": 6.7049,
+        "corpus": "corpus/materialized/stage1/long-context-multifieldqa-zh-0029.txt",
+        "corpus_sha256": "2baf18f90cd4b6e0",
+        "seed": 42,
+        "ctx": 512,
+        "batch": 512,
+        "ubatch": 2,
+        "regime": "cross-check path (CPU experts and biases)",
+        "date": "2026-08-11",
+        "recorded_by": "scripts/certify.py"
+      },
+      "measured": [
+        {
+          "cache_gb": 1.85,
+          "gen_tps": 42.1,
+          "prompt_tps": 42.8,
+          "passes": 3,
+          "spread_pct": 0.5,
+          "prompt_spread_pct": 2.6
+        },
+        {
+          "cache_gb": 3.71,
+          "gen_tps": 49.0,
+          "prompt_tps": 50.7,
+          "passes": 3,
+          "spread_pct": 0.4,
+          "prompt_spread_pct": 0.8
+        },
+        {
+          "cache_gb": 5.56,
+          "gen_tps": 55.4,
+          "prompt_tps": 59.5,
+          "passes": 3,
+          "spread_pct": 2.0,
+          "prompt_spread_pct": 2.4
+        },
+        {
+          "cache_gb": 7.41,
+          "gen_tps": 62.6,
+          "prompt_tps": 141.6,
+          "mac_gb": 16,
+          "passes": 3,
+          "spread_pct": 2.9,
+          "prompt_spread_pct": 6.9
+        }
+      ],
+      "measured_note": "MacBook Pro M5 Max, 128 GB, internal SSD, shipped path (Metal bit-exact experts), batch 512, planner ubatch, 192 predicted tokens on a 24-paragraph prompt, bench 2026-08-11 by scripts/bench-curve.py; cache = app planning ceiling per Mac tier, curve stops at full residency (7.41 GB)"
+    },
+    {
+      "id": "qwen35-35b-a3b",
+      "name": "Qwen3.6 35B-A3B (UD-Q4_K_M)",
+      "arch": "qwen35moe",
+      "gguf_bytes": 22134528992,
+      "layers_moe": 40,
+      "experts": 256,
+      "experts_used": 8,
+      "status": "certified_bit_transparent",
+      "expert_bytes_total": 19574816768,
+      "non_expert_bytes": 2559712224,
+      "min_ram_gb": 16,
+      "download": {
+        "base": "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main",
+        "files": [
+          "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+        ]
+      },
+      "tasks": [
+        "code",
+        "scripting",
+        "reasoning",
+        "general"
+      ],
+      "certified_date": "2026-08-11",
+      "certified_ppl": {
+        "stock": 22.9323,
+        "wired": 22.9323,
+        "corpus": "corpus/materialized/stage1/long-context-multifieldqa-zh-0029.txt",
+        "corpus_sha256": "2baf18f90cd4b6e0",
+        "seed": 42,
+        "ctx": 512,
+        "batch": 512,
+        "ubatch": 2,
+        "regime": "cross-check path (CPU experts and biases)",
+        "date": "2026-08-11",
+        "recorded_by": "scripts/certify.py"
+      },
+      "measured": [
+        {
+          "cache_gb": 2.45,
+          "gen_tps": 37.2,
+          "prompt_tps": 37.7,
+          "passes": 5,
+          "spread_pct": 0.5,
+          "prompt_spread_pct": 0.3
+        },
+        {
+          "cache_gb": 4.89,
+          "gen_tps": 39.7,
+          "prompt_tps": 63.2,
+          "passes": 5,
+          "spread_pct": 0.8,
+          "prompt_spread_pct": 0.2
+        },
+        {
+          "cache_gb": 7.8,
+          "gen_tps": 41.2,
+          "prompt_tps": 82.7,
+          "mac_gb": 16,
+          "passes": 5,
+          "spread_pct": 0.5,
+          "prompt_spread_pct": 0.2
+        },
+        {
+          "cache_gb": 15.8,
+          "gen_tps": 45.9,
+          "prompt_tps": 108.6,
+          "mac_gb": 24,
+          "passes": 3,
+          "spread_pct": 0.0,
+          "prompt_spread_pct": 1.9
+        },
+        {
+          "cache_gb": 19.57,
+          "gen_tps": 46.1,
+          "prompt_tps": 199.5,
+          "mac_gb": 32,
+          "passes": 3,
+          "spread_pct": 0.2,
+          "prompt_spread_pct": 0.1
+        }
+      ],
+      "measured_note": "MacBook Pro M5 Max, 128 GB, internal SSD, shipped path (Metal bit-exact experts), batch 512, planner ubatch, 192 predicted tokens on a 24-paragraph prompt, bench 2026-08-11 by scripts/bench-curve.py; cache = app planning ceiling per Mac tier, curve stops at full residency (19.57 GB)"
     }
   ],
   "mac_lineup": {
@@ -830,11 +989,15 @@
   },
   "task_models": {
     "code": [
+      "qwen35-35b-a3b",
       "qwen3-coder-30b",
+      "mellum2-12b",
       "qwen3-next-80b",
       "qwen3-30b-a3b"
     ],
     "scripting": [
+      "mellum2-12b",
+      "qwen35-35b-a3b",
       "qwen3-coder-30b",
       "qwen3-30b-a3b",
       "qwen3-next-80b"
@@ -845,11 +1008,13 @@
       "qwen3-30b-a3b"
     ],
     "reasoning": [
+      "qwen35-35b-a3b",
       "gpt-oss-120b",
       "glm-4.5-air",
       "qwen3-235b-a22b"
     ],
     "general": [
+      "qwen35-35b-a3b",
       "qwen3-next-80b",
       "qwen3-30b-a3b",
       "gpt-oss-120b"

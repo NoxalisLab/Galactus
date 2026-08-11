@@ -111,6 +111,82 @@ const MUTATIONS = [
     to: "void p;",
     test: "the panel prints the folder the agent writes into",
   },
+  // ------------------------------------------------ the model's own thinking
+  //
+  // The defect these cover was a MISSING line, not a wrong one, so each of
+  // these mutations puts the app back into a state it actually shipped in:
+  // the stream reader ignoring the reasoning channel, the block never giving
+  // way to the answer, an empty block drawn for a model that never thought.
+  {
+    group: "thinking: the stream reader reads the reasoning channel at all",
+    file: `${OUT}/api.js`,
+    from: 'if (typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) {',
+    to: "if (false) {",
+    test: "a model's thinking is on screen before any of its answer exists",
+  },
+  {
+    group: "thinking: the chat window asks for the thoughts",
+    file: `${OUT}/agent.js`,
+    from: "                this.hooks.onReasoningDelta?.(text);",
+    to: "                void text;",
+    test: "a model's thinking is on screen before any of its answer exists",
+  },
+  {
+    group: "thinking: the answer settles the block instead of leaving it open",
+    file: `${OUT}/store.js`,
+    from: "export function appendAssistant(th, text) {\n    settleReasoning(th);",
+    to: "export function appendAssistant(th, text) {",
+    test: "a model's thinking is on screen before any of its answer exists",
+  },
+  {
+    group: "thinking: a settled block is drawn closed",
+    file: `${OUT}/main.js`,
+    from: 'const card = el(`<div class="think${live ? " open" : ""}">',
+    to: 'const card = el(`<div class="think open">',
+    test: "a model's thinking is on screen before any of its answer exists",
+  },
+  {
+    group: "thinking: the activity label changes on the first thought token",
+    file: `${OUT}/main.js`,
+    from: 'onThreadActivity(sess, "thinking", t("px.reasoning"));',
+    to: 'onThreadActivity(sess, "thinking", t("px.thinking"));',
+    test: "the activity label says the model is reasoning, from the first thought",
+  },
+  {
+    group: "thinking: an unreadable block is never given a frame while it streams",
+    file: `${OUT}/main.js`,
+    from: '    if (text.trim() === "")\n        return null;',
+    to: '    if (false)\n        return null;',
+    test: "a reasoning channel that carries only whitespace draws nothing",
+  },
+  {
+    group: "thinking: a block that carried nothing is dropped, not kept",
+    file: `${OUT}/store.js`,
+    from: "    if (!hasReasoning(last.text)) {\n        th.data.items.pop();\n        return;\n    }",
+    to: "    if (false) {\n        th.data.items.pop();\n        return;\n    }",
+    test: "a reasoning channel that carries only whitespace draws nothing",
+  },
+  {
+    group: "thinking: every chunk is accumulated, readable or not",
+    file: `${OUT}/store.js`,
+    from: "    th.data.items.push({ kind: \"reasoning\", text: growThought(\"\", text), done: false });",
+    to: "    if (hasReasoning(text))\n        th.data.items.push({ kind: \"reasoning\", text: growThought(\"\", text), done: false });",
+    test: "a delimiter split across chunks never reaches the screen",
+  },
+  {
+    group: "thinking: replayed delimiters are stripped",
+    file: `${OUT}/reasoning.js`,
+    from: "    for (const marker of MARKERS)\n        out = out.split(marker).join(\"\");",
+    to: "    for (const marker of MARKERS)\n        void marker;",
+    test: "a delimiter split across chunks never reaches the screen",
+  },
+  {
+    group: "thinking: a half-arrived delimiter is withheld, not flashed",
+    file: `${OUT}/reasoning.js`,
+    from: '    const held = withheldSuffix(out);',
+    to: '    const held = "";',
+    test: "a delimiter split across chunks never reaches the screen",
+  },
 ];
 
 function run(testName) {
@@ -125,6 +201,7 @@ function run(testName) {
         testName,
         "tools/dom/out/tools/dom/runsview.test.js",
         "tools/dom/out/tools/dom/learnedview.test.js",
+        "tools/dom/out/tools/dom/reasoning.test.js",
       ],
       { stdio: "pipe" },
     );

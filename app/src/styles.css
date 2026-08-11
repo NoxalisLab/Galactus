@@ -215,6 +215,27 @@ html.pane-dragging iframe { pointer-events: none !important; }
 .tool.open .tool-b { display: block; }
 .tool-b pre { margin: 0; padding: 11px 13px; border-radius: 0; background: var(--pre); border: 1px solid var(--bd); font-family: var(--mono); font-size: 11.5px; line-height: 1.7; color: #9a9aac; white-space: pre-wrap; word-break: break-all; max-height: 260px; overflow: auto; }
 
+/* the model's own reasoning.
+   Same frame and same twist as a tool card, so it needs no new interaction
+   language, and quieter throughout: the answer is --tx3, the thinking is
+   --dim3, which is a real reading colour (4.85:1) and not a greyed-out one.
+   A reader can tell at a glance which of the two is the model talking to them
+   and which is the model talking to itself. */
+.think { border: 1px solid rgba(255, 255, 255, 0.05); border-radius: 0; background: rgba(255, 255, 255, 0.014); overflow: hidden; }
+.think-h { display: flex; align-items: center; gap: 10px; padding: 8px 13px; cursor: default; transition: background 0.15s; }
+.think-h:hover { background: rgba(255, 255, 255, 0.028); }
+.think-h svg { stroke: var(--dim3); flex: none; width: 15px; height: 15px; }
+.think-h .nm { font-size: 11.5px; font-weight: 500; color: var(--dim2); flex: none; }
+.think-h .arg { font-size: 11.5px; color: var(--dim3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+.think-h .st { font-size: 11px; color: var(--dim3); flex: none; }
+.think-h .chev { color: var(--dim4); font-size: 11px; transition: transform 0.18s; flex: none; margin-left: auto; }
+.think.open .think-h .chev { transform: rotate(180deg); margin-left: auto; }
+.think-b { display: none; padding: 0 13px 11px; }
+.think.open .think-b { display: block; }
+/* Bounded: a long thought must not push the answer below the fold, which
+   would defeat the point of the answer replacing it. */
+.think-t { font-size: 12.5px; line-height: 1.65; color: var(--dim3); white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow: auto; }
+
 /* plan panel */
 .plan { border: 1px solid rgba(138, 124, 255, 0.28); border-radius: 0; background: linear-gradient(180deg, rgba(138, 124, 255, 0.08), rgba(138, 124, 255, 0.02)); padding: 13px 15px; margin-bottom: 4px; }
 .plan .ph { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.6px; color: var(--acc-tx); margin-bottom: 9px; display: flex; align-items: center; gap: 8px; }

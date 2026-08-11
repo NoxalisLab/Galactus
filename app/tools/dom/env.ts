@@ -202,18 +202,23 @@ export function installDom(): void {
     measureText: () => ({ width: 0 }),
     createRadialGradient: () => ({ addColorStop: () => {} }),
   };
+  context2d.fillText = (text: unknown) => void canvasText.push(String(text));
   for (const name of [
     "arc",
     "beginPath",
     "clearRect",
     "fill",
     "fillRect",
-    "fillText",
     "lineTo",
     "moveTo",
     "restore",
     "roundRect",
     "save",
+    // pixel.ts scales for the device pixel ratio on every frame. Its absence
+    // did not fail a test, it threw inside an animation frame AFTER the test
+    // that armed it had ended, which node:test reports as an uncaught
+    // exception against the file rather than against any assertion.
+    "scale",
     "setTransform",
     "stroke",
     "strokeRect",
@@ -273,6 +278,26 @@ export async function settle(rounds = 4): Promise<void> {
   for (let i = 0; i < rounds; i += 1) {
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
+}
+
+/**
+ * Every string the app has written onto a canvas, oldest first.
+ *
+ * NOT an exception to "no assertion here is about pixels". The activity scene
+ * writes a WORD next to its sprite ("thinking", "reasoning out loud"), and
+ * that word is the app telling a waiting user what the machine is doing. It is
+ * a sentence that reaches the screen, which is the category these tests exist
+ * to cover; it merely happens to be delivered through fillText instead of a
+ * text node. Nothing about glyphs, metrics or rasterisation is recorded.
+ */
+const canvasText: string[] = [];
+
+export function canvasTexts(): readonly string[] {
+  return canvasText;
+}
+
+export function clearCanvasTexts(): void {
+  canvasText.length = 0;
 }
 
 /** The rendered page, for assertions that are about text rather than structure. */

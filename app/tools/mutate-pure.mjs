@@ -368,6 +368,63 @@ const MUTATIONS = [
     to: "    return low.includes(\"error\");",
     test: "a failure that already explains itself is left alone",
   },
+  // ---------------------------------------------- reasoning: what is shown
+  {
+    group: "reasoning: a complete delimiter is removed from the channel",
+    suite: "reasoning",
+    file: "out/src/reasoning.js",
+    from: "    for (const marker of MARKERS)\n        out = out.split(marker).join(\"\");",
+    to: "    for (const marker of MARKERS)\n        void marker;",
+    test: "a replayed opening tag never reaches the screen",
+  },
+  {
+    group: "reasoning: an incomplete delimiter is withheld rather than drawn",
+    suite: "reasoning",
+    file: "out/src/reasoning.js",
+    from: "    const held = withheldSuffix(out);",
+    to: "    const held = \"\";",
+    test: "a delimiter split across two chunks never flashes a fragment",
+  },
+  {
+    group: "reasoning: only a PROPER prefix of a marker is withheld",
+    suite: "reasoning",
+    file: "out/src/reasoning.js",
+    from: "        for (let len = marker.length - 1; len > 0; len--) {",
+    to: "        for (let len = marker.length; len > 0; len--) {",
+    test: "the withheld tail is the longest one that could still become a marker",
+  },
+  {
+    group: "reasoning: a channel carrying only whitespace is not reasoning",
+    suite: "reasoning",
+    file: "out/src/reasoning.js",
+    from: "    return out.replace(/^\\s+/, \"\");",
+    to: "    return out;",
+    test: "whitespace alone is not reasoning",
+  },
+  {
+    group: "reasoning: a runaway thought stops growing",
+    suite: "reasoning",
+    file: "out/src/reasoning.js",
+    from: "    if (next.length <= REASONING_CAP)\n        return next;",
+    to: "    if (true)\n        return next;",
+    test: "a runaway thought stops growing and says so",
+  },
+  {
+    group: "reasoning: the truncation marker is written once, not per chunk",
+    suite: "reasoning",
+    file: "out/src/reasoning.js",
+    from: "    return next.slice(0, REASONING_CAP) + REASONING_TRUNCATED;",
+    to: "    return next + REASONING_TRUNCATED;",
+    test: "the truncation marker is added exactly once",
+  },
+  {
+    group: "reasoning: the settled header shows the OPENING of the thought",
+    suite: "reasoning",
+    file: "out/src/reasoning.js",
+    from: "    return flat.slice(0, max).trimEnd() + \"\u2026\";",
+    to: "    return \"\u2026\" + flat.slice(flat.length - max).trimStart();",
+    test: "a long gist is cut with an ellipsis rather than wrapped",
+  },
 ];
 
 const FILTER = process.argv[2] ?? "";

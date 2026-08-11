@@ -2,7 +2,7 @@
 
 # Galactus, your RAM stops being the limit
 
-![app](https://img.shields.io/badge/app-macOS%20Apple%20Silicon-1a7f37) ![dmg](https://img.shields.io/badge/download-52%20MB%20dmg-4a90d9) ![models](https://img.shields.io/badge/catalog-10%20certified%20MoE%20models-7c60e6) ![exact](https://img.shields.io/badge/output-bit--exact-2ea44f) ![offline](https://img.shields.io/badge/network-only%20when%20you%20ask-38b2ac)
+![app](https://img.shields.io/badge/app-macOS%20Apple%20Silicon-1a7f37) ![dmg](https://img.shields.io/badge/download-55%20MB%20dmg-4a90d9) ![models](https://img.shields.io/badge/catalog-12%20certified%20MoE%20models-7c60e6) ![exact](https://img.shields.io/badge/output-bit--exact-2ea44f) ![offline](https://img.shields.io/badge/network-only%20when%20you%20ask-38b2ac)
 
 A local AI app for macOS that runs Mixture-of-Experts models **several times larger than your Mac's memory**, at usable speed, with output identical bit for bit to stock llama.cpp.
 
@@ -42,6 +42,8 @@ Every throughput below was measured on real hardware and lives in the model regi
 | Qwen3-Coder-30B (Q8_0) | 32 GB | 16 GB | 4.3 tok/s at 9.07 GB, 27.9 at 22.4, 28.5 at 30.8 |
 | Phi-3.5-MoE instruct (Q4_K_M) | 25 GB | 16 GB | 13.2 tok/s at 10.1 GB, 22.7 at 22.4, 23.8 at 24.4 |
 | OLMoE 1B-7B 0924 (Q4_K_M) | 4 GB | 16 GB | 11.0 tok/s at 0.98 GB, 52.4 at 2.93, 77.2 at 3.9 |
+| Qwen3.6 35B-A3B (UD-Q4_K_M) | 22 GB | 16 GB | 37.2 tok/s at 2.45 GB, 41.2 at 7.8, 46.1 at 19.57 |
+| Mellum2 12B-A2.5B Thinking (Q4_K_M) | 8 GB | 16 GB | 42.1 tok/s at 1.85 GB, 55.4 at 5.56, 62.6 at 7.41 |
 
 Read the second and third columns together: a 142 GB model is usable on a 24 GB Mac, a 65 GB model on 16 GB. The app picks the regime for your machine on its own, every expert resident when the cache fits them all, streamed from SSD when it does not, or CPU experts for counter-verification. **All three regimes are bit-exact.** There is no fast-but-approximate mode, because a mode that changes the answer is not the same model.
 

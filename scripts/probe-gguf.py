@@ -39,7 +39,18 @@ import sys
 # How much of the head to pull. The directory of a 1000-tensor model is well
 # under a megabyte; 8 covers a large sharded checkpoint with room to spare, and
 # is still three thousand times smaller than the file.
+# Eight megabytes answered for every model until Qwen3.6-35B-A3B, whose 256
+# experts over 40 layers push the tensor directory past that and made the probe
+# report UNKNOWN on a file it could perfectly well have judged. The directory
+# sits at the very start of a GGUF, so reading further costs one range request
+# and nothing else; the point of this tool is to answer without downloading the
+# weights, not to answer within a fixed budget.
 HEAD_BYTES = 8 * 1024 * 1024
+
+
+def head_bytes_for(attempt: int) -> int:
+    """8 MB, then 32, then 128. A directory longer than that is a new question."""
+    return HEAD_BYTES * (1, 4, 16)[min(attempt, 2)]
 
 GGUF_MAGIC = b"GGUF"
 # Value type sizes, indexed by the GGUF type enum. Strings and arrays are
@@ -60,7 +71,7 @@ class Head:
 
     def take(self, n: int) -> bytes:
         if self.i + n > len(self.b):
-            raise EOFError("the downloaded head stops before the tensor directory does")
+            raise EOFError("the downloaded head ends before the header does")
         out = self.b[self.i : self.i + n]
         self.i += n
         return out
@@ -85,9 +96,9 @@ class Head:
             self.take(FIXED[vt])
 
 
-def fetch_head(url: str) -> bytes:
+def fetch_head(url: str, want: int = HEAD_BYTES) -> bytes:
     out = subprocess.run(
-        ["curl", "-sL", "--max-time", "90", "-r", f"0-{HEAD_BYTES - 1}", url],
+        ["curl", "-sL", "--max-time", "180", "-r", f"0-{want - 1}", url],
         capture_output=True,
     )
     if out.returncode != 0 or not out.stdout:
@@ -95,9 +106,9 @@ def fetch_head(url: str) -> bytes:
     return out.stdout
 
 
-def read_local(path: str) -> bytes:
+def read_local(path: str, want: int = HEAD_BYTES) -> bytes:
     with open(path, "rb") as fh:
-        return fh.read(HEAD_BYTES)
+        return fh.read(want)
 
 
 def inspect(buf: bytes) -> dict:
@@ -164,8 +175,28 @@ def main() -> int:
     results = []
     for target in args.target:
         try:
-            buf = fetch_head(target) if target.startswith("http") else read_local(target)
-            r = inspect(buf)
+            # Retry wider rather than answering UNKNOWN: the directory sits at
+            # the start of the file, so a longer range request is the whole
+            # cost, and answering "I could not tell" about a file that could
+            # perfectly well be judged is the one outcome this tool must avoid.
+            r = None
+            for attempt in range(3):
+                want = head_bytes_for(attempt)
+                buf = fetch_head(target, want) if target.startswith("http") else read_local(target, want)
+                try:
+                    r = inspect(buf)
+                except EOFError:
+                    # inspect RAISES when the buffer ends mid header, it does not
+                    # return a verdict, so the retry has to catch it. Getting
+                    # this wrong meant the loop gave up on its first attempt and
+                    # reported UNKNOWN on a file three lines of code could read.
+                    r = None
+                    continue
+                break
+            if r is None:
+                raise EOFError(
+                    f"the header is longer than {want // (1024 * 1024)} MB, which is "
+                    "not a tensor directory any more, it is a new question")
         except Exception as e:  # a probe that fails must say so, not guess
             r = {"ok": False, "verdict": "unknown", "reason": str(e)}
         r["target"] = target

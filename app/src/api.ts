@@ -675,6 +675,20 @@ export interface ToolDef {
 
 export interface StreamHandlers {
   onDelta: (text: string) => void;
+  /**
+   * The model's thoughts, when the server separated them from the answer.
+   *
+   * llama-server is started with --reasoning-format deepseek, which puts
+   * thinking in `delta.reasoning_content` and leaves `delta.content` holding
+   * the answer alone. The two channels interleave inside one stream, so this
+   * is a second live feed and not a preamble: a caller that appends both to
+   * the same buffer would splice thoughts into the middle of the reply.
+   *
+   * OPTIONAL, and most turns never call it. Plenty of models emit no
+   * reasoning at all, and a model that reasoned on one turn reasons on none of
+   * the next: a caller must show nothing rather than an empty container.
+   */
+  onReasoning?: (text: string) => void;
   onToolCalls: (calls: ToolCall[]) => void;
   onDone: () => void;
   onError: (err: string) => void;
@@ -771,6 +785,13 @@ export async function streamChat(
         }
         const delta = parsed.choices?.[0]?.delta;
         if (!delta) continue;
+        // Reasoning BEFORE content, and not only for tidiness: one delta can
+        // carry both (the frame where thinking ends and the answer starts),
+        // and a thought delivered after the words it produced would read as
+        // an afterthought instead of the reason for them.
+        if (typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) {
+          handlers.onReasoning?.(delta.reasoning_content);
+        }
         if (typeof delta.content === "string" && delta.content.length > 0) {
           handlers.onDelta(delta.content);
         }
