@@ -539,7 +539,7 @@ async fn load_registry() -> Result<Vec<Value>, String> {
         m["pack_external"] = json!(pack_e.display().to_string());
         m["gguf_present"] = json!(gguf_present);
         m["pack_present"] = json!(pack_present);
-        m["installed"] = json!(gguf_present && pack_present);
+        m["installed"] = json!(is_installed(is_dense(&m), gguf_present, pack_present));
         out.push(m);
     }
     Ok(out)
@@ -774,6 +774,23 @@ fn resolve_pack_spec(root: &Path, spec: &str) -> Option<PathBuf> {
 /// refuses a dense checkpoint outright.
 fn is_dense(entry: &Value) -> bool {
     entry["dense"].as_bool().unwrap_or(false)
+}
+
+/// Whether a catalogue entry is installed on this Mac.
+///
+/// For a Mixture-of-Experts model the weights alone are not enough: the engine
+/// reads experts out of the pack, so a downloaded GGUF with no pack is a job
+/// half done and the card must keep offering to finish it.
+///
+/// A dense model has no pack and never will. Requiring one made it permanently
+/// uninstallable: the download completed, the file was on disk, and the card
+/// went on saying it was not installed with no way to change that.
+fn is_installed(dense: bool, gguf_present: bool, pack_present: bool) -> bool {
+    if dense {
+        gguf_present
+    } else {
+        gguf_present && pack_present
+    }
 }
 
 fn resolve_packs(root: &Path, id: &str, entry: &Value) -> Result<(PathBuf, PathBuf), String> {
@@ -1706,6 +1723,25 @@ mod dense_model_tests {
     #[test]
     fn a_declared_dense_entry_skips_the_expert_machinery() {
         assert!(is_dense(&json!({"id": "qwen38-27b", "dense": true})));
+    }
+
+    #[test]
+    fn a_dense_model_is_installed_as_soon_as_its_weights_are_there() {
+        use super::is_installed;
+        // There is no pack and there never will be. Requiring one made the
+        // model permanently uninstallable: the file was on disk and the card
+        // still said no, with no button able to change that.
+        assert!(is_installed(true, true, false));
+        assert!(!is_installed(true, false, false), "no weights, nothing to run");
+    }
+
+    #[test]
+    fn an_moe_model_still_needs_its_pack() {
+        use super::is_installed;
+        // The engine reads experts out of the pack, so weights alone are a job
+        // half done and the card must keep offering to finish it.
+        assert!(!is_installed(false, true, false));
+        assert!(is_installed(false, true, true));
     }
 
     #[test]
