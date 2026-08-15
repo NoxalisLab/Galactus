@@ -564,6 +564,14 @@ fn require_certified_model(entry: &Value) -> Result<(), String> {
     let id = entry["id"].as_str().unwrap_or("unknown");
     match entry["status"].as_str() {
         Some("certified" | "certified_bit_transparent" | "certified_by_composition") => Ok(()),
+        // A dense model passes this gate without being certified, and the two
+        // are not the same statement. Certification means the Galactus path was
+        // compared against stock llama.cpp and found identical; a dense model
+        // has no Galactus path to compare, because there are no expert tensors
+        // to substitute. It runs as plain llama.cpp. What this gate protects
+        // against is a MODIFIED execution path whose fidelity is unproven, and
+        // an unmodified one carries no such risk.
+        Some("stock_unmodified") => Ok(()),
         Some("pending_certification") => Err(format!(
             "model {id} is awaiting Galactus certification and cannot be installed or started"
         )),
@@ -595,7 +603,11 @@ mod registry_policy_tests {
     use super::*;
 
     #[test]
-    fn execution_accepts_only_the_three_certified_regimes() {
+    fn every_certified_regime_may_execute() {
+        // Certification is one of two ways through this gate. The other is a
+        // model with no Galactus path to certify, covered in dense_model_tests:
+        // this name used to say "only the three", which stopped being true the
+        // day a dense model was added and would have misled the next reader.
         for status in [
             "certified",
             "certified_bit_transparent",
@@ -1742,6 +1754,27 @@ mod dense_model_tests {
         // half done and the card must keep offering to finish it.
         assert!(!is_installed(false, true, false));
         assert!(is_installed(false, true, true));
+    }
+
+    #[test]
+    fn the_backend_gate_lets_a_dense_model_through() {
+        use super::require_certified_model;
+        use serde_json::json;
+        // The gate exists to stop a MODIFIED execution path whose fidelity is
+        // unproven. A dense model has no modified path: no experts to
+        // substitute, so plain llama.cpp. It was refused here while the webview
+        // allowed it, which is the worst shape a policy can take: two gates
+        // disagreeing, one of them silently.
+        assert!(require_certified_model(&json!({"id": "qwen38-27b", "status": "stock_unmodified"})).is_ok());
+    }
+
+    #[test]
+    fn the_backend_gate_still_refuses_what_it_always_refused() {
+        use super::require_certified_model;
+        use serde_json::json;
+        assert!(require_certified_model(&json!({"id": "x", "status": "pending_certification"})).is_err());
+        assert!(require_certified_model(&json!({"id": "x", "status": "whatever"})).is_err());
+        assert!(require_certified_model(&json!({"id": "x"})).is_err());
     }
 
     #[test]
