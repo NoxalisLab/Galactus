@@ -21,7 +21,7 @@ import { CATALOG, ConnectorPreset, EnabledConnector, loadEnabled, saveEnabled } 
 import { getLang, Lang, setLang, t } from "./i18n";
 import { PixelMode, PixelViz } from "./pixel";
 import { renderMarkdown, wireCodeCopy } from "./markdown";
-import { reasoningGist, visibleReasoning } from "./reasoning";
+import { REASONING_TRUNCATED, reasoningGist, visibleReasoning } from "./reasoning";
 import { Cosmos } from "./cosmos";
 import { detectPreviewable, PreviewKind, PreviewPanel } from "./preview";
 import { currentTask, loadTasks, pickModelFor, setCurrentTask, TaskDef, TaskId } from "./tasks";
@@ -1680,7 +1680,10 @@ function assistantBodyEl(): { row: HTMLElement; body: HTMLElement } {
  * turns of most models produce. No block, no heading, no empty frame.
  */
 function reasoningCardEl(it: Extract<ChatItem, { kind: "reasoning" }>): HTMLElement | null {
-  const text = visibleReasoning(it.text);
+  // The sentinel becomes a sentence here, in the reader's language. It lives in
+  // the stored text as a marker so the pure module can stay free of the
+  // translation table, and it is never shown raw.
+  const text = renderReasoning(it.text);
   if (text.trim() === "") return null;
   const live = !it.done;
   // Open while it streams, closed once it has settled. The gist only appears
@@ -1713,6 +1716,14 @@ function reasoningCardEl(it: Extract<ChatItem, { kind: "reasoning" }>): HTMLElem
  * "within 24px of the end" is the usual way to ask whether they were following
  * in the first place.
  */
+/** The stored thought as the reader sees it: sentinel swapped for a sentence. */
+function renderReasoning(stored: string): string {
+  const body = visibleReasoning(stored);
+  return body.startsWith(REASONING_TRUNCATED)
+    ? t("chat.reasoningTrimmed") + "\n" + body.slice(REASONING_TRUNCATED.length)
+    : body;
+}
+
 function followReasoning(card: HTMLElement): void {
   const stream = card.querySelector<HTMLElement>(".think-t");
   if (!stream) return;
@@ -1739,7 +1750,7 @@ function paintLiveReasoning(text: string): boolean {
   const log = chatLog();
   const stream = log?.querySelector<HTMLElement>(".think[data-live] .think-t");
   if (!log || !stream) return false;
-  const visible = visibleReasoning(text);
+  const visible = renderReasoning(text);
   if (visible.trim() === "") return false;
   stream.textContent = visible;
   followReasoning(stream.closest(".think") as HTMLElement);

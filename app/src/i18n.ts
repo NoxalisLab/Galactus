@@ -159,6 +159,10 @@ const dict: Record<string, { en: string; fr: string }> = {
   // while it waits for a first token of anything, and this is what it says
   // once the model's own thoughts are actually arriving on screen.
   "px.reasoning": { en: "reasoning out loud", fr: "raisonne à voix haute" },
+  "chat.reasoningTrimmed": {
+    en: "(earlier thinking not kept)",
+    fr: "(début de la réflexion non conservé)",
+  },
   "chat.reasoning": { en: "Reasoning", fr: "Raisonnement" },
   "chat.reasoningLive": { en: "live", fr: "en direct" },
   "tool.osearch": { en: "Search vault", fr: "Chercher dans le coffre" },

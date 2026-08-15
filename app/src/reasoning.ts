@@ -50,7 +50,14 @@ const MARKERS = ["</thinking>", "<thinking>", "</think>", "<think>"] as const;
 export const REASONING_CAP = 16000;
 
 /** Appended once, when a block stops accepting text. */
-export const REASONING_TRUNCATED = "\n… (reasoning continued, not kept)";
+/**
+ * Marks a block whose beginning was dropped.
+ *
+ * A sentinel rather than a sentence: the view swaps it for a localised line at
+ * render time. It used to be English text sitting inside a French interface,
+ * which is the sort of detail that says nobody read the screen.
+ */
+export const REASONING_TRUNCATED = "\u0000truncated\u0000";
 
 /**
  * The longest tail of `text` that could still become a marker.
@@ -112,17 +119,23 @@ export function hasReasoning(text: string): boolean {
 /**
  * Add a streamed chunk to a block, honouring the cap.
  *
- * Once past the cap the block is rebuilt from its first REASONING_CAP
- * characters plus the marker, which is why a thought that keeps arriving for
- * another minute still ends up with exactly one marker and exactly the text
- * the reader was already looking at. Cutting from `next` rather than keeping a
- * separate "already truncated" flag is what makes that true by construction
- * instead of by a guard somebody has to remember to keep.
+ * THE END IS KEPT, NOT THE BEGINNING. The first version kept the first
+ * REASONING_CAP characters, so a model that thought for five minutes froze the
+ * block on its opening lines and never showed another word: the reader watched
+ * a still image with a note at the bottom saying the rest existed somewhere.
+ * What is worth reading while a model thinks is the sentence it is writing now,
+ * and what is worth keeping afterwards is how it got to its conclusion, which
+ * is also the end. Both point the same way.
+ *
+ * Cutting from `next` each time, rather than holding a "already truncated"
+ * flag, is what makes a block that keeps growing carry exactly one marker.
  */
 export function appendReasoning(current: string, chunk: string): string {
-  const next = current + chunk;
+  const next = current.startsWith(REASONING_TRUNCATED)
+    ? current.slice(REASONING_TRUNCATED.length) + chunk
+    : current + chunk;
   if (next.length <= REASONING_CAP) return next;
-  return next.slice(0, REASONING_CAP) + REASONING_TRUNCATED;
+  return REASONING_TRUNCATED + next.slice(next.length - REASONING_CAP);
 }
 
 /**

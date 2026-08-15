@@ -107,15 +107,28 @@ test("trailing whitespace is kept while the block streams", () => {
 
 // ------------------------------------------------- the cap
 
-test("a runaway thought stops growing and says so", () => {
-  const long = "x".repeat(REASONING_CAP + 500);
-  const capped = appendReasoning("", long);
-  assert.ok(capped.endsWith(REASONING_TRUNCATED), "the block states that it was cut");
+test("a runaway thought keeps its end and says the beginning is gone", () => {
+  // Which end is kept is the whole point. Keeping the first characters froze
+  // the block on a model's opening lines and never showed another word, which
+  // on a five minute reasoning turn is a still image with a note under it.
+  const long = "abcdefghij".repeat(REASONING_CAP);
+  const capped = appendReasoning("", long + "THE-LAST-WORDS");
+  assert.ok(capped.startsWith(REASONING_TRUNCATED), "the block states that it was cut");
+  assert.ok(capped.endsWith("THE-LAST-WORDS"), "and what it kept is what was written last");
   assert.equal(
     capped.length,
     REASONING_CAP + REASONING_TRUNCATED.length,
-    "and holds the cap plus that one sentence",
+    "and holds the cap plus that one marker",
   );
+});
+
+test("a capped block that keeps growing still follows the newest words", () => {
+  // The case the first version could not do at all: once capped it was frozen,
+  // so a model thinking for another four minutes wrote into a void.
+  let text = appendReasoning("", "z".repeat(REASONING_CAP + 100));
+  text = appendReasoning(text, "NEWEST");
+  assert.ok(text.endsWith("NEWEST"), "the latest chunk is on screen");
+  assert.equal(text.length, REASONING_CAP + REASONING_TRUNCATED.length, "and the cap holds");
 });
 
 test("the truncation marker is added exactly once", () => {
