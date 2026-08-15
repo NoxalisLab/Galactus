@@ -8,6 +8,7 @@ import {
   AgentDirectory,
   clearStandingPermissions,
   configureSampling,
+  configureThinking,
   loadStandingPermissions,
   PermissionDecision,
   PermissionRequest,
@@ -1691,6 +1692,25 @@ function reasoningCardEl(it: Extract<ChatItem, { kind: "reasoning" }>): HTMLElem
     <div class="think-b"><div class="think-t">${esc(text)}</div></div>
   </div>`);
   card.querySelector(".think-h")!.addEventListener("click", () => card.classList.toggle("open"));
+  if (live) {
+    // Follow the writing, not the beginning of it.
+    //
+    // The block is capped in height and scrolls, and it was left at the top: a
+    // model thinking for minutes filled it with lines nobody could see while
+    // the visible ones stopped changing after two seconds. The one thing worth
+    // watching during a long reasoning phase is the sentence being written, and
+    // it was the one part never on screen.
+    //
+    // Done after the element is in the document, since scrollTop on a detached
+    // node is discarded. Not a smooth scroll: it happens on every repaint, and
+    // an animation restarted several times a second is a shudder.
+    // .think-t is the element with the height cap and the overflow, so it is
+    // the one that scrolls. .think-b only decides whether the block is shown.
+    const stream = card.querySelector<HTMLElement>(".think-t")!;
+    requestAnimationFrame(() => {
+      stream.scrollTop = stream.scrollHeight;
+    });
+  }
   return card;
 }
 
@@ -3707,6 +3727,9 @@ function settingsView(): HTMLElement {
           <button data-ctx="131072">128K</button>
         </div>
       </div>
+      <div class="set-row"><div class="grow"><b>${esc(t("settings.thinking"))}</b><span>${esc(t("settings.thinkingHint"))}</span></div>
+        <button class="tgl" id="thinktgl" role="switch" aria-checked="true"><span class="k"></span></button>
+      </div>
       <div class="set-row"><div class="grow"><b>${esc(t("settings.sampling"))}</b><span>${esc(t("settings.samplingHint"))}</span></div>
         <div class="set-actions">
           <label class="samp"><small>${esc(t("settings.temp"))}</small><input id="samptemp" type="number" step="0.05" min="0" max="2"/></label>
@@ -3893,6 +3916,22 @@ function settingsView(): HTMLElement {
         }
         fill(SAMPLING_DEFAULT);
         configureSampling(SAMPLING_DEFAULT);
+      });
+    }
+    // Reasoning on or off. Takes effect on the NEXT turn, not the running one:
+    // a turn that has already started thinking cannot be told to stop.
+    {
+      const tgl = wrap.querySelector<HTMLButtonElement>("#thinktgl")!;
+      const paintTh = (on: boolean) => {
+        tgl.classList.toggle("on", on);
+        tgl.setAttribute("aria-checked", String(on));
+      };
+      api.settingsGet().then((s) => paintTh(s["thinking"] !== "0"));
+      tgl.addEventListener("click", async () => {
+        const on = !tgl.classList.contains("on");
+        paintTh(on);
+        await api.settingsSet("thinking", on ? "1" : "0");
+        configureThinking(on);
       });
     }
     const seg = wrap.querySelector<HTMLElement>("#ramseg")!;
@@ -4626,7 +4665,11 @@ async function boot() {
   // Before the first agent exists: an Agent reads the configured sampling at
   // construction, so a conversation opened during boot would otherwise be
   // built with the defaults and keep them for its whole life.
-  configureSampling(readSampling(await api.settingsGet().catch(() => ({}))));
+  {
+    const s = await api.settingsGet().catch(() => ({}) as Record<string, string>);
+    configureSampling(readSampling(s));
+    configureThinking(s["thinking"] !== "0");
+  }
   const s = await api.settingsGet().catch(() => ({} as Record<string, string>));
   configurePanePreferences(s, (key, value) => api.settingsSet(key, value));
   if (s["root"]) { root = s["root"]; try { registry = await api.registry(); if (!registry.length) root = null; } catch { root = null; } }

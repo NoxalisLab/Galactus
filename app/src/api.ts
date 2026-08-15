@@ -713,6 +713,10 @@ export async function streamChat(
   // caller that knows nothing about sampling still gets llama.cpp's defaults
   // rather than this file's opinion of them.
   sampling?: { top_p: number; top_k: number },
+  // False asks the chat template to skip the reasoning phase. Qwen honours it;
+  // templates that do not simply ignore an unknown key, which is why it is sent
+  // rather than guarded by a per-model list that would go stale.
+  thinking = true,
 ): Promise<boolean> {
   const body: any = {
     model: "galactus-local",
@@ -724,6 +728,7 @@ export async function streamChat(
     body.top_p = sampling.top_p;
     body.top_k = sampling.top_k;
   }
+  if (!thinking) body.chat_template_kwargs = { enable_thinking: false };
   if (tools.length > 0) body.tools = tools;
 
   let response: Response;

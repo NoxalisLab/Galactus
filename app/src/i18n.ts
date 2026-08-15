@@ -1049,6 +1049,11 @@ const dict: Record<string, { en: string; fr: string }> = {
     en: "How much a conversation can hold before it forgets its start. Larger windows cost memory: the engine keeps one cache per slot, and it grows with the window. Bounded by what the model was trained on.",
     fr: "Ce qu'une conversation peut retenir avant d'oublier son début. Une fenêtre plus large coûte de la mémoire : le moteur garde un cache par créneau, et il grandit avec la fenêtre. Borné par ce sur quoi le modèle a été entraîné.",
   },
+  "settings.thinking": { en: "Reasoning", fr: "Raisonnement" },
+  "settings.thinkingHint": {
+    en: "Let a reasoning model think before it answers. It is why those models are good, and it costs a minute of invisible tokens before the first word. Turn it off for long mechanical output like a file of code.",
+    fr: "Laisser un modèle à raisonnement réfléchir avant de répondre. C'est ce qui fait leur qualité, et cela coûte une minute de tokens invisibles avant le premier mot. À couper pour une longue production mécanique comme un fichier de code.",
+  },
   "settings.sampling": { en: "Sampling", fr: "Échantillonnage" },
   "settings.samplingHint": {
     en: "How the model picks each token. Every model publishes the values it was tuned with; these apply to all conversations until you change them.",

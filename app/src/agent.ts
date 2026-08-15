@@ -30,6 +30,19 @@ let configuredSampling: Sampling = SAMPLING_DEFAULT;
 export function configureSampling(next: Sampling): void {
   configuredSampling = next;
 }
+
+/**
+ * Whether reasoning models are asked to think before answering.
+ *
+ * On by default, because thinking is why those models are worth running. Off is
+ * for the case where the answer is the point and the deliberation is not: a
+ * long file of code costs a minute of reasoning before its first character, and
+ * that minute buys very little on a task with no decisions in it.
+ */
+let thinkingEnabled = true;
+export function configureThinking(on: boolean): void {
+  thinkingEnabled = on;
+}
 import {
   effectiveAutoApprove,
   isStep,
@@ -1559,6 +1572,7 @@ export class Agent {
       this.abort.signal,
       chosen.temperature,
       { top_p: chosen.top_p, top_k: chosen.top_k },
+      thinkingEnabled,
     );
     if (!ok && !this.abort.signal.aborted) {
       // Context overflow (huge tool outputs, long thread): shrink and retry
