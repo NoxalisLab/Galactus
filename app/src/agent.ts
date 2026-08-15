@@ -530,9 +530,15 @@ const SPAWN_TOOL: ToolDef = {
   type: "function",
   function: {
     name: "spawn_agent",
-    description:
-      "Recruit a named sub-agent for this conversation and keep it for the rest of the work. Each sub-agent has its own persistent thread, its own context and the same tools as you, and the user can open and read that thread in full. Use one per distinct responsibility (for example architect, backend, reviewer) when a job is worth splitting, then drive them with ask_agent. Do NOT spawn one for something you can answer yourself in a sentence.",
-    parameters: {
+      description:
+        "Recruit a named sub-agent for this conversation and keep it for the rest of the work. Each sub-agent has its own persistent thread, its own context and the same tools as you, and the user can open and read that thread in full. Use one per distinct responsibility (for example architect, backend, reviewer) when a job is worth splitting, then drive them with ask_agent. Do NOT spawn one for something you can answer yourself in a sentence." +
+        // Spawning is instant and asking is not, so a model that spawns three
+        // and then asks one has recruited a team and put two thirds of it on a
+        // bench. That is what happened for as long as nothing said otherwise.
+        " Recruiting does NOT give a teammate any work: it only creates it. Once you have spawned everyone you need, send them their tasks with " +
+        "several ask_agent calls in ONE message, which is what makes them work at the same time. Spawning three teammates and then asking only one " +
+        "leaves the other two idle for the whole task.",
+      parameters: {
       type: "object",
       properties: {
         name: { type: "string", description: "Short handle, lowercase, no spaces (architect, backend, reviewer)" },
@@ -562,9 +568,17 @@ const ASK_AGENT_TOOL: ToolDef = {
   type: "function",
   function: {
     name: "ask_agent",
-    description:
-      "Send a task or a question to a teammate by name and wait for its answer. The call BLOCKS until it replies (bounded wait) and returns its answer. Your message is shown in that teammate's thread, attributed to you, and its answer comes back here. It keeps its own context and does NOT see this thread, so make the message self-contained; it does remember your earlier exchanges with it. Refused if the teammate is busy, unknown, or already waiting on the current delegation chain.",
-    parameters: {
+      description:
+        "Send a task or a question to a teammate by name and wait for its answer. The call BLOCKS until it replies (bounded wait). " +
+        // Said in the tool the model reads, not only in a prompt somebody has to
+        // remember to write: teammates ran one after another for as long as this
+        // sentence was missing, and the only visible symptom was a team that was
+        // slow rather than a team that was serial.
+        "TO RUN TEAMMATES AT THE SAME TIME, emit several ask_agent calls in ONE message: calls issued together are executed together, " +
+        "and you get every answer back at once. Asking one, waiting, then asking the next takes as long as the sum of them and gains nothing, " +
+        "because teammates work on separate threads and never see each other's work. Split the job so that no two teammates touch the same file, " +
+        "brief each one completely, and send them all in a single message.",
+      parameters: {
       type: "object",
       properties: {
         agent: { type: "string", description: "Teammate name, from list_agents" },
