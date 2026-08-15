@@ -117,3 +117,39 @@ test("no catalogue entry pins a model to one machine", () => {
     }
   }
 });
+
+test("a dense model may run, and says it is not the accelerated path", () => {
+  // It has no experts to substitute, so there is nothing for the differential
+  // probe to compare: the bit-exactness claim every other card makes cannot be
+  // made here, and borrowing its badge would be the one dishonest square inch
+  // on a page whose whole argument is that its claims are checkable.
+  const stock = modelCertification("stock_unmodified");
+  assert.equal(stock.canExecute, true, "it must be startable");
+  assert.notEqual(stock.badge, "certified", "it must not wear the certified badge");
+  assert.equal(stock.badge, "stock");
+});
+
+test("a dense entry declares itself and asks for enough memory to hold itself", () => {
+  const registryUrl = new URL("../../../../../../scripts/models-registry.json", import.meta.url);
+  const registry = JSON.parse(fs.readFileSync(registryUrl, "utf8")) as {
+    models: Array<Record<string, any>>;
+  };
+  for (const model of registry.models) {
+    if (!model.dense) {
+      // The streaming engine is what lets a model exceed memory. Anything that
+      // is NOT dense has to carry the expert geometry that makes it possible.
+      assert.ok(model.experts, `${model.id}: an MoE entry with no expert count`);
+      continue;
+    }
+    assert.equal(model.status, "stock_unmodified", `${model.id}: dense but claims certification`);
+    assert.ok(model.experts === undefined, `${model.id}: dense entries carry no expert geometry`);
+    // Nothing streams, so the weights are resident from the first token. The
+    // floor has to cover them; the MoE entries are the only ones allowed to ask
+    // for less RAM than they weigh.
+    const weightsGb = Number(model.gguf_bytes) / 1e9;
+    assert.ok(
+      Number(model.min_ram_gb) >= weightsGb,
+      `${model.id}: ${model.min_ram_gb} GB floor cannot hold ${weightsGb.toFixed(1)} GB of weights`,
+    );
+  }
+});

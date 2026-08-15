@@ -48,6 +48,9 @@ Every throughput below was measured on real hardware and lives in the model regi
 | OLMoE 1B-7B 0924 (Q4_K_M) | 4 GB | 16 GB | 11.0 tok/s at 0.98 GB, 52.4 at 2.93, 77.2 at 3.9 |
 | Qwen3.6 35B-A3B (UD-Q4_K_M) | 22 GB | 16 GB | 37.2 tok/s at 2.45 GB, 41.2 at 7.8, 46.1 at 19.57 |
 | Mellum2 12B-A2.5B Thinking (Q4_K_M) | 8 GB | 16 GB | 42.1 tok/s at 1.85 GB, 55.4 at 5.56, 62.6 at 7.41 |
+| Qwen3.8 27B (Q4_K_M, dense) | 17 GB | 32 GB | not accelerated: no experts to stream |
+
+The last row is the odd one out and is meant to be: Qwen3.8 27B is a dense model, so it has no experts to stream and the engine does not apply to it. It is offered because it is worth running, and its card says plainly that it is not accelerated and must fit in memory like anywhere else.
 
 Read the second and third columns together: a 142 GB model is usable on a 24 GB Mac, a 65 GB model on 16 GB. The app picks the regime for your machine on its own, every expert resident when the cache fits them all, streamed from SSD when it does not, or CPU experts for counter-verification. **All three regimes are bit-exact.** There is no fast-but-approximate mode, because a mode that changes the answer is not the same model.
 

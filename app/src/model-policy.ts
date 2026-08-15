@@ -1,4 +1,4 @@
-export type CertificationBadge = "certified" | "composition" | "pending" | "blocked";
+export type CertificationBadge = "certified" | "composition" | "stock" | "pending" | "blocked";
 
 export interface ModelCertification {
   canExecute: boolean;
@@ -24,6 +24,13 @@ export function modelCertification(status: string): ModelCertification {
       return { canExecute: true, badge: "certified" };
     case "certified_by_composition":
       return { canExecute: true, badge: "composition" };
+    // A dense model has no experts to substitute, so there is nothing for the
+    // differential probe to compare and no bit-exactness claim to make. It runs
+    // through unmodified llama.cpp, which is a weaker and DIFFERENT statement
+    // than the one every other card makes, and it gets its own badge rather
+    // than borrowing the certified one.
+    case "stock_unmodified":
+      return { canExecute: true, badge: "stock" };
     case "pending_certification":
       return { canExecute: false, badge: "pending" };
     default:

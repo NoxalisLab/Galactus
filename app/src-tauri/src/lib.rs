@@ -765,6 +765,17 @@ fn resolve_pack_spec(root: &Path, spec: &str) -> Option<PathBuf> {
 /// file: half of a dual pack is useless (the records are cut across the two
 /// files), and a registry carrying another machine's paths must fall through.
 /// Identical internal and external paths mean mono-volume to the engine.
+/// Whether this catalogue entry describes a model with no routed experts.
+///
+/// Read from the registry rather than from the weights, because the answer is
+/// needed BEFORE anything is downloaded: it decides whether the install has
+/// three more steps after the download, and whether the engine is started with
+/// the streaming layer at all. The GGUF confirms it later, when moe-profile.py
+/// refuses a dense checkpoint outright.
+fn is_dense(entry: &Value) -> bool {
+    entry["dense"].as_bool().unwrap_or(false)
+}
+
 fn resolve_packs(root: &Path, id: &str, entry: &Value) -> Result<(PathBuf, PathBuf), String> {
     let tier = |i_spec: Option<&str>, e_spec: Option<&str>| -> Option<(PathBuf, PathBuf)> {
         let i = match i_spec {
@@ -1677,6 +1688,34 @@ fn read_tool_verdict(body: &str) -> Option<bool> {
         return None;
     }
     Some(false)
+}
+
+#[cfg(test)]
+mod dense_model_tests {
+    use super::is_dense;
+    use serde_json::json;
+
+    #[test]
+    fn an_entry_without_the_flag_keeps_the_streaming_path() {
+        // Eleven entries predate the flag. Absence must mean MoE, or every one
+        // of them would silently lose the engine at the next launch.
+        assert!(!is_dense(&json!({"id": "gpt-oss-120b", "experts": 128})));
+        assert!(!is_dense(&json!({"dense": false})));
+    }
+
+    #[test]
+    fn a_declared_dense_entry_skips_the_expert_machinery() {
+        assert!(is_dense(&json!({"id": "qwen38-27b", "dense": true})));
+    }
+
+    #[test]
+    fn a_malformed_flag_falls_back_to_the_safe_answer() {
+        // A string where a bool belongs must not read as dense: that would start
+        // an MoE model with no streaming layer and no pack, which fails deep
+        // inside the graph instead of at the door.
+        assert!(!is_dense(&json!({"dense": "true"})));
+        assert!(!is_dense(&json!({"dense": 1})));
+    }
 }
 
 #[cfg(test)]
@@ -3607,8 +3646,11 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
     // Dual-pack resolution: two distinct paths make the engine split every
     // record across both SSDs and read them in parallel (P0v2); identical
     // paths are the classic mono pack.
+    let dense = is_dense(&entry);
     let (pack_internal, pack_external) = resolve_packs(&root, &model_id, &entry)?;
-    if !pack_internal.is_file() || !pack_external.is_file() {
+    // A dense model has no pack and never will: demanding one here would refuse
+    // to start a model whose weights are sitting on disk, complete.
+    if !dense && (!pack_internal.is_file() || !pack_external.is_file()) {
         return Err("pack not found, install the model first".into());
     }
 
@@ -3715,13 +3757,19 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
     let eff_ubatch: u32 = ubatch;
 
     let mut cmd = Command::new(&server_bin);
-    cmd.env("GALACTUS_H4", "1")
-        .env("GALACTUS_H4_INTERNAL", &pack_internal)
-        .env("GALACTUS_H4_EXTERNAL", &pack_external)
-        .env("GALACTUS_H4_CACHE_BYTES", cache_bytes.to_string())
-        .env("GALACTUS_H4_PROTECTED", format!("{fraction:.2}"))
-        .env("GALACTUS_H4_QD", "32")
-        .env("LC_ALL", "C");
+    cmd.env("LC_ALL", "C");
+    // The streaming layer is what makes a model larger than memory possible, and
+    // it substitutes expert tensors to do it. A dense model has none, so setting
+    // these would point the engine at a pack that does not exist. It runs as
+    // plain llama.cpp here, which is the whole reason its card says so.
+    if !dense {
+        cmd.env("GALACTUS_H4", "1")
+            .env("GALACTUS_H4_INTERNAL", &pack_internal)
+            .env("GALACTUS_H4_EXTERNAL", &pack_external)
+            .env("GALACTUS_H4_CACHE_BYTES", cache_bytes.to_string())
+            .env("GALACTUS_H4_PROTECTED", format!("{fraction:.2}"))
+            .env("GALACTUS_H4_QD", "32");
+    }
     // Without GALACTUS_PROFILE the engine adopts its builtin GLM-5.2 geometry.
     // That is right for GLM-5.2 itself and wrong for every other model, so the
     // sidecar is mandatory as soon as the install produced a profile: a
@@ -3824,7 +3872,11 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
         // residency one: it is what tells the user the model runs in a
         // fraction of its own size. CPU experts stay named, being the
         // cross-check regime rather than the default.
-        s.mode = if !metal_experts {
+        s.mode = if dense {
+            // Named for what it is. Every other regime here is a claim about
+            // expert numerics; this one has no experts and makes no such claim.
+            "stock-llamacpp".into()
+        } else if !metal_experts {
             "cpu-bit-exact".into()
         } else if full_residency {
             "resident-bit-exact".into()
@@ -4361,6 +4413,19 @@ fn install_pipeline_with(
         (None, Some(d)) => (d.join(id).join(format!("{id}.pack")), None),
         (None, None) => (default_pack.clone(), None),
     };
+
+    // A dense model stops here, with the weights on disk and nothing else to do.
+    //
+    // The three steps below exist to take a Mixture-of-Experts checkpoint apart:
+    // moe-profile.py reads the expert tensors, the planner decides where their
+    // records go, and the writer lays them out. A model with no experts has none
+    // of that, and moe-profile.py says so in as many words ("dense model, engine
+    // not applicable") rather than producing an empty profile. Running it anyway
+    // would fail the install of a model that is, in fact, perfectly installed.
+    if registry_entry(root, id).map(|e| is_dense(&e)).unwrap_or(false) {
+        progress("done", 100.0, "ready");
+        return Ok(());
+    }
 
     // 2. Profile.
     progress("profile", 62.0, "profiling");

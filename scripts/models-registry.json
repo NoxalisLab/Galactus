@@ -992,6 +992,26 @@
         }
       ],
       "measured_note": "MacBook Pro M5 Max, 128 GB, internal SSD, shipped path (Metal bit-exact experts), batch 512, planner ubatch, 192 predicted tokens on a 24-paragraph prompt, bench 2026-08-11 by scripts/bench-curve.py; cache = app planning ceiling per Mac tier, curve stops at full residency (19.57 GB)"
+    },
+    {
+      "id": "qwen38-27b",
+      "name": "Qwen3.8 27B (Q4_K_M, dense)",
+      "arch": "qwen3",
+      "dense": true,
+      "gguf_bytes": 17100000000,
+      "non_expert_bytes": 17100000000,
+      "min_ram_gb": 32,
+      "status": "stock_unmodified",
+      "download": {
+        "base": "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main",
+        "files": [
+          "Qwen3.8-27B-Q4_K_M.gguf"
+        ]
+      },
+      "tasks": [
+        "general",
+        "writing"
+      ]
     }
   ],
   "mac_lineup": {

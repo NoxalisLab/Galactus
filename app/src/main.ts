@@ -2785,11 +2785,13 @@ function modelsView(): HTMLElement {
     const certLabel = t(
       certification.badge === "composition"
         ? "models.certComposition"
-        : certification.badge === "pending"
-          ? "models.certPending"
-          : certification.badge === "blocked"
-            ? "models.certBlocked"
-            : "models.certified"
+        : certification.badge === "stock"
+          ? "models.certStock"
+          : certification.badge === "pending"
+            ? "models.certPending"
+            : certification.badge === "blocked"
+              ? "models.certBlocked"
+              : "models.certified"
     );
     const estimate = expectedTps(m);
     const measured = benchResults[m.id];

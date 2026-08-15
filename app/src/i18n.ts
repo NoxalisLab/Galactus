@@ -174,6 +174,11 @@ const dict: Record<string, { en: string; fr: string }> = {
   "models.subtitle": { en: "Galactus execution policy · certification enforced", fr: "Politique d’exécution Galactus · certification appliquée" },
   "models.certified": { en: "certified", fr: "certifié" },
   "models.certComposition": { en: "certified by composition", fr: "certifié par composition" },
+  "models.certStock": { en: "stock, not accelerated", fr: "d'origine, non accéléré" },
+  "models.certStockNote": {
+    en: "A dense model: it has no experts to stream, so the SSD engine does not apply. It runs through unmodified llama.cpp and has to fit in memory like anywhere else.",
+    fr: "Modèle dense : aucun expert à diffuser, le moteur SSD ne s'applique donc pas. Il passe par llama.cpp non modifié et doit tenir en mémoire comme partout ailleurs.",
+  },
   "models.certPending": { en: "validation in progress", fr: "validation en cours" },
   "models.certBlocked": { en: "not certified", fr: "non certifié" },
   "models.certPendingNote": {
