@@ -1767,10 +1767,18 @@ mod folder_chooser_tests {
     use super::classify_chooser_failure;
 
     #[test]
-    fn cancelling_is_not_a_fault() {
-        // Every dismissed dialog would raise an error toast otherwise, and the
-        // one thing worse than a silent failure is an alarm for a non-event.
+    fn cancelling_is_not_a_fault_in_any_language() {
+        // The reason this test names languages: the first version matched the
+        // English sentence, and the machine it shipped to was French. An
+        // ordinary cancel was then reported to the user as a broken chooser,
+        // which is the exact confusion the error message existed to end.
         assert_eq!(classify_chooser_failure("execution error: User canceled. (-128)"), None);
+        assert_eq!(
+            classify_chooser_failure("15:70: execution error: Annule par l'utilisateur. (-128)"),
+            None,
+            "a French Mac cancels in French and the code is what says so",
+        );
+        assert_eq!(classify_chooser_failure("Vorgang vom Benutzer abgebrochen. (-128)"), None);
         assert_eq!(classify_chooser_failure(""), None);
         assert_eq!(classify_chooser_failure("   \n  "), None);
     }
@@ -5663,8 +5671,15 @@ fn pick_folder() -> Result<Option<String>, String> {
 fn classify_chooser_failure(stderr: &str) -> Option<String> {
     let text = stderr.trim();
     let lowered = text.to_lowercase();
-    if lowered.contains("user canceled") || lowered.contains("user cancelled") || lowered.is_empty()
-    {
+    if text.is_empty() {
+        return None;
+    }
+    // The CODE, not the sentence. osascript writes its errors in the user's
+    // language: a French Mac says "Annule par l'utilisateur. (-128)", and the
+    // first version of this function matched only the English wording, so every
+    // ordinary cancel on a non-English Mac was reported as a fault. The number
+    // is the same in every language and is the only part worth reading.
+    if text.contains("-128") {
         return None;
     }
     if text.contains("-1743") || lowered.contains("not allowed to send apple events") {
