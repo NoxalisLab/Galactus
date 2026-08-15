@@ -1687,31 +1687,63 @@ function reasoningCardEl(it: Extract<ChatItem, { kind: "reasoning" }>): HTMLElem
   // on a settled block: while the block is open the text is right there, and a
   // header repeating its first line would be the same words twice.
   const gist = live ? "" : reasoningGist(it.text);
-  const card = el(`<div class="think${live ? " open" : ""}">
+  const card = el(`<div class="think${live ? " open" : ""}"${live ? " data-live" : ""}>
     <div class="think-h">${I.mem}<span class="nm">${esc(t("chat.reasoning"))}</span><span class="arg">${esc(gist)}</span><span class="st">${live ? esc(t("chat.reasoningLive")) : ""}</span><span class="chev">▾</span></div>
     <div class="think-b"><div class="think-t">${esc(text)}</div></div>
   </div>`);
   card.querySelector(".think-h")!.addEventListener("click", () => card.classList.toggle("open"));
   if (live) {
-    // Follow the writing, not the beginning of it.
-    //
-    // The block is capped in height and scrolls, and it was left at the top: a
-    // model thinking for minutes filled it with lines nobody could see while
-    // the visible ones stopped changing after two seconds. The one thing worth
-    // watching during a long reasoning phase is the sentence being written, and
-    // it was the one part never on screen.
-    //
-    // Done after the element is in the document, since scrollTop on a detached
-    // node is discarded. Not a smooth scroll: it happens on every repaint, and
-    // an animation restarted several times a second is a shudder.
-    // .think-t is the element with the height cap and the overflow, so it is
-    // the one that scrolls. .think-b only decides whether the block is shown.
-    const stream = card.querySelector<HTMLElement>(".think-t")!;
-    requestAnimationFrame(() => {
-      stream.scrollTop = stream.scrollHeight;
-    });
+    followReasoning(card);
   }
   return card;
+}
+
+/**
+ * Keep a streaming reasoning block showing its last lines.
+ *
+ * The block is capped in height and scrolls, and it used to sit at its top: a
+ * model thinking for minutes filled it with lines nobody could see while the
+ * visible ones stopped changing after two seconds.
+ *
+ * .think-t carries the height cap and the overflow, so it is what scrolls.
+ * .think-b only decides whether the block is shown at all.
+ *
+ * A reader who has scrolled up is left alone. Dragging someone back to the
+ * bottom every time a token lands is worse than never following at all, and
+ * "within 24px of the end" is the usual way to ask whether they were following
+ * in the first place.
+ */
+function followReasoning(card: HTMLElement): void {
+  const stream = card.querySelector<HTMLElement>(".think-t");
+  if (!stream) return;
+  const atEnd = stream.scrollHeight - stream.scrollTop - stream.clientHeight < 24;
+  if (!atEnd && stream.scrollTop > 0) return;
+  requestAnimationFrame(() => {
+    stream.scrollTop = stream.scrollHeight;
+  });
+}
+
+/**
+ * Move the live reasoning block in place, without rebuilding the thread.
+ *
+ * paintChat empties the log and builds every card again. At one call per token
+ * that is the whole conversation reconstructed several times a second, and the
+ * block's scroll position went with it: the element was new, so it started at
+ * the top, and the follow above put it back at the bottom. Between those two
+ * the eye saw a block flicking between its first and its last lines.
+ *
+ * Returns false when there is no live block on screen yet, which is the first
+ * token of a turn: that one needs the full paint, since the card does not exist.
+ */
+function paintLiveReasoning(text: string): boolean {
+  const log = chatLog();
+  const stream = log?.querySelector<HTMLElement>(".think[data-live] .think-t");
+  if (!log || !stream) return false;
+  const visible = visibleReasoning(text);
+  if (visible.trim() === "") return false;
+  stream.textContent = visible;
+  followReasoning(stream.closest(".think") as HTMLElement);
+  return true;
 }
 
 function toolCardEl(it: Extract<ChatItem, { kind: "tool" }>): HTMLElement {
@@ -1992,7 +2024,13 @@ async function ensureAgent(sess: Thread): Promise<void> {
         if (!mine()) return;
         store.appendReasoning(sess, text);
         onThreadActivity(sess, "thinking", t("px.reasoning"));
-        repaint();
+          // In place while the block is already on screen. A full repaint only
+          // for the first token, the one that has to create the card: paintChat
+          // empties the log, so at one call per token the block was a new
+          // element several times a second and its scroll position went with it.
+          const last = sess.data.items[sess.data.items.length - 1];
+          const live = last && last.kind === "reasoning" && !last.done ? last.text : null;
+          if (!(live !== null && paintLiveReasoning(live))) repaint();
       },
       onAssistantDone: () => {
         if (!mine()) return;

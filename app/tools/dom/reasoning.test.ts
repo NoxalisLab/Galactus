@@ -389,3 +389,59 @@ test("a delimiter split across chunks never reaches the screen", async () => {
   assert.ok(!shown.includes("<thi"), `raw markup reached the screen: ${shown}`);
   assert.ok(!shown.includes("</t"), `a fragment of a closing tag survived: ${shown}`);
 });
+
+test("a thought that keeps arriving moves in place, it does not rebuild the block", async () => {
+  // WHY NODE IDENTITY. paintChat empties the log and builds every card again,
+  // and the reasoning handler called it once per token. The block was therefore
+  // a NEW element several times a second: it started at its top, the follow put
+  // it back at its bottom, and what the eye saw was a block flicking between its
+  // first and its last lines for as long as the model thought. The width of the
+  // text was right the whole time; the thing that was wrong is only visible as
+  // the element being replaced, so that is what this asserts.
+  await boot();
+  const frames = ask("think about this at length");
+
+  frames.push(delta({ reasoning_content: "First I consider the inputs. " }));
+  await waitFor(() => document.querySelector(".think[data-live] .think-t") !== null,
+    "the live block to appear");
+
+  const blockBefore = document.querySelector(".think[data-live]");
+  const streamBefore = document.querySelector(".think[data-live] .think-t");
+  assert.ok(blockBefore && streamBefore);
+
+  frames.push(delta({ reasoning_content: "Then the constraints. " }));
+  frames.push(delta({ reasoning_content: "Then the answer." }));
+  await waitFor(() => (thought() ?? "").includes("Then the answer."), "the later thoughts");
+
+  assert.equal(
+    document.querySelector(".think[data-live]"),
+    blockBefore,
+    "the block was rebuilt: its scroll position cannot survive that",
+  );
+  assert.equal(
+    document.querySelector(".think[data-live] .think-t"),
+    streamBefore,
+    "the scrolling element was replaced, which is what made it flick",
+  );
+  assert.equal(
+    thought(),
+    "First I consider the inputs. Then the constraints. Then the answer.",
+    "and the text is still the whole thought, in order",
+  );
+  frames.end();
+  await settle(8);
+});
+
+test("a settled block carries no live marker, so nothing keeps scrolling it", async () => {
+  // The marker is what the in-place path looks for. Left on a finished block it
+  // would send later tokens of the NEXT turn into the previous turn's thought.
+  await boot();
+  const frames = ask("short one");
+  frames.push(delta({ reasoning_content: "Briefly." }));
+  await waitFor(() => document.querySelector(".think[data-live]") !== null, "the live block");
+  frames.push(delta({ content: "Done." }));
+  await waitFor(() => answer().includes("Done."), "the answer");
+  frames.end();
+  await settle(8);
+  assert.equal(document.querySelector(".think[data-live]"), null, "the block has settled");
+});
