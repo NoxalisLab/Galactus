@@ -25,7 +25,7 @@
     "test:rust-lsp": "tsc -p tools/rust-lsp/tsconfig.json && node --test \"tools/rust-lsp/out/**/*.test.js\"",
     "test:terminal": "tsc -p tools/terminal/tsconfig.json && node --test \"tools/terminal/out/**/*.test.js\"",
     "test:reasoning": "tsc -p tools/reasoning/tsconfig.json && node --test \"tools/reasoning/out/**/*.test.js\"",
-    "test": "npm run test:editor && npm run test:nav && npm run test:tsintel && npm run test:lang && npm run test:policy && npm run test:sampling && npm run test:machine-brief && npm run test:engine-error && npm run test:layout && npm run test:gate && npm run test:inline-edit && npm run test:mentions && npm run test:rust-lsp && npm run test:terminal && npm run test:runs && npm run test:rundrive && npm run test:runsview && npm run test:schedule && npm run test:learned && npm run test:update && npm run test:reasoning && npm run test:dom",
+    "test": "npm run test:editor && npm run test:nav && npm run test:tsintel && npm run test:lang && npm run test:policy && npm run test:sampling && npm run test:toolsched && npm run test:machine-brief && npm run test:engine-error && npm run test:layout && npm run test:gate && npm run test:inline-edit && npm run test:mentions && npm run test:rust-lsp && npm run test:terminal && npm run test:runs && npm run test:rundrive && npm run test:runsview && npm run test:schedule && npm run test:learned && npm run test:update && npm run test:reasoning && npm run test:dom",
     "test:gate": "tsc -p tools/gate/tsconfig.json && node --test \"tools/gate/out/**/*.test.js\"",
     "test:runs": "tsc -p tools/runs/tsconfig.json && node --test \"tools/runs/out/**/*.test.js\"",
     "test:rundrive": "tsc -p tools/rundrive/tsconfig.json && node --test \"tools/rundrive/out/**/*.test.js\"",
@@ -38,7 +38,8 @@
     "test:mutate:dom": "tsc -p tools/dom/tsconfig.json && node tools/dom/mutate.mjs && node tools/dom/mutate-boot.mjs",
     "test:mutate:pure": "node tools/mutate-pure.mjs",
     "test:mutate:rust": "node tools/rust-mutate.mjs",
-    "test:sampling": "tsc -p tools/sampling/tsconfig.json && node --test \"tools/sampling/out/**/*.test.js\""
+    "test:sampling": "tsc -p tools/sampling/tsconfig.json && node --test \"tools/sampling/out/**/*.test.js\"",
+    "test:toolsched": "tsc -p tools/toolsched/tsconfig.json && node --test \"tools/toolsched/out/**/*.test.js\""
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",

@@ -16,6 +16,7 @@ import {
 import type { SearchEvent, SearchOptsWire } from "./api";
 import { getLang, t } from "./i18n";
 import { isElevatedCommand, isElevatedWrite, isElevatedRead } from "./sensitive";
+import { runToolCalls } from "./toolsched";
 import { SAMPLING_DEFAULT, samplingFor, type Sampling } from "./sampling";
 
 /**
@@ -923,6 +924,18 @@ function mcpToolDefs(mcp: McpToolInfo[]): ToolDef[] {
   }));
 }
 
+/**
+ * Whether a call is work handed to somebody else.
+ *
+ * These are the only calls run concurrently. A teammate has its own thread and
+ * its own files by construction, so two of them overlapping is the intended
+ * behaviour rather than a race; every other tool touches this workspace, where
+ * two writes, or a write and a read of one path, would be a real bug.
+ */
+function isDelegation(call: ToolCall): boolean {
+  return call.function.name === "spawn_agent" || call.function.name === "ask_agent";
+}
+
 export class Agent {
   private messages: ChatMessage[] = [];
   private mcp: McpToolInfo[] = [];
@@ -1622,16 +1635,34 @@ export class Agent {
       return;
     }
 
-    // Execute every tool call and push exactly one tool message per call, in
-    // order, the API requires a 1:1 match with the assistant's tool_calls.
-    for (let ci = 0; ci < toolCalls.length; ci++) {
-      const call = toolCalls[ci];
-      let result: string;
-      try {
-        result = await this.executeCall(call);
-      } catch (e: any) {
-        result = `error: ${String(e?.message ?? e)}`;
-      }
+      // Run them, then push exactly one tool message per call IN ORDER: the API
+      // matches results to calls by position, whatever order the work finished
+      // in. Consecutive delegations overlap; see toolsched.ts for why they are
+      // the only ones that may.
+      const { results, done } = await runToolCalls(
+        toolCalls,
+        isDelegation,
+        async (c) => {
+          try {
+            return await this.executeCall(c);
+          } catch (e: any) {
+            return `error: ${String(e?.message ?? e)}`;
+          }
+        },
+        // Read through the field each time rather than capturing it: the
+        // callback outlives the narrowing TypeScript applies above.
+        () => this.abort?.signal.aborted === true,
+      );
+
+      for (let ci = 0; ci < toolCalls.length; ci++) {
+        const call = toolCalls[ci];
+        if (!done[ci]) {
+          // Stopped before this one ran. The slot still has to exist, or the
+          // next request replays a body the server rejects.
+          this.messages.push({ role: "tool", tool_call_id: call.id, content: "(aborted by user)" });
+          continue;
+        }
+        const result = results[ci];
       // A raw web-page dump can weigh 200 KB (≈ 50k tokens): pushed whole, a
       // handful of those blows the context window and every later request
       // gets rejected. Oversized outputs spill WHOLE to a scratch file and
@@ -1650,14 +1681,6 @@ export class Agent {
         tool_call_id: call.id,
         content: hist,
       });
-      if (this.abort.signal.aborted) {
-        // Even on Stop the history must stay 1:1 with tool_calls: fill the
-        // remaining slots or the next request replays a malformed body.
-        for (const rest of toolCalls.slice(ci + 1)) {
-          this.messages.push({ role: "tool", tool_call_id: rest.id, content: "(aborted by user)" });
-        }
-        break;
-      }
     }
     if (this.abort.signal.aborted) {
       this.finishTurn(assistantText, false);
