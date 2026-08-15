@@ -1778,6 +1778,36 @@ mod dense_model_tests {
     }
 
     #[test]
+    fn a_dense_model_is_planned_without_a_measured_geometry() {
+        use super::{plan_cache, MachineLimits};
+        use serde_json::json;
+        // The geometry check is right for an MoE model and was applied to every
+        // model. It refused to start a dense one with a message telling the user
+        // to install it, which they had: a remedy that cannot work sends someone
+        // round a loop instead of naming the problem.
+        let machine = MachineLimits { ram_gb: 64, available: None, gpu_working_set: None };
+        let entry = json!({"id": "qwen38-27b", "dense": true, "gguf_bytes": 17_100_000_000u64});
+        let plan = plan_cache(&entry, machine, None, "balanced", false, 1)
+            .expect("a dense model needs no expert geometry");
+        assert_eq!(plan.cache_bytes, 0, "there are no experts to cache");
+        assert!(!plan.decision.impossible, "17 GB of weights fit in 64 GB");
+        assert_eq!(plan.decision.resident_bytes, 17_100_000_000);
+    }
+
+    #[test]
+    fn a_dense_model_too_big_for_the_machine_is_refused_rather_than_shrunk() {
+        use super::{plan_cache, MachineLimits};
+        use serde_json::json;
+        // An MoE model that does not fit gets a smaller cache. A dense one has
+        // nothing to trade away: either the weights fit or it cannot run here,
+        // and saying so beats starting an engine that dies mid-graph.
+        let machine = MachineLimits { ram_gb: 16, available: None, gpu_working_set: None };
+        let entry = json!({"id": "big", "dense": true, "gguf_bytes": 400_000_000_000u64});
+        let plan = plan_cache(&entry, machine, None, "balanced", false, 1).unwrap();
+        assert!(plan.decision.impossible);
+    }
+
+    #[test]
     fn a_malformed_flag_falls_back_to_the_safe_answer() {
         // A string where a bool belongs must not read as dense: that would start
         // an MoE model with no streaming layer and no pack, which fails deep
@@ -2403,6 +2433,38 @@ fn plan_cache(
     // a hard error: the old defaults (record 1 byte, experts 256) made the
     // probation guard below fictional and the engine aborted at the first
     // micro-batch with "free list a sec".
+    // A dense model has no geometry to measure and no cache to plan. There are
+    // no experts, so nothing is streamed and nothing is cached: the weights are
+    // resident from the first token, exactly as any other runtime would load
+    // them. Everything below this point sizes an expert cache and would have
+    // nothing to size.
+    //
+    // The check underneath is right for a Mixture-of-Experts model and was
+    // applied to every model: it refused to start a dense one and told the user
+    // to install it, which they had, and installing it again would have changed
+    // nothing. A message that names a remedy that cannot work is worse than an
+    // error, because it sends someone round a loop.
+    if is_dense(entry) {
+        let weights = entry["gguf_bytes"].as_u64().unwrap_or(0);
+        let budget = engine_budget_bytes(ram_gb * 1_000_000_000, machine);
+        return Ok(CachePlan {
+            cache_bytes: 0,
+            protected: 0.0,
+            // The same 512 a fully resident MoE model gets. The small
+            // micro-batch exists to bound how many distinct experts one batch
+            // can touch, and this model touches none.
+            ubatch: 512,
+            decision: ModeDecision {
+                mode: ram_mode.to_string(),
+                requested: ram_mode.to_string(),
+                // Nothing can be traded away: there is no cache to shrink, so
+                // either the weights fit or this model cannot run here.
+                impossible: weights > budget,
+                resident_bytes: weights,
+                budget_bytes: budget,
+            },
+        });
+    }
     let geo = measured_geometry(entry);
     let (non_expert, expert_total, layers, record, used, experts) = match geo {
         Some(g) => g,

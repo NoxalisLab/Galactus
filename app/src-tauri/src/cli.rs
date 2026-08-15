@@ -49,12 +49,16 @@ fn serve(root: &Path, model_id: &str, args: &[String]) -> Result<(), String> {
     let entry = registry_entry(root, model_id)?;
     require_certified_model(&entry)?;
     require_compatible_hardware(&entry, hw_info_impl().ram_gb)?;
+    let dense = is_dense(&entry);
     let (model_dir, _pack, profile) = model_paths(root, model_id);
     let gguf = find_gguf(&model_dir).ok_or("GGUF introuvable : lance `galactus install` d'abord")?;
     // Double pack : deux chemins distincts font lire les deux SSD en
     // parallele (decoupe P0v2) ; identiques = pack mono-volume.
     let (pack_internal, pack_external) = resolve_packs(root, model_id, &entry)?;
-    if !pack_internal.is_file() || !pack_external.is_file() {
+    // Un modele dense n'a pas de pack et n'en aura jamais : exiger celui-ci
+    // refusait de servir un modele dont les poids sont sur le disque, complets,
+    // en conseillant une installation deja faite.
+    if !dense && (!pack_internal.is_file() || !pack_external.is_file()) {
         return Err("pack introuvable : lance `galactus install` d'abord".into());
     }
     let ram_mode = ram_mode_from_args(args);
@@ -106,7 +110,9 @@ fn serve(root: &Path, model_id: &str, args: &[String]) -> Result<(), String> {
 
     let ctx_total = CTX_PER_SLOT * slots;
     let expert_total = entry["expert_bytes_total"].as_u64().unwrap_or(u64::MAX);
-    let regime = if cpu_moe { "cpu-bit-exact" } else if cache_bytes >= expert_total { "resident-bit-exact" } else { "streamed-bit-exact" };
+    // Les trois autres noms sont des affirmations sur la numerique des experts.
+    // Un modele dense n'en a pas, donc il n'affirme rien de tel.
+    let regime = if dense { "stock-llamacpp" } else if cpu_moe { "cpu-bit-exact" } else if cache_bytes >= expert_total { "resident-bit-exact" } else { "streamed-bit-exact" };
     let dual = pack_internal != pack_external;
     println!("galactus serve {model_id}");
     let chosen = &plan.decision.mode;
@@ -120,19 +126,25 @@ fn serve(root: &Path, model_id: &str, args: &[String]) -> Result<(), String> {
         );
     }
     println!("  creneaux: {slots} (fenetre {CTX_PER_SLOT} par creneau, contexte total {ctx_total})");
-    println!("  packs   : {}", if dual { "double (deux SSD en parallele)" } else { "mono-volume" });
-    println!("    interne : {}", pack_internal.display());
-    println!("    externe : {}", pack_external.display());
+    if dense {
+        println!("  packs   : aucun (modele dense, rien a diffuser)");
+    } else {
+        println!("  packs   : {}", if dual { "double (deux SSD en parallele)" } else { "mono-volume" });
+        println!("    interne : {}", pack_internal.display());
+        println!("    externe : {}", pack_external.display());
+    }
     println!("  endpoint: http://127.0.0.1:{port}/v1  (Ctrl+C pour arreter)\n");
 
     let mut cmd = Command::new(&bin);
-    cmd.env("GALACTUS_H4", "1")
-        .env("GALACTUS_H4_INTERNAL", &pack_internal)
-        .env("GALACTUS_H4_EXTERNAL", &pack_external)
-        .env("GALACTUS_H4_CACHE_BYTES", cache_bytes.to_string())
-        .env("GALACTUS_H4_PROTECTED", format!("{fraction:.2}"))
-        .env("GALACTUS_H4_QD", "32")
-        .env("LC_ALL", "C");
+    cmd.env("LC_ALL", "C");
+    if !dense {
+        cmd.env("GALACTUS_H4", "1")
+            .env("GALACTUS_H4_INTERNAL", &pack_internal)
+            .env("GALACTUS_H4_EXTERNAL", &pack_external)
+            .env("GALACTUS_H4_CACHE_BYTES", cache_bytes.to_string())
+            .env("GALACTUS_H4_PROTECTED", format!("{fraction:.2}"))
+            .env("GALACTUS_H4_QD", "32");
+    }
     // Sans GALACTUS_PROFILE le moteur prend sa geometrie GLM-5.2 integree :
     // juste pour GLM-5.2, faux pour tout autre modele. Des que l'installation
     // a produit un profil, le fichier devient obligatoire.

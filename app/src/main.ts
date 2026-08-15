@@ -2523,6 +2523,15 @@ function rootVolumeIndex(cands: VolumeInfo[]): number {
  * the fast one falls back to mono on the fast SSD, with a warning.
  */
 async function showInstallModal(m: ModelEntry): Promise<void> {
+  // A dense model has no pack, so there is no pack to place: the dialog would
+  // measure two SSDs, ask which should hold the halves of a file that will
+  // never exist, and then be ignored by an installer that stops after the
+  // download. Asking a question whose answer changes nothing is worse than not
+  // asking: it teaches the reader that the choice does not matter.
+  if (m.dense) {
+    startInstall(m, null);
+    return;
+  }
   let vols: VolumeInfo[] = [];
   try {
     vols = await api.listVolumes();

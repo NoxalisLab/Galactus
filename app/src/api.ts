@@ -84,6 +84,8 @@ export interface ModelEntry {
   runs_nowhere_natively?: boolean;
   experts?: number;
   experts_used?: number;
+  /** No routed experts: nothing to pack, nothing to stream, nothing to cache. */
+  dense?: boolean;
   measured?: MeasuredPoint[];
   installed?: boolean;
   gguf_present?: boolean;
