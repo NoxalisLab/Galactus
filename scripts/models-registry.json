@@ -123,8 +123,6 @@
       "certified_date": "2026-08-04",
       "native_fit_ram_gb": 256,
       "requires": "128 GB RAM minimum, dual SSD recommended",
-      "internal_pack": "$HOME/GalactusH4/**/*p0v2-internal.pack",
-      "external_pack": "/Volumes/NoxalisExtended/Noxalis Lab/NoxalisAi/galactus/artifacts/h4/packs/tour83-p0v2/external/h4-p0v2-external.pack",
       "measured": [
         {
           "cache_gb": 92,
@@ -140,7 +138,18 @@
       "record_bytes": 13172736,
       "non_expert_bytes": 12000000000,
       "min_cache_bytes": 92000000000,
-      "measured_note": "M5 Max reference, single measured point at 92 GB of cache, taken before scripts/bench-curve.py existed. One point is not a curve: the app clamps to it on every machine instead of interpolating. Not re-measured because the pack does not live in the repository"
+      "measured_note": "M5 Max reference, single measured point at 92 GB of cache, taken before scripts/bench-curve.py existed. One point is not a curve: the app clamps to it on every machine instead of interpolating. Not re-measured because the pack does not live in the repository",
+      "download": {
+        "base": "https://huggingface.co/unsloth/GLM-5.2-GGUF/resolve/main/UD-IQ1_S",
+        "files": [
+          "GLM-5.2-UD-IQ1_S-00001-of-00006.gguf",
+          "GLM-5.2-UD-IQ1_S-00002-of-00006.gguf",
+          "GLM-5.2-UD-IQ1_S-00003-of-00006.gguf",
+          "GLM-5.2-UD-IQ1_S-00004-of-00006.gguf",
+          "GLM-5.2-UD-IQ1_S-00005-of-00006.gguf",
+          "GLM-5.2-UD-IQ1_S-00006-of-00006.gguf"
+        ]
+      }
     },
     {
       "id": "qwen3-30b-a3b",

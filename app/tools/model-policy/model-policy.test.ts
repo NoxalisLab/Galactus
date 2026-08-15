@@ -74,3 +74,46 @@ test("the shipped registry defines an enforceable hardware policy for every mode
   const glm = registry.models.find((model) => model.id === "glm-5.2-744b");
   assert.equal(glm?.min_ram_gb, 128, "GLM-5.2 744B must never be offered below the measured 128 GB tier");
 });
+
+test("every model in the shipped catalogue can be installed from the app", () => {
+  // GLM-5.2 shipped with no download block at all, so its card drew no button
+  // and the only way to obtain it was by hand. A catalogue entry the app cannot
+  // act on is an advertisement, and a user who deletes such a model has no way
+  // back. Certification says the model may run; a download says it can be had.
+  const registryUrl = new URL("../../../../../../scripts/models-registry.json", import.meta.url);
+  const registry = JSON.parse(fs.readFileSync(registryUrl, "utf8")) as {
+    models: Array<Record<string, any>>;
+  };
+  for (const model of registry.models) {
+    assert.ok(
+      hasVerifiedDownload(model.download),
+      `${model.id}: offered in the catalogue with no way to download it`,
+    );
+    // The downloader writes models/<id>/<file> and creates no subdirectory, so a
+    // slash inside a file name fails at curl's open. Put the folder in the base.
+    for (const file of model.download.files as string[]) {
+      assert.ok(!file.includes("/"), `${model.id}: ${file} needs its folder in the base, not the name`);
+    }
+  }
+});
+
+test("no catalogue entry pins a model to one machine", () => {
+  // internal_pack and external_pack held absolute paths from the machine the
+  // model was first packed on, and they were consulted BEFORE the standard
+  // store, so every other install fell through to a path that does not exist
+  // there. Those two fields shipped, verbatim, to every user.
+  const registryUrl = new URL("../../../../../../scripts/models-registry.json", import.meta.url);
+  const registry = JSON.parse(fs.readFileSync(registryUrl, "utf8")) as {
+    models: Array<Record<string, any>>;
+  };
+  for (const model of registry.models) {
+    for (const field of ["internal_pack", "external_pack"]) {
+      const value = model[field];
+      if (value === undefined) continue;
+      assert.ok(
+        !String(value).startsWith("/") && !String(value).includes("$HOME"),
+        `${model.id}: ${field} is a path from one machine and cannot ship`,
+      );
+    }
+  }
+});
