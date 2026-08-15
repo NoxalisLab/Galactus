@@ -1727,3 +1727,11 @@ html.pane-dragging .pvw-frame { pointer-events: none; }
 .upd-prog .n { font-size: 11px; color: var(--dim2); font-family: var(--mono); }
 .upd-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .upd-actions .upd-status { margin-top: 0; }
+
+/* Three small numeric fields on one settings row. Narrow on purpose: they hold
+   a temperature and two thresholds, never more than five characters, and a full
+   width input would read as a place to type a sentence. */
+.samp { display: flex; flex-direction: column; gap: 3px; }
+.samp small { font-size: 10.5px; color: var(--dim); font-family: var(--mono); }
+.samp input { width: 72px; background: var(--inset); border: 1px solid var(--bd2); border-radius: 0;
+  padding: 6px 8px; color: var(--tx); font-size: 12.5px; font-family: var(--mono); }

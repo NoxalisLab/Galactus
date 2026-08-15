@@ -708,7 +708,11 @@ export async function streamChat(
   tools: ToolDef[],
   handlers: StreamHandlers,
   abort: AbortSignal,
-  temperature = 0.6
+  temperature = 0.6,
+  // Sent whole when the caller has them. Omitted entirely otherwise, so a
+  // caller that knows nothing about sampling still gets llama.cpp's defaults
+  // rather than this file's opinion of them.
+  sampling?: { top_p: number; top_k: number },
 ): Promise<boolean> {
   const body: any = {
     model: "galactus-local",
@@ -716,6 +720,10 @@ export async function streamChat(
     stream: true,
     temperature,
   };
+  if (sampling) {
+    body.top_p = sampling.top_p;
+    body.top_k = sampling.top_k;
+  }
   if (tools.length > 0) body.tools = tools;
 
   let response: Response;

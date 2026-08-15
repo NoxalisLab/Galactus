@@ -7,6 +7,7 @@ import {
   Agent,
   AgentDirectory,
   clearStandingPermissions,
+  configureSampling,
   loadStandingPermissions,
   PermissionDecision,
   PermissionRequest,
@@ -28,6 +29,7 @@ import { exportConversationMarkdown, formatStats, searchConversations, wireDropZ
 import * as store from "./store";
 import type { ChatItem, Conversation, ConvMeta, SubAgent, ThreadData } from "./store";
 import { hasVerifiedDownload, modelAvailability, modelCertification } from "./model-policy";
+import { clampSampling, readSampling, SAMPLING_DEFAULT, type Sampling } from "./sampling";
 import { engineAdvice, isEngineDecodeFailure, modeLabelKey } from "./engine-error";
 import { layoutBriefKey, machineBrief, machineSummary } from "./machine-brief";
 import * as runsview from "./runsview";
@@ -3696,6 +3698,23 @@ function settingsView(): HTMLElement {
           <button data-sl="4">4</button>
         </div>
       </div>
+      <div class="set-row"><div class="grow"><b>${esc(t("settings.ctx"))}</b><span>${esc(t("settings.ctxHint"))}</span></div>
+        <div class="seg" id="ctxseg">
+          <button data-ctx="8192">8K</button>
+          <button data-ctx="16384">16K</button>
+          <button data-ctx="32768">32K</button>
+          <button data-ctx="65536">64K</button>
+          <button data-ctx="131072">128K</button>
+        </div>
+      </div>
+      <div class="set-row"><div class="grow"><b>${esc(t("settings.sampling"))}</b><span>${esc(t("settings.samplingHint"))}</span></div>
+        <div class="set-actions">
+          <label class="samp"><small>${esc(t("settings.temp"))}</small><input id="samptemp" type="number" step="0.05" min="0" max="2"/></label>
+          <label class="samp"><small>${esc(t("settings.topP"))}</small><input id="samptopp" type="number" step="0.01" min="0" max="1"/></label>
+          <label class="samp"><small>${esc(t("settings.topK"))}</small><input id="samptopk" type="number" step="1" min="0" max="200"/></label>
+          <button class="bs" id="sampreset">${esc(t("settings.samplingReset"))}</button>
+        </div>
+      </div>
       <div class="set-row"><div class="grow"><b>${esc(t("auto.title"))}</b><span>${esc(t("auto.hint"))}</span></div>
         <div class="seg" id="autoseg">
           <button data-am="off">${esc(t("auto.off"))}</button>
@@ -3829,6 +3848,53 @@ function settingsView(): HTMLElement {
     });
   }
   {
+    // Context window. Applied at the next engine start, like the memory mode:
+    // a running server holds a cache sized for the window it was started with,
+    // and resizing it under a live conversation is not a thing llama.cpp does.
+    {
+      const ctxseg = wrap.querySelector<HTMLElement>("#ctxseg")!;
+      const paintCtx = (v: string) =>
+        ctxseg.querySelectorAll("button").forEach((b) =>
+          (b as HTMLElement).classList.toggle("on", (b as HTMLElement).dataset.ctx === v));
+      api.settingsGet().then((s) => paintCtx(s["engine_ctx"] || "8192"));
+      ctxseg.addEventListener("click", async (e) => {
+        const b = (e.target as HTMLElement).closest("[data-ctx]") as HTMLElement | null;
+        if (!b) return;
+        paintCtx(b.dataset.ctx!);
+        await api.settingsSet("engine_ctx", b.dataset.ctx!);
+        toast(t("settings.appliedNextStart"), "ok");
+      });
+    }
+    // Sampling. Applied to the NEXT conversation, not to threads already open:
+    // two answers in one thread coming from two different samplings is not
+    // something a reader could ever untangle.
+    {
+      const temp = wrap.querySelector<HTMLInputElement>("#samptemp")!;
+      const topp = wrap.querySelector<HTMLInputElement>("#samptopp")!;
+      const topk = wrap.querySelector<HTMLInputElement>("#samptopk")!;
+      const fill = (s: Sampling) => {
+        temp.value = String(s.temperature);
+        topp.value = String(s.top_p);
+        topk.value = String(s.top_k);
+      };
+      api.settingsGet().then((s) => fill(readSampling(s)));
+      const save = async (key: keyof Sampling, input: HTMLInputElement) => {
+        const value = clampSampling(key, Number(input.value));
+        input.value = String(value);
+        await api.settingsSet(`sampling_${key}`, String(value));
+        configureSampling(readSampling(await api.settingsGet()));
+      };
+      temp.addEventListener("change", () => void save("temperature", temp));
+      topp.addEventListener("change", () => void save("top_p", topp));
+      topk.addEventListener("change", () => void save("top_k", topk));
+      wrap.querySelector("#sampreset")!.addEventListener("click", async () => {
+        for (const [key, value] of Object.entries(SAMPLING_DEFAULT)) {
+          await api.settingsSet(`sampling_${key}`, String(value));
+        }
+        fill(SAMPLING_DEFAULT);
+        configureSampling(SAMPLING_DEFAULT);
+      });
+    }
     const seg = wrap.querySelector<HTMLElement>("#ramseg")!;
     const paint = (m: string) =>
       seg.querySelectorAll("button").forEach((b) => b.classList.toggle("on", (b as HTMLElement).dataset.rm === m));
@@ -4540,6 +4606,10 @@ async function boot() {
     toast: (message, kind) => toast(message, kind),
   });
   await loadStandingPermissions().catch(() => {});
+  // Before the first agent exists: an Agent reads the configured sampling at
+  // construction, so a conversation opened during boot would otherwise be
+  // built with the defaults and keep them for its whole life.
+  configureSampling(readSampling(await api.settingsGet().catch(() => ({}))));
   const s = await api.settingsGet().catch(() => ({} as Record<string, string>));
   configurePanePreferences(s, (key, value) => api.settingsSet(key, value));
   if (s["root"]) { root = s["root"]; try { registry = await api.registry(); if (!registry.length) root = null; } catch { root = null; } }

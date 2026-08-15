@@ -1494,8 +1494,51 @@ fn server_state() -> &'static Mutex<ServerState> {
 // The app never runs more concurrent turns than there are slots (see the slot
 // pool in main.ts): the bound is this number, not a UI convention.
 
-/// Context window every slot must keep, whatever the slot count.
+/// Context window every slot keeps by default, whatever the slot count.
+///
+/// This was the ONLY value for two years, and it is the one every memory figure
+/// in this file was measured at. It stays the default and the unit the KV cost
+/// below is expressed in.
 const CTX_PER_SLOT: u32 = 8192;
+
+/// The largest window offered to a model whose training context nobody recorded.
+///
+/// Asking for more than a model was trained on does not fail: llama.cpp extends
+/// the rope and the answers quietly get worse, which is the failure mode this
+/// project exists to avoid. A registry entry that states its own
+/// `context_length` is believed; anything else is held here, comfortably inside
+/// what every model in the catalogue was trained on.
+const CTX_CEILING_UNKNOWN: u32 = 32_768;
+
+/// The window per slot the user asked for, bounded by what the model can hold.
+///
+/// Bounded, not obeyed: a number typed into a settings field is a wish, and the
+/// two things able to refuse it are the model's training context and, further
+/// down, the memory the machine can spare.
+fn ctx_per_slot_for(entry: &Value) -> u32 {
+    let asked = settings_load()
+        .get("engine_ctx")
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .unwrap_or(CTX_PER_SLOT);
+    let model_max = entry["context_length"]
+        .as_u64()
+        .and_then(|v| u32::try_from(v).ok())
+        .unwrap_or(CTX_CEILING_UNKNOWN);
+    asked.clamp(CTX_PER_SLOT, model_max.max(CTX_PER_SLOT))
+}
+
+/// What one decode slot's KV cache costs at a given window.
+///
+/// KV grows linearly with the window: twice the context, twice the cache. The
+/// measured figure is 0.8 GB per slot at 8192 on Qwen3-30B-A3B, so everything
+/// else is that number scaled. It is an approximation across models (a model
+/// with more layers or fewer grouped KV heads pays differently), and it is the
+/// same approximation the slot count already used, now applied to the axis the
+/// user can move.
+fn kv_bytes_for(ctx_per_slot: u32, slots: u32) -> u64 {
+    let per_slot = KV_BYTES_PER_EXTRA_SLOT * u64::from(ctx_per_slot) / u64::from(CTX_PER_SLOT);
+    per_slot * u64::from(slots)
+}
 
 /// How the engine is told to parse a chat turn, in one place.
 ///
@@ -1717,6 +1760,43 @@ fn read_tool_verdict(body: &str) -> Option<bool> {
         return None;
     }
     Some(false)
+}
+
+#[cfg(test)]
+mod context_window_tests {
+    use super::{kv_bytes_for, CTX_PER_SLOT, KV_BYTES_PER_EXTRA_SLOT};
+
+    #[test]
+    fn the_default_window_costs_exactly_what_it_always_did() {
+        // Every memory figure in this file was measured at 8192 with the KV of
+        // extra slots charged at a flat 0.8 GB. Generalising the axis must not
+        // move the number at the point it was measured, or every ceiling in the
+        // catalogue shifts under models nobody re-measured.
+        for slots in 1..=4u32 {
+            assert_eq!(
+                kv_bytes_for(CTX_PER_SLOT, slots),
+                KV_BYTES_PER_EXTRA_SLOT * u64::from(slots)
+            );
+        }
+    }
+
+    #[test]
+    fn kv_grows_with_the_window() {
+        // The whole reason the window could not simply be raised: twice the
+        // context is twice the cache, and a ceiling that ignored it would admit
+        // a configuration the engine then dies inside.
+        let one = kv_bytes_for(CTX_PER_SLOT, 1);
+        assert_eq!(kv_bytes_for(CTX_PER_SLOT * 16, 1), one * 16);
+        assert_eq!(kv_bytes_for(CTX_PER_SLOT * 4, 2), one * 8);
+    }
+
+    #[test]
+    fn a_very_long_window_is_expensive_enough_to_be_refused() {
+        // 128k across two slots is 25.6 GB of cache by this estimate. The point
+        // of the test is not the figure, it is that the figure is large enough
+        // to reach the ceiling instead of slipping under it unnoticed.
+        assert!(kv_bytes_for(131_072, 2) > 20_000_000_000);
+    }
 }
 
 #[cfg(test)]
@@ -3940,7 +4020,10 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
     //
     // `slots` was resolved before planning, and must stay the same number: the
     // engine has to be started with exactly the slot count the ceiling paid for.
-    let ctx_total = CTX_PER_SLOT * slots;
+    // The window the planner sized the memory for, not the constant: the two
+    // must be the same number or the engine is started with a cache the ceiling
+    // never accounted for.
+    let ctx_total = ctx_per_slot_for(&entry) * slots;
     cmd.arg("--model")
         .arg(&gguf)
         .arg("--host")

@@ -16,6 +16,20 @@ import {
 import type { SearchEvent, SearchOptsWire } from "./api";
 import { getLang, t } from "./i18n";
 import { isElevatedCommand, isElevatedWrite, isElevatedRead } from "./sensitive";
+import { SAMPLING_DEFAULT, samplingFor, type Sampling } from "./sampling";
+
+/**
+ * The sampling every agent created from now on will use.
+ *
+ * Module level rather than a constructor argument: an Agent is built in half a
+ * dozen places, including for teammates, and threading one more parameter
+ * through all of them would guarantee that one of them keeps the old default
+ * without anybody noticing.
+ */
+let configuredSampling: Sampling = SAMPLING_DEFAULT;
+export function configureSampling(next: Sampling): void {
+  configuredSampling = next;
+}
 import {
   effectiveAutoApprove,
   isStep,
@@ -908,6 +922,14 @@ export class Agent {
   private abort: AbortController | null = null;
   private taskSystem: string | null = null;
   private taskTemp: number | null = null;
+  /**
+   * Sampling for every request this agent makes.
+   *
+   * Set once from the settings, not read per turn: changing it mid-conversation
+   * would make two answers in the same thread come from two different models,
+   * as far as anybody reading them later can tell.
+   */
+  private sampling: Sampling = configuredSampling;
   /** The conversation this agent belongs to (its own, or its parent's). */
   private convId = "";
   /**
@@ -1526,13 +1548,17 @@ export class Agent {
       ...builtinTools(this.hasVault, this.role, this.hasKb, this.canDelegate(), directory !== null),
       ...mcpToolDefs(this.mcp),
     ];
+    // A task temperature (a skill asking for 0 because it needs a repeatable
+    // answer) overrides the configured temperature for this turn, and only it.
+    const chosen = samplingFor(this.sampling, this.taskTemp ?? undefined);
     const ok = await streamChat(
       this.port,
       this.messages,
       tools,
       handlers,
       this.abort.signal,
-      this.taskTemp ?? 0.6
+      chosen.temperature,
+      { top_p: chosen.top_p, top_k: chosen.top_k },
     );
     if (!ok && !this.abort.signal.aborted) {
       // Context overflow (huge tool outputs, long thread): shrink and retry

@@ -996,7 +996,7 @@
     {
       "id": "qwen38-27b",
       "name": "Qwen3.8 27B (Q4_K_M, dense)",
-      "arch": "qwen3",
+      "arch": "qwen35",
       "dense": true,
       "gguf_bytes": 17100000000,
       "non_expert_bytes": 17100000000,
@@ -1011,7 +1011,8 @@
       "tasks": [
         "general",
         "writing"
-      ]
+      ],
+      "context_length": 262144
     }
   ],
   "mac_lineup": {

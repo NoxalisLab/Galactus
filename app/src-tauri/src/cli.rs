@@ -108,7 +108,8 @@ fn serve(root: &Path, model_id: &str, args: &[String]) -> Result<(), String> {
     // cablage avant de lancer quoi que ce soit.
     engine_is_wired(&bin)?;
 
-    let ctx_total = CTX_PER_SLOT * slots;
+    let ctx_slot = ctx_per_slot_for(&entry);
+    let ctx_total = ctx_slot * slots;
     let expert_total = entry["expert_bytes_total"].as_u64().unwrap_or(u64::MAX);
     // Les trois autres noms sont des affirmations sur la numerique des experts.
     // Un modele dense n'en a pas, donc il n'affirme rien de tel.
@@ -125,7 +126,7 @@ fn serve(root: &Path, model_id: &str, args: &[String]) -> Result<(), String> {
             plan.decision.budget_bytes as f64 / 1e9
         );
     }
-    println!("  creneaux: {slots} (fenetre {CTX_PER_SLOT} par creneau, contexte total {ctx_total})");
+    println!("  creneaux: {slots} (fenetre {ctx_slot} par creneau, contexte total {ctx_total})");
     if dense {
         println!("  packs   : aucun (modele dense, rien a diffuser)");
     } else {
