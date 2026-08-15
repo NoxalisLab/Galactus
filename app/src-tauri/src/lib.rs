@@ -5641,6 +5641,38 @@ fn detect_root() -> Option<String> {
 /// Native macOS folder chooser via osascript. Returns None on cancel.
 #[tauri::command]
 fn pick_folder() -> Result<Option<String>, String> {
+    // The native panel first. It is this process's own window: no Apple Event,
+    // no Automation permission, and nothing that can be refused on behalf of
+    // somebody else. osascript's `choose folder` answered "cancelled by the
+    // user" on a machine where nobody cancelled anything, which is what a
+    // refused Apple Event looks like from the outside, and four rounds went
+    // into that disguise.
+    match swift_helper("galactus-pick") {
+        Ok(bin) => {
+            let out = Command::new(&bin)
+                .arg("folder")
+                .arg(std::env::var("HOME").unwrap_or_default())
+                .output()
+                .map_err(|e| e.to_string())?;
+            return match out.status.code() {
+                Some(0) => {
+                    let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                    Ok(if p.is_empty() { None } else { Some(p) })
+                }
+                // 2 is a real cancel, and the helper is the only thing here that
+                // can tell one from a failure without reading a sentence.
+                Some(2) => Ok(None),
+                _ => Err(format!(
+                    "the folder chooser could not open: {}",
+                    String::from_utf8_lossy(&out.stderr).trim()
+                )),
+            };
+        }
+        // No swiftc and no prebuilt helper: fall through to the old path rather
+        // than refusing outright. It works on plenty of machines, and one that
+        // cannot build the helper is not automatically one where it fails.
+        Err(_) => {}
+    }
     let out = Command::new("osascript")
         .arg("-e")
         .arg("POSIX path of (choose folder with prompt \"Select your Galactus folder\")")
@@ -6706,10 +6738,21 @@ fn conv_read(id: String, max_chars: Option<usize>) -> Result<String, String> {
 /// It only needs the Command Line Tools, which any machine building llama.cpp
 /// already has. Everything it does (PDFKit text, Vision OCR) is offline.
 fn doc_helper() -> Result<PathBuf, String> {
+    swift_helper("galactus-doc")
+}
+
+/// Build or find one of the bundled Swift helpers, by name.
+///
+/// Was `doc_helper`, hard-coded to one name, until a second helper was needed.
+/// Everything here is the original logic with the name lifted out: a
+/// precompiled binary in the bundle first, so a Mac without the Command Line
+/// Tools works, then a compile into Application Support, refreshed when the
+/// source is newer than the cached binary.
+fn swift_helper(name: &str) -> Result<PathBuf, String> {
     // Precompiled helper shipped in the bundle: works on Macs without the
     // Command Line Tools (no swiftc needed at runtime).
     if let Some(res) = resource_dir() {
-        let prebuilt = res.join("packaged/galactus-doc");
+        let prebuilt = res.join("packaged").join(name);
         if prebuilt.is_file() {
             #[cfg(unix)]
             {
@@ -6725,11 +6768,11 @@ fn doc_helper() -> Result<PathBuf, String> {
             return Ok(prebuilt);
         }
     }
-    let bin = app_support().join("galactus-doc");
+    let bin = app_support().join(name);
     let src_candidates = [
         std::env::current_dir()
             .unwrap_or_default()
-            .join("src-tauri/helpers/galactus-doc.swift"),
+            .join(format!("src-tauri/helpers/{name}.swift")),
         // Packaged app: the helper ships as a bundle resource
         // (Contents/MacOS/<exe> → Contents/Resources/helpers/…).
         std::env::current_exe()
@@ -6737,22 +6780,22 @@ fn doc_helper() -> Result<PathBuf, String> {
             .and_then(|p| {
                 p.parent()
                     .and_then(|d| d.parent())
-                    .map(|d| d.join("Resources/helpers/galactus-doc.swift"))
+                    .map(|d| d.join(format!("Resources/helpers/{name}.swift")))
             })
             .unwrap_or_default(),
         std::env::current_exe()
             .ok()
-            .and_then(|p| p.parent().map(|d| d.join("helpers/galactus-doc.swift")))
+            .and_then(|p| p.parent().map(|d| d.join(format!("helpers/{name}.swift"))))
             .unwrap_or_default(),
         galactus_root()
-            .map(|r| r.join("app/src-tauri/helpers/galactus-doc.swift"))
+            .map(|r| r.join(format!("app/src-tauri/helpers/{name}.swift")))
             .unwrap_or_default(),
     ];
     let src = src_candidates
         .iter()
         .find(|p| p.is_file())
         .cloned()
-        .ok_or("document helper source not found (app/src-tauri/helpers/galactus-doc.swift)")?;
+        .ok_or_else(|| format!("helper source not found: app/src-tauri/helpers/{name}.swift"))?;
 
     // Rebuild when the source is newer than the cached binary.
     let stale = match (std::fs::metadata(&bin), std::fs::metadata(&src)) {
@@ -6772,7 +6815,7 @@ fn doc_helper() -> Result<PathBuf, String> {
             .map_err(|e| format!("swiftc unavailable ({e}). Install Xcode Command Line Tools: xcode-select --install"))?;
         if !out.status.success() {
             return Err(format!(
-                "document helper failed to build: {}",
+                "{name} failed to build: {}",
                 String::from_utf8_lossy(&out.stderr)
                     .lines()
                     .take(6)

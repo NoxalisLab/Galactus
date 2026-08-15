@@ -43,6 +43,7 @@
     ],
     "resources": [
       "helpers/galactus-doc.swift",
+      "helpers/galactus-pick.swift",
       "helpers/galactus-voice.swift",
       "engine",
       "packaged",
