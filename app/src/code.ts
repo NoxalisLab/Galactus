@@ -41,7 +41,7 @@ import { Docs, type Doc } from "./code/docs";
 import { editorExtensions, intelComp } from "./code/extensions";
 import { tabsHtml, onTabsClick } from "./code/tabs";
 import { cmPhrases } from "./code/phrases";
-import { resolveRestoredRoot } from "./code/restored-root";
+import { classifyRootError, resolveRestoredRoot } from "./code/restored-root";
 import { ReviewGate, reviewInstruction } from "./code/review-gate";
 import { autoTabExtension } from "./code/auto-tab";
 import { inlineEditExtension } from "./code/inline-edit";
@@ -369,22 +369,31 @@ export function pendingCount(): number {
 
 /** Restore the workspace chosen in a previous session. */
 export async function initCodeRoot(saved: string | undefined): Promise<void> {
-  const restored = await resolveRestoredRoot(saved, async (candidate) => {
+  const outcome = await resolveRestoredRoot(saved, async (candidate) => {
     try {
       await api.codeTree(candidate, "");
-      return true;
-    } catch {
-      return false;
+      return "usable" as const;
+    } catch (e: any) {
+      return classifyRootError(String(e?.message ?? e));
     }
   });
-  if (!restored) {
+  if (outcome.forget) {
     // A temporary demo folder or disconnected volume must never hold the
     // entire application on its splash screen. Forget only the workspace
     // pointer; no project data is touched.
     if (saved?.trim()) await deps?.saveSetting("code_root", "").catch(() => {});
     return;
   }
-  root = restored;
+  if (outcome.unreadable) {
+    // The folder is there and macOS is holding it back, most often the Desktop
+    // or Documents before the app has been granted them. Say so and KEEP the
+    // pointer: a permission is granted once and the workspace should be waiting
+    // on the other side of it, not deleted for having been unreachable once.
+    deps?.toast(t("code.rootUnreadable"));
+    return;
+  }
+  if (!outcome.root) return;
+  root = outcome.root;
   await refreshGit().catch(() => {});
   await loadDir("");
   await startWorkspaceServices();
