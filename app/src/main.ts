@@ -3027,7 +3027,7 @@ function connectorRow(p: ConnectorPreset, lang: Lang): HTMLElement {
     const box = el(`<div class="fld"><small>${esc(fld.label[lang])}</small><div class="fbox"><input type="${fld.kind === "secret" ? "password" : "text"}" placeholder="${esc(fld.placeholder ?? "")}"/>${fld.kind === "folder" ? `<span class="link" data-pick>${esc(t("conn.choose"))}</span>` : ""}</div></div>`);
     const inp = box.querySelector("input")!; inp.value = val;
     inp.addEventListener("change", async () => { active.values[fld.key] = inp.value.trim(); mcpCount = await saveEnabled(enabled); });
-    box.querySelector("[data-pick]")?.addEventListener("click", async () => { const p2 = await api.pickFolder(); if (p2) { inp.value = p2; active.values[fld.key] = p2; mcpCount = await saveEnabled(enabled); } });
+    box.querySelector("[data-pick]")?.addEventListener("click", async () => { const p2 = await pickFolderOrSay(); if (p2) { inp.value = p2; active.values[fld.key] = p2; mcpCount = await saveEnabled(enabled); } });
     f.appendChild(box);
   }
   row.querySelector("[data-t]")!.addEventListener("click", async (e) => {
@@ -3138,7 +3138,7 @@ function memoryView(): HTMLElement {
   });
   tog.addEventListener("click", async () => { tog.classList.toggle("on"); const on = tog.classList.contains("on"); body.style.display = on ? "flex" : "none"; await api.settingsSet("memory_on", on ? "1" : "0"); });
   scope.addEventListener("click", async (e) => { const b = (e.target as HTMLElement).closest("[data-s]") as HTMLElement | null; if (!b) return; paintScope(b.dataset.s!); await api.settingsSet("memory_scope", b.dataset.s!); memtext.value = await api.memoryRead(); });
-  wrap.querySelector("#wspick")!.addEventListener("click", async () => { const p = await api.pickFolder(); if (p) { wspath.value = p; await api.settingsSet("workspace", p); memtext.value = await api.memoryRead(); } });
+  wrap.querySelector("#wspick")!.addEventListener("click", async () => { const p = await pickFolderOrSay(); if (p) { wspath.value = p; await api.settingsSet("workspace", p); memtext.value = await api.memoryRead(); } });
   {
     const b = wrap.querySelector<HTMLElement>("#memsave")!;
     b.addEventListener("click", async () => {
@@ -3148,10 +3148,10 @@ function memoryView(): HTMLElement {
       setTimeout(() => { b.textContent = prev; }, 1500);
     });
   }
-  wrap.querySelector("#vpick")!.addEventListener("click", async () => { const p = await api.pickFolder(); if (p) { vaultline.textContent = p; await api.settingsSet("obsidian_vault", p); } });
+  wrap.querySelector("#vpick")!.addEventListener("click", async () => { const p = await pickFolderOrSay(); if (p) { vaultline.textContent = p; await api.settingsSet("obsidian_vault", p); } });
   wrap.querySelector("#vcosmos")!.addEventListener("click", () => { openCosmos(); });
   wrap.querySelector("#vnew")!.addEventListener("click", async () => {
-    const p = await api.pickFolder();
+    const p = await pickFolderOrSay();
     if (!p) return;
     try {
       const created = await api.obsidianCreateVault(p);
@@ -3191,7 +3191,7 @@ function memoryView(): HTMLElement {
       if (s) statsLine.textContent = t("kb.stats").replace("%f", String(s.files)).replace("%c", String(s.chunks));
     }).catch(() => {});
     wrap.querySelector("#kbadd")!.addEventListener("click", async () => {
-      const p = await api.pickFolder();
+      const p = await pickFolderOrSay();
       if (!p || kbList.includes(p)) return;
       kbList.push(p);
       await api.kbSetFolders(kbList);
@@ -3335,7 +3335,7 @@ function agentView(): HTMLElement {
 
   const wspath = wrap.querySelector<HTMLInputElement>("#wspath")!;
   api.settingsGet().then((s) => { wspath.value = s["workspace"] ?? ""; });
-  wrap.querySelector("#wspick")!.addEventListener("click", async () => { const p = await api.pickFolder(); if (p) { wspath.value = p; await api.settingsSet("workspace", p); render(); } });
+  wrap.querySelector("#wspick")!.addEventListener("click", async () => { const p = await pickFolderOrSay(); if (p) { wspath.value = p; await api.settingsSet("workspace", p); render(); } });
 
   const modes: { id: Autonomy; name: string; desc: string }[] = [
     { id: "manual", name: t("mode.manual"), desc: t("agent.manualDesc") },
@@ -3782,7 +3782,7 @@ function settingsView(): HTMLElement {
     if (updateStage === "uptodate") status.classList.add("ok");
   }
   wrap.querySelector("#lang")!.addEventListener("click", async (e) => { const b = (e.target as HTMLElement).closest("[data-l]") as HTMLElement | null; if (!b) return; setLang(b.dataset.l as Lang); await loadTaskDefs(); render(); });
-  wrap.querySelector("#rpick")!.addEventListener("click", async () => { const p = await api.pickFolder(); if (p) await setRoot(p); });
+  wrap.querySelector("#rpick")!.addEventListener("click", async () => { const p = await pickFolderOrSay(); if (p) await setRoot(p); });
   wrap.querySelector<HTMLButtonElement>("#autotab")!.addEventListener("click", async (e) => {
     autoTabOn = !autoTabOn;
     const b = e.currentTarget as HTMLButtonElement;
@@ -4072,7 +4072,24 @@ function onboardView(): HTMLElement {
   });
   return wrap;
 }
-async function pickRoot() { const p = await api.pickFolder(); if (p) await setRoot(p); }
+/**
+ * The folder chooser, with its failures said out loud.
+ *
+ * api.pickFolder rejects when the panel could not be opened at all, which is a
+ * different thing from the user pressing Cancel and used to be reported as the
+ * same nothing. Every caller wants that distinction and none of them wants to
+ * write it out, so it lives here.
+ */
+async function pickFolderOrSay(): Promise<string | null> {
+  try {
+    return await api.pickFolder();
+  } catch (e: any) {
+    toast(String(e?.message ?? e));
+    return null;
+  }
+}
+
+async function pickRoot() { const p = await pickFolderOrSay(); if (p) await setRoot(p); }
 async function setRoot(p: string) {
   await api.settingsSet("root", p);
   root = p;
@@ -4518,7 +4535,7 @@ async function exportConversation(id: string, trigger: HTMLElement): Promise<voi
   }
   if (!conv) return;
   const md = exportConversationMarkdown(conv);
-  const dir = await api.pickFolder();
+  const dir = await pickFolderOrSay();
   if (!dir) return;
   const name =
     (conv.title || t("conv.untitled")).replace(/[\\/:*?"<>|]/g, "_").trim().slice(0, 60) || "conversation";

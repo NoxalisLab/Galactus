@@ -1763,6 +1763,39 @@ fn read_tool_verdict(body: &str) -> Option<bool> {
 }
 
 #[cfg(test)]
+mod folder_chooser_tests {
+    use super::classify_chooser_failure;
+
+    #[test]
+    fn cancelling_is_not_a_fault() {
+        // Every dismissed dialog would raise an error toast otherwise, and the
+        // one thing worse than a silent failure is an alarm for a non-event.
+        assert_eq!(classify_chooser_failure("execution error: User canceled. (-128)"), None);
+        assert_eq!(classify_chooser_failure(""), None);
+        assert_eq!(classify_chooser_failure("   \n  "), None);
+    }
+
+    #[test]
+    fn a_refused_apple_event_names_its_own_remedy() {
+        // -1743 is macOS refusing the app permission. No amount of clicking the
+        // button fixes it, so the message has to say where the switch is.
+        let msg = classify_chooser_failure("execution error: Not allowed to send Apple events (-1743)")
+            .expect("a refusal is a fault");
+        assert!(msg.contains("Automation"), "the message must name the settings pane");
+    }
+
+    #[test]
+    fn any_other_failure_is_reported_verbatim_and_on_one_line() {
+        // The point is to end the guessing: whatever osascript said reaches the
+        // user, who can read it back. One line, because a toast is one line.
+        let msg = classify_chooser_failure("something broke\nstack line 2\nstack line 3")
+            .expect("an unknown failure is still a fault");
+        assert!(msg.contains("something broke"));
+        assert!(!msg.contains("stack line 2"));
+    }
+}
+
+#[cfg(test)]
 mod context_window_tests {
     use super::{kv_bytes_for, CTX_PER_SLOT, KV_BYTES_PER_EXTRA_SLOT};
 
@@ -5606,10 +5639,42 @@ fn pick_folder() -> Result<Option<String>, String> {
         .output()
         .map_err(|e| e.to_string())?;
     if !out.status.success() {
-        return Ok(None); // user cancelled
+        // EVERY failure used to return Ok(None), the same answer as "the user
+        // pressed Cancel", so a chooser that could not open at all was
+        // indistinguishable from one the user dismissed: the button appeared to
+        // do nothing, twice, and there was nothing to read either time. The
+        // stderr osascript writes was captured and thrown away on the same line.
+        return match classify_chooser_failure(&String::from_utf8_lossy(&out.stderr)) {
+            None => Ok(None),
+            Some(reason) => Err(reason),
+        };
     }
     let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
     Ok(if p.is_empty() { None } else { Some(p) })
+}
+
+/// What osascript's stderr means: nothing to report, or a sentence for the user.
+///
+/// Cancelling is not a fault and must stay silent, or every dismissed dialog
+/// would raise an error toast. Anything else is a fault and has to be said,
+/// because the alternative is a button that does nothing for a reason nobody
+/// can see. Error -1743 is macOS refusing the app permission to send the event
+/// at all, which no amount of clicking will fix and which names its own remedy.
+fn classify_chooser_failure(stderr: &str) -> Option<String> {
+    let text = stderr.trim();
+    let lowered = text.to_lowercase();
+    if lowered.contains("user canceled") || lowered.contains("user cancelled") || lowered.is_empty()
+    {
+        return None;
+    }
+    if text.contains("-1743") || lowered.contains("not allowed to send apple events") {
+        return Some(
+            "macOS is refusing Galactus permission to open the folder chooser. \
+             Open System Settings, Privacy and Security, Automation, and allow Galactus."
+                .into(),
+        );
+    }
+    Some(format!("the folder chooser could not open: {}", text.lines().next().unwrap_or(text)))
 }
 
 

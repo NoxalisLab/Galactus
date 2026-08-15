@@ -2,6 +2,14 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>Galactus uses a system script to show you the folder chooser.</string>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>Galactus reads and writes files in the folder you choose.</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>Galactus reads and writes files in the folder you choose.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>Galactus reads and writes files in the folder you choose.</string>
   <key>NSMicrophoneUsageDescription</key>
   <string>Galactus utilise le micro pour la dictée vocale locale. L'audio ne quitte jamais ton Mac.</string>
   <key>NSSpeechRecognitionUsageDescription</key>

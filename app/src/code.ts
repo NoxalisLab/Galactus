@@ -449,7 +449,15 @@ export function pendingPaths(): string[] {
 // ---------------------------------------------------------------- workspace
 
 export async function chooseWorkspace(): Promise<void> {
-  const p = await api.pickFolder();
+  let p: string | null;
+  try {
+    p = await api.pickFolder();
+  } catch (e: any) {
+    // A chooser that cannot open now says so. It used to return "nothing
+    // chosen", the same answer as Cancel, and the button read as dead.
+    deps?.toast(String(e?.message ?? e));
+    return;
+  }
   if (!p) return;
   await setWorkspace(p);
 }
