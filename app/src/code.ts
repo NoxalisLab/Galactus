@@ -536,9 +536,27 @@ async function setWorkspace(p: string): Promise<void> {
   // terminal sitting in a directory the file tree no longer shows is a trap.
   disposeTerminal();
   await deps?.saveSetting("code_root", root);
-  await refreshGit();
-  await loadDir("");
-  await startWorkspaceServices();
+  // Everything from here is DECORATION on a switch that has already happened:
+  // the folder is chosen and written to the settings. These three were awaited
+  // bare, so one of them throwing skipped the repaint below and left the view
+  // on the screen that asks for a folder, having just been given one. The
+  // button read as dead while the workspace behind it had in fact changed, and
+  // the next launch reopened a folder the user was told had not been accepted.
+  //
+  // Each is now independent. A failure costs its own feature and nothing else,
+  // and the view is painted whatever happened.
+  await refreshGit().catch(() => undefined);
+  await loadDir("").catch((e: any) => {
+    // The tree is the one failure worth naming: a workspace whose contents
+    // cannot be listed shows an empty file panel, which reads as an empty
+    // folder rather than as a folder being withheld.
+    deps?.toast(
+      classifyRootError(String(e?.message ?? e)) === "unreadable"
+        ? t("code.rootUnreadable")
+        : String(e?.message ?? e),
+    );
+  });
+  await startWorkspaceServices().catch(() => undefined);
   paintAll();
   deps?.paintNav();
 }
