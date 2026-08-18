@@ -1131,8 +1131,12 @@ const dict: Record<string, { en: string; fr: string }> = {
   "preview.close": { en: "Close", fr: "Fermer" },
   "preview.copied": { en: "copied", fr: "copié" },
   "preview.mermaidMissing": {
-    en: "Mermaid renderer not available. Showing the diagram source.",
-    fr: "Rendu Mermaid indisponible. Voici la source du diagramme.",
+    // Says what IS, not what is missing. This app ships no Mermaid renderer and
+    // will not fetch one, since nothing in a preview is allowed to reach the
+    // network. The old wording read as a temporary fault the reader might fix;
+    // it was the only behaviour there has ever been.
+    en: "Diagrams are shown as source: Galactus renders nothing it would have to download.",
+    fr: "Les diagrammes sont affichés en source : Galactus n'affiche rien qu'il faudrait télécharger.",
   },
   "preview.mermaidError": {
     en: "The diagram could not be rendered. Showing the source.",

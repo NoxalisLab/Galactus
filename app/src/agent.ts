@@ -15,7 +15,7 @@ import {
 } from "./api";
 import type { SearchEvent, SearchOptsWire } from "./api";
 import { getLang, t } from "./i18n";
-import { isElevatedCommand, isElevatedWrite, isElevatedRead } from "./sensitive";
+import { isElevatedCommand, isElevatedWrite, isElevatedRead, isNetworkGitCommand } from "./sensitive";
 import { runToolCalls } from "./toolsched";
 import { SAMPLING_DEFAULT, samplingFor, type Sampling } from "./sampling";
 
@@ -628,7 +628,10 @@ function builtinTools(
   role: AgentRole = "main",
   hasKb = false,
   canDelegate = false,
-  hasTeam = false
+  hasTeam = false,
+  // Memory off removes the tool, not only the injection: a switch the user set
+  // has to mean the model cannot write there either.
+  memoryOn = true
 ): ToolDef[] {
   const tools: ToolDef[] = [
     {
@@ -857,6 +860,11 @@ function builtinTools(
   // Only while a workspace is open: offering a search over a folder that does
   // not exist teaches the model to call it and read an error.
   if (workspaceRoot()) tools.push(SEARCH_WORKSPACE_TOOL, FIND_FILES_TOOL);
+
+  if (!memoryOn) {
+    const i = tools.findIndex((x) => x.function.name === "remember");
+    if (i >= 0) tools.splice(i, 1);
+  }
   return tools;
 }
 
@@ -961,6 +969,7 @@ export class Agent {
   private autoApprove = false;
   private abort: AbortController | null = null;
   private taskSystem: string | null = null;
+  private memoryOn = true;
   private taskTemp: number | null = null;
   /**
    * Sampling for every request this agent makes.
@@ -1115,7 +1124,17 @@ export class Agent {
     if (this.messages[0]?.role === "system") this.messages[0].content = this.systemPrompt();
   }
 
-  setMemory(text: string, hasVault: boolean) {
+  /**
+   * `on` is the user's switch, distinct from the text being empty.
+   *
+   * Empty memory with the feature ON is a first conversation and the model
+   * should still be able to write. Memory OFF is a decision, and it has to
+   * remove the tool as well as the injection: it removed only the injection,
+   * so a user who had switched it off could still have facts written about
+   * them, into a file they had asked the app not to use.
+   */
+  setMemory(text: string, hasVault: boolean, on = true) {
+    this.memoryOn = on;
     this.memory = text;
     this.hasVault = hasVault;
     if (this.messages[0]?.role === "system") {
@@ -1203,6 +1222,10 @@ export class Agent {
         "call use_skill with its name to load its full instructions, then follow them. Available skills:\n" +
         lines.join("\n");
     }
+      // Offered only when memory is ON. Turning it off used to stop the
+      // injection alone: the tool stayed in the list and this paragraph still
+      // asked the model to use it, so a user who had switched memory off could
+      // still have facts written about them. Off means off at both ends.
       // WRITING to memory, not only reading it.
       //
       // The tool existed, the file existed, the injection below existed, and
@@ -1214,7 +1237,8 @@ export class Agent {
       // Triggers, because "use sparingly" on its own produces zero calls: name
       // the kinds of thing worth keeping, and name what is not, or a model
       // swings from never remembering to remembering every message.
-      p +=
+      if (this.memoryOn)
+        p +=
         "\n\nMEMORY. You can keep a small number of durable facts across " +
         "conversations with remember(fact). Call it when the user tells you " +
         "something that will still be true next week and that would change how " +
@@ -1608,7 +1632,7 @@ export class Agent {
     };
 
     const tools = [
-      ...builtinTools(this.hasVault, this.role, this.hasKb, this.canDelegate(), directory !== null),
+      ...builtinTools(this.hasVault, this.role, this.hasKb, this.canDelegate(), directory !== null, this.memoryOn),
       ...mcpToolDefs(this.mcp),
     ];
     // A task temperature (a skill asking for 0 because it needs a repeatable
@@ -2062,7 +2086,17 @@ export class Agent {
         result = ok ? await api.webFetch(url, cap) : "denied by user";
       } else if (name === "run_command") {
         const cmd = String(args.command ?? "");
-        const ok = await this.gate({ kind: "shell", detail: cmd, elevated: isElevatedCommand(cmd) });
+        // A command that reaches a remote is asked as "git", with noAlways, and
+        // is therefore the thing an unattended run stops on. Asked as "shell",
+        // which is what it was, an autonomous run granted it in silence while
+        // the runs form promised the opposite.
+        const network = isNetworkGitCommand(cmd);
+        const ok = await this.gate({
+          kind: network ? "git" : "shell",
+          detail: cmd,
+          elevated: isElevatedCommand(cmd),
+          noAlways: network || undefined,
+        });
         result = ok ? await api.shellRun(cmd, 120) : "denied by user";
       } else if (name === "remember") {
         // Memory is injected into every future conversation: an ungated write

@@ -2206,7 +2206,7 @@ async function ensureAgent(sess: Thread): Promise<void> {
     ]);
     if (!mine()) return;
     const memOn = s["memory_on"] !== "0";
-    inst.setMemory(memOn ? mem : "", !!(s["obsidian_vault"] && s["obsidian_vault"].length));
+    inst.setMemory(memOn ? mem : "", !!(s["obsidian_vault"] && s["obsidian_vault"].length), memOn);
     inst.setMcpTools(tools);
     inst.setSkills(skills.filter((k) => !skillsOff.has(k.name)));
     inst.setKnowledge(kbFolders.length > 0);

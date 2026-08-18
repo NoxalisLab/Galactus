@@ -125,3 +125,56 @@ export function isElevatedCommand(cmd: string): boolean {
   if (/(?:^|[\s|;&($`\/])(?:sh|bash|zsh|dash|ksh)\b[^|;&\n]*\s-\w*c\b/.test(cmd)) return true;
   return false;
 }
+
+/**
+ * Whether a shell command pushes to, or pulls from, a remote.
+ *
+ * WHY THIS EXISTS. The Code view's Push and Pull buttons ask with kind "git"
+ * and noAlways, which is what makes an unattended run stop and ask a human.
+ * The model never used those buttons: it ran `git push` through run_command,
+ * which is kind "shell", which an autonomous run grants silently. So the one
+ * gate the runs form describes in detail, and the toggle offered next to it,
+ * could not fire for the only actor they were written for, while the help text
+ * told the reader those two commands were the last thing that would still stop
+ * a run. They were not stopped at all.
+ *
+ * Deliberately narrow. This is not a git parser: it recognises the two verbs
+ * that reach the network and leaves every local command alone, because a run
+ * that has to ask before `git status` is a run nobody will use.
+ */
+export function isNetworkGitCommand(command: string): boolean {
+  // Each segment of a compound command, so `cd x && git push` is caught while
+  // `echo "git push"` is not: the verb has to START a command.
+  for (const part of command.split(/(?:&&|\|\||;|\n)/)) {
+    if (gitSubcommand(part) !== null && NETWORK_GIT.has(gitSubcommand(part)!)) return true;
+  }
+  return false;
+}
+
+/** The two verbs that reach a remote, plus the ones that create the link. */
+const NETWORK_GIT = new Set(["push", "pull", "fetch", "clone"]);
+
+/**
+ * The subcommand of one shell segment, or null when it is not a git call.
+ *
+ * A regex over the whole line is not enough, and the case that proves it is
+ * `git -C /tmp/repo push`: the global option carries a value, so the verb is
+ * the fourth token, not the second. Walking the tokens and skipping options
+ * (and the value of the ones that take one) is what makes the answer right for
+ * a real command line instead of for the shape of the common case.
+ */
+function gitSubcommand(segment: string): string | null {
+  const tokens = segment.trim().split(/\s+/).filter(Boolean);
+  let i = 0;
+  // Wrappers that precede the command without changing what it is.
+  while (i < tokens.length && /^(sudo|env|nice|time|command)$/.test(tokens[i])) i += 1;
+  if (tokens[i] !== "git") return null;
+  i += 1;
+  while (i < tokens.length && tokens[i].startsWith("-")) {
+    const opt = tokens[i];
+    i += 1;
+    // These take a separate value unless it was joined with "=".
+    if (/^(-C|-c|--git-dir|--work-tree|--namespace|--exec-path)$/.test(opt)) i += 1;
+  }
+  return tokens[i] ?? null;
+}

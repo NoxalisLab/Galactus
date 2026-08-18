@@ -204,6 +204,16 @@ interface MermaidLike {
   render(id: string, src: string): Promise<{ svg: string }>;
 }
 
+/**
+ * The Mermaid runtime, if something ever provides one.
+ *
+ * Nothing in this app does, and an audit found the branch below had therefore
+ * never once executed: the source fallback is the only behaviour there has
+ * been. Kept rather than deleted because the shape is right, and because a
+ * bundled renderer is a decision about 600 KB of dependency that belongs to
+ * whoever makes it, not to a cleanup. Until then the message says plainly that
+ * diagrams are shown as source, instead of implying a fault.
+ */
 function getMermaid(): MermaidLike | null {
   const w = window as unknown as { mermaid?: Partial<MermaidLike> };
   return w.mermaid && typeof w.mermaid.render === "function" ? (w.mermaid as MermaidLike) : null;

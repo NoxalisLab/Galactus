@@ -5,7 +5,7 @@
 import { test } from "node:test";
 // @ts-ignore
 import assert from "node:assert/strict";
-import { isElevatedWrite, isElevatedRead } from "../../src/sensitive.js";
+import { isElevatedWrite, isElevatedRead, isNetworkGitCommand } from "../../src/sensitive.js";
 
 test("every startup file a login shell sources is an elevated write", () => {
   // run_command spawns `/bin/zsh -lc`. Measured against a scratch ZDOTDIR on
@@ -55,5 +55,43 @@ test("ordinary files stay ordinary reads", () => {
     "/Users/me/Library/Application Support/Other/settings.json",
   ]) {
     assert.equal(isElevatedRead(p), false, `${p} must not be an elevated read`);
+  }
+});
+
+test("a command that reaches a remote is recognised, wherever it sits", () => {
+  // THE POINT. The Code view's Push button asked with kind "git" and noAlways,
+  // which is what makes an unattended run stop and ask a human. The model never
+  // pressed that button: it ran `git push` through run_command, kind "shell",
+  // which an autonomous run grants in silence. The runs form meanwhile told the
+  // reader that push and pull were the last two things that would still stop a
+  // run. They stopped nothing.
+  for (const c of [
+    "git push",
+    "git push origin main",
+    "git -C /tmp/x push",
+    "cd repo && git push --force",
+    "sudo git pull",
+    "git fetch --all",
+    "git clone https://example.invalid/x",
+    "npm test; git push",
+  ]) {
+    assert.equal(isNetworkGitCommand(c), true, c);
+  }
+});
+
+test("local git is left alone, and so is a mention of it", () => {
+  // A run that has to ask before `git status` is a run nobody will use, and a
+  // string containing the words is not a command running them.
+  for (const c of [
+    "git status",
+    "git add -A",
+    "git commit -m 'x'",
+    "git log --oneline",
+    "git diff",
+    'echo "git push"',
+    "grep -r 'git push' .",
+    "cat notes-about-git-push.md",
+  ]) {
+    assert.equal(isNetworkGitCommand(c), false, c);
   }
 });
