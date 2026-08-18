@@ -425,6 +425,8 @@ export const api = {
   fsList: (path: string) => invoke<string>("tool_fs_list", { path }),
   shellRun: (command: string, timeoutSecs: number) =>
     invoke<string>("tool_shell_run", { command, timeoutSecs }),
+  /** The release notes shipped with this build, for the what-changed panel. */
+  releaseNotes: () => invoke<string>("release_notes"),
   settingsGet: () => invoke<Record<string, string>>("settings_get"),
   /** The two settings the page may not write directly: they run programs. */
   mcpConfigSet: (config: string) => invoke<void>("mcp_config_set", { config }),

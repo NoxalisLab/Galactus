@@ -160,6 +160,20 @@ pub(crate) fn settings_update<T>(f: impl FnOnce(&mut HashMap<String, String>) ->
     Ok(out)
 }
 
+/// The release notes shipped with this build, or an empty string.
+///
+/// Read from the bundle rather than fetched: someone who installed from a DMG
+/// never saw a manifest, and after the restart that follows an in-app update
+/// there is nothing left to ask. The file is written by prepare-engine.sh from
+/// app/RELEASE-NOTES-v<version>.md.
+#[tauri::command]
+fn release_notes() -> String {
+    resource_dir()
+        .map(|r| r.join("packaged/release-notes.md"))
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .unwrap_or_default()
+}
+
 #[tauri::command]
 fn settings_get() -> HashMap<String, String> {
     settings_load()
@@ -8341,6 +8355,7 @@ pub fn run() {
             server_log,
             server_metrics,
             settings_get,
+            release_notes,
             settings_set,
             mcp_config_set,
             root_set,

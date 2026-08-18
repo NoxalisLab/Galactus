@@ -56,6 +56,7 @@ import {
   summariseNotes,
   type DownloadProgress,
 } from "./update";
+import { parseNews, shouldShow } from "./whatsnew";
 
 const app = document.getElementById("app")!;
 const LOGO = "/galactus-mark.svg";
@@ -1644,7 +1645,18 @@ function threadPaneEl(): HTMLElement {
     // ⇧Tab cycles Manual → Assisted → Autonomous without leaving the keyboard.
     // Not from a teammate's thread: the switch is disabled there, so the flip
     // would be invisible, and Autonomous is exactly what stops asking.
-    if (e.key === "Tab" && e.shiftKey) { e.preventDefault(); if (!sub) cycleAutonomy(); return; }
+    // Alt+Tab cycles autonomy, NOT Shift+Tab.
+    //
+    // Shift+Tab is "focus the previous thing" everywhere, and taking it meant
+    // somebody navigating by keyboard could not leave the composer backwards,
+    // and changed the setting that decides whether the agent asks before
+    // writing a file, without asking for it and with nothing on screen naming
+    // the shortcut.
+    if (e.key === "Tab" && e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      if (!sub) cycleAutonomy();
+      return;
+    }
     // Enter always submits: during generation a typed message is queued for
     // the next turn (an empty Enter stays inert, never an accidental stop).
     if (e.key === "Enter" && !e.shiftKey) {
@@ -2976,10 +2988,22 @@ function modelsView(): HTMLElement {
   // The primary catalogue is an actionable recommendation, not a dump of the
   // registry. Models that fail certification or this Mac's unified-memory
   // floor are explained separately and never receive install/start controls.
-  const available = registry.filter((m) => verdict(m).ok);
+  // A failed hardware probe is "I do not know", not "this Mac cannot run
+  // anything". hw stays null when api.hwInfo() throws, and verdict() then
+  // refused every model: the app declared itself incompatible with the user's
+  // machine over one failed call, in a sentence that sounds final.
+  const hwUnknown = !hw;
+  const available = hwUnknown ? registry : registry.filter((m) => verdict(m).ok);
   const unavailable = registry.filter((m) => !verdict(m).ok);
+  if (hwUnknown) {
+    grid.before(el(`<div class="cerror"><b>${esc(t("models.hwUnknown"))}</b></div>`));
+  }
   if (!available.length) {
-    grid.replaceWith(el(`<div class="empty-block"><span class="big">◇</span><b>${esc(t("models.noneCompatible"))}</b><span>${esc(t("models.noneCompatibleHint"))}</span></div>`));
+    const box = el(`<div class="empty-block"><span class="big">◇</span><b>${esc(t("models.noneCompatible"))}</b><span>${esc(t("models.noneCompatibleHint"))}</span></div>`);
+    const act = el(`<button class="bs" style="margin-top:10px">${esc(t("models.chooseFolder"))}</button>`);
+    act.addEventListener("click", () => void pickRoot());
+    box.appendChild(act);
+    grid.replaceWith(box);
   }
   const maxTps = Math.max(
     ...available.map((m) => Math.max(expectedTps(m) ?? 0, benchResults[m.id] ?? 0)),
@@ -3080,7 +3104,9 @@ function modelsView(): HTMLElement {
       del.addEventListener("click", async () => {
         if (!del.dataset.armed) {
           del.dataset.armed = "1";
-          del.textContent = t("models.deleteConfirm").replace("%s", fmtGb(m.gguf_bytes));
+          // The name, not the size: "Delete 22 GB?" on a page of cards does not
+        // say which one is about to go.
+        del.textContent = t("models.deleteConfirm").replace("%s", m.name);
           setTimeout(() => {
             if (del.dataset.armed) { delete del.dataset.armed; del.textContent = t("models.delete"); }
           }, 4000);
@@ -4289,6 +4315,56 @@ function modeChoiceView(): HTMLElement {
   return wrap;
 }
 
+/**
+ * The "what changed" screen, shown once after an upgrade.
+ *
+ * Deliberately a panel and not a blocking dialog: it appears while the app is
+ * usable behind it, and closing it is one click or Escape. An update that
+ * interrupts someone at the moment they open the app to do something is worse
+ * than an update they never hear about.
+ */
+async function showWhatsNew(): Promise<void> {
+  if (!appVersion) return;
+  let settings: Record<string, string>;
+  try {
+    settings = await api.settingsGet();
+  } catch {
+    return;
+  }
+  const lastSeen = settings["seen_version"];
+  // Recorded even when nothing is shown, so a first install is a first install
+  // exactly once and the next upgrade is an upgrade.
+  const remember = () => void api.settingsSet("seen_version", appVersion).catch(() => undefined);
+  if (!shouldShow(appVersion, lastSeen)) {
+    remember();
+    return;
+  }
+  const notes = await api.releaseNotes().catch(() => "");
+  const news = parseNews(appVersion, notes);
+  remember();
+  if (!news.sections.length) return;
+  const panel = el(`<div class="modal-bd whatsnew"><div class="modal wide">
+    <h3>${esc(t("news.title").replace("%s", news.version))}</h3>
+    <div class="ps">${esc(t("news.sub"))}</div>
+    <div class="newsbody">${news.sections
+      .map((s) => `<div class="newsect"><b>${esc(s.title)}</b><div class="d">${esc(s.body)}</div></div>`)
+      .join("")}</div>
+    <div class="acts"><button class="bp" data-x>${esc(t("news.close"))}</button></div>
+  </div></div>`);
+  const close = () => {
+    panel.remove();
+    document.removeEventListener("keydown", onKey, true);
+  };
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === "Escape") close();
+  };
+  panel.addEventListener("click", (e) => {
+    if ((e.target as HTMLElement).closest("[data-x]") || e.target === panel) close();
+  });
+  document.addEventListener("keydown", onKey, true);
+  document.body.appendChild(panel);
+}
+
 // ---------- onboarding ----------
 function onboardView(): HTMLElement {
   const wrap = el(`<div class="onb"><div class="box">
@@ -4885,6 +4961,31 @@ async function boot() {
   // A failing disk is told once, and loudly: the alternative is an app that
   // looks normal while nothing is being kept.
   store.reportSaveFailures((message) => toast(t("store.saveFailed").replace("%s", message)));
+  // Escape closes whatever dialog is on top.
+  //
+  // None of them listened for it: not the server log, not the install dialog,
+  // and not the permission dialog, which blocks an agent turn and whose
+  // backdrop is not clickable either. The only other Escape handler on the page
+  // stops the running thread, so pressing it over a dialog did something
+  // unrelated and left the dialog exactly where it was. A permission dialog
+  // dismissed this way is a refusal, which is the safe end of that choice.
+  window.addEventListener(
+    "keydown",
+    (e) => {
+      if (e.key !== "Escape") return;
+      const top = Array.from(document.querySelectorAll<HTMLElement>(".modal-bd")).pop();
+      if (!top) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const deny = top.querySelector<HTMLElement>("[data-d='deny'], [data-x='cancel'], [data-close]");
+      if (deny) deny.click();
+      else top.remove();
+    },
+    true,
+  );
+  // Once the app is on screen and usable, never before: this is information,
+  // not a gate.
+  setTimeout(() => void showWhatsNew(), 1200);
   runsview.configureRuns({
     port: () => server.port,
     ready: () => server.running && server.phase === "ready" && !toolsBlocked(),
@@ -4905,7 +5006,19 @@ async function boot() {
   }
   const s = await api.settingsGet().catch(() => ({} as Record<string, string>));
   configurePanePreferences(s, (key, value) => api.settingsSet(key, value));
-  if (s["root"]) { root = s["root"]; try { registry = await api.registry(); if (!registry.length) root = null; } catch { root = null; } }
+  if (s["root"]) {
+    // The folder the user chose stays chosen. Clearing it because the registry
+    // came back empty, or because one call failed, replayed the whole
+    // onboarding on the next launch: they picked the same folder again, and
+    // again, with nothing explaining the loop. An empty list is a thing the
+    // Models view can say out loud.
+    root = s["root"];
+    try {
+      registry = await api.registry();
+    } catch {
+      registry = [];
+    }
+  }
   if (s["autonomy"]) autonomy = s["autonomy"] as Autonomy;
   autoTabOn = s["auto_tab"] !== "0";
   // The Code workspace comes back where it was left.
@@ -5111,7 +5224,15 @@ async function boot() {
    * and the navigation buttons cannot disagree about it, which they did.
    */
   const SERVER_VIEWS: View[] = ["models", "connectors", "runs", "learned", "settings"];
-  const NAV_ORDER: View[] = ["chat", "code", "models", "connectors", "runs", "memory", "agent", "learned", "settings"];
+  // The same order as the navigation bar, filtered the same way, so ⌘n always
+  // means "the nth entry you can see". Images was added to the bar and not
+  // here, which silently shifted ⌘6 to ⌘8 by one: ⌘6 opened Memory.
+  const navOrder = (): View[] => {
+    const full: View[] = [
+      "chat", "code", "models", "connectors", "runs", "images", "memory", "agent", "learned", "settings",
+    ];
+    return appMode === "server" ? full.filter((v) => SERVER_VIEWS.includes(v)) : full;
+  };
   window.addEventListener("keydown", (e) => {
     if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
     if (!root) return;
@@ -5138,9 +5259,11 @@ async function boot() {
       // there, and selects a view everywhere else. Consulted before the
       // navigation branch below so the two cannot both fire.
       e.preventDefault();
-    } else if (k >= "1" && k <= "8" && k.length === 1) {
+    } else if (k >= "1" && k <= "9" && k.length === 1) {
       e.preventDefault();
-      const target = NAV_ORDER[Number(k) - 1];
+      const order = navOrder();
+      const target = order[Number(k) - 1];
+      if (!target) return;
       // The same two gates the navigation buttons apply. They were absent here,
       // so a shortcut reached views the app had deliberately removed: server
       // mode exists to take the chat away, and Code and Runs are disabled on a
@@ -5154,17 +5277,17 @@ async function boot() {
   });
 }
 boot().catch((error: unknown) => {
-  const message = String((error as any)?.message ?? error ?? "Erreur inconnue");
+  const message = String((error as any)?.message ?? error ?? t("boot.unknown"));
   // Keep an already usable shell alive if a late event subscription fails.
   if (app.querySelector(".layout")) {
-    toast(`Initialisation partielle : ${message}`);
+    toast(t("boot.partial").replace("%s", message));
     return;
   }
   app.innerHTML = "";
   const failure = el(`<div class="boot-shell boot-failed" role="alert">
     <img src="${LOGO}" alt=""/>
-    <div><b>Galactus n’a pas pu démarrer</b><span>${esc(message)}</span></div>
-    <button class="bs" type="button">Réessayer</button>
+    <div><b>${esc(t("boot.failedTitle"))}</b><span>${esc(message)}</span></div>
+    <button class="bs" type="button">${esc(t("boot.retry"))}</button>
   </div>`);
   failure.querySelector("button")!.addEventListener("click", () => window.location.reload());
   app.appendChild(failure);

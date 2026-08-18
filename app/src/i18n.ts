@@ -10,12 +10,12 @@ const dict: Record<string, { en: string; fr: string }> = {
   "brand.by": { en: "by Noxalis Lab", fr: "par Noxalis Lab" },
   "tools.blocked": {
     en: "This model does not emit tool calls, so the agent cannot read files or run commands. Start a model that does.",
-    fr: "Ce modèle n'emet pas d'appels d'outils : l'agent ne peut ni lire de fichier ni lancer de commande. Demarre un modèle qui le fait.",
+    fr: "Ce modèle n'émet pas d'appels d'outils : l'agent ne peut ni lire de fichier ni lancer de commande. Démarrez un modèle qui le fait.",
   },
   "tools.blockedShort": { en: "no tool calls", fr: "pas d'appels d'outils" },
   "tools.forcedManual": {
     en: "Manual only: this model does not emit tool calls.",
-    fr: "Manuel uniquement : ce modèle n'emet pas d'appels d'outils.",
+    fr: "Manuel uniquement : ce modèle n'émet pas d'appels d'outils.",
   },
   "net.copy": { en: "Copy", fr: "Copier" },
   "net.forClient": { en: "Ready to paste", fr: "Prêt à coller" },
@@ -50,7 +50,7 @@ const dict: Record<string, { en: string; fr: string }> = {
   "mode.serverA": { en: "Models, connectors, settings, runs", fr: "Modèles, connecteurs, réglages, runs" },
   "mode.serverB": {
     en: "Authenticating relay, reachable from your network",
-    fr: "Relais authentifie, joignable depuis ton réseau",
+    fr: "Relais authentifié, joignable depuis votre réseau",
   },
   "mode.serverC": {
     en: "No surface that reads your files",
@@ -60,7 +60,7 @@ const dict: Record<string, { en: string; fr: string }> = {
   "net.modeAsk": { en: "Ask at launch", fr: "Demander au lancement" },
   "net.modeAskHint": {
     en: "Show the two doors at every start instead of reopening in the last mode.",
-    fr: "Montrer les deux portes a chaque demarrage au lieu de rouvrir dans le dernier mode.",
+    fr: "Montrer les deux portes à chaque démarrage au lieu de rouvrir dans le dernier mode.",
   },
   "net.mode": { en: "App mode", fr: "Mode de l'app" },
   "net.modeHint": {
@@ -72,27 +72,27 @@ const dict: Record<string, { en: string; fr: string }> = {
   "net.expose": { en: "Reachable from", fr: "Joignable depuis" },
   "net.exposeHint": {
     en: "This Mac only, or every machine on your network. The engine itself never leaves 127.0.0.1: an authenticating relay is what listens.",
-    fr: "Ce Mac seulement, ou toute machine de ton réseau. Le moteur lui-meme ne quitte jamais 127.0.0.1 : c'est un relais authentifie qui ecoute.",
+    fr: "Ce Mac seulement, ou toute machine de ton réseau. Le moteur lui-même ne quitte jamais 127.0.0.1 : c'est un relais authentifie qui écoute.",
   },
   "net.localOnly": { en: "This Mac", fr: "Ce Mac" },
   "net.network": { en: "My network", fr: "Mon réseau" },
-  "net.key": { en: "API key", fr: "Cle d'API" },
+  "net.key": { en: "API key", fr: "Clé d'API" },
   "net.keyHint": {
     en: "Required. Shown once, right here, and never stored in clear: copy it now.",
-    fr: "Obligatoire. Affichee une seule fois, ici meme, et jamais stockee en clair : copie-la maintenant.",
+    fr: "Obligatoire. Affichée une seule fois, ici même, et jamais conservée en clair. Elle vient d'être copiée dans votre presse-papiers : collez-la quelque part avant de quitter cet écran.",
   },
-  "net.newKey": { en: "Generate", fr: "Generer" },
-  "net.copied": { en: "copied", fr: "copiee" },
+  "net.newKey": { en: "Generate", fr: "Générer" },
+  "net.copied": { en: "copied", fr: "copiée" },
   "net.start": { en: "Open", fr: "Ouvrir" },
   "net.stop": { en: "Close", fr: "Fermer" },
-  "net.needModel": { en: "Start a model first.", fr: "Demarre d'abord un modèle." },
-  "net.needKey": { en: "Generate a key first.", fr: "Genere d'abord une cle." },
+  "net.needModel": { en: "Start a model first.", fr: "Démarrez d'abord un modèle." },
+  "net.needKey": { en: "Generate a key first.", fr: "Générez d'abord une clé." },
   "net.open": { en: "open on", fr: "ouvert sur" },
-  "net.closed": { en: "closed", fr: "ferme" },
+  "net.closed": { en: "closed", fr: "fermé" },
   "net.snippets": { en: "Connect another tool", fr: "Brancher un autre outil" },
   "net.snippetsHint": {
     en: "Any OpenAI-compatible client. Base URL, model name and key are below.",
-    fr: "N'importe quel client compatible OpenAI. URL de base, nom du modèle et cle ci-dessous.",
+    fr: "N'importe quel client compatible OpenAI. URL de base, nom du modèle et clé ci-dessous.",
   },
   "nav.chat": { en: "Chat", fr: "Discussion" },
   "nav.code": { en: "Code", fr: "Code" },
@@ -763,6 +763,24 @@ const dict: Record<string, { en: string; fr: string }> = {
     en: "Family, size on disk, and how many of its experts run per token: a Mixture-of-Experts model uses a few of them at a time, which is why it can be larger than your memory.",
     fr: "Famille, taille sur le disque, et combien de ses experts tournent par jeton : un modèle Mixture-of-Experts n'en utilise que quelques-uns à la fois, et c'est pour cela qu'il peut dépasser votre mémoire.",
   },
+  "news.title": { en: "What changed in %s", fr: "Ce qui a changé dans la %s" },
+  "news.sub": {
+    en: "Since the version you were running.",
+    fr: "Depuis la version que vous utilisiez.",
+  },
+  "news.close": { en: "Got it", fr: "J'ai compris" },
+  "boot.failedTitle": { en: "Galactus could not start", fr: "Galactus n'a pas pu démarrer" },
+  "boot.retry": { en: "Try again", fr: "Réessayer" },
+  "boot.unknown": { en: "Unknown cause", fr: "Cause inconnue" },
+  "boot.partial": {
+    en: "Galactus started, but part of it could not load: %s",
+    fr: "Galactus a démarré, mais une partie n'a pas pu se charger : %s",
+  },
+  "models.hwUnknown": {
+    en: "Galactus could not read this Mac's specification. Speeds and advice are unavailable for now; the list below is not filtered.",
+    fr: "Galactus n'a pas pu lire les caractéristiques de ce Mac. Les vitesses et les conseils sont indisponibles pour l'instant ; la liste ci-dessous n'est pas filtrée.",
+  },
+  "models.chooseFolder": { en: "Choose another folder", fr: "Choisir un autre dossier" },
   "models.reco": { en: "Start here", fr: "Commencez par celui-ci" },
   "models.recoWhy": {
     en: "The most capable model that still answers at reading speed on this Mac.",
@@ -774,12 +792,12 @@ const dict: Record<string, { en: string; fr: string }> = {
     en: "This file is under review. Answer the proposal first, then move it.",
     fr: "Ce fichier est en cours de revue. Répondez d'abord à la proposition, puis déplacez-le.",
   },
-  "code.closeDirtyTitle": { en: "Save %s before closing?", fr: "Enregistrer %s avant de fermer ?" },
+  "code.closeDirtyTitle": { en: "Save %s before closing?", fr: "Enregistrer %s avant de fermér ?" },
   "code.closeDirtyBody": {
     en: "It has changes that are not on the disk. Closing without saving loses them.",
     fr: "Il a des modifications qui ne sont pas sur le disque. Fermer sans enregistrer les perd.",
   },
-  "code.closeDirtySave": { en: "Save and close", fr: "Enregistrer et fermer" },
+  "code.closeDirtySave": { en: "Save and close", fr: "Enregistrer et fermér" },
   "code.splitHint": {
     en: "Move this file to the other side (Cmd+\\)",
     fr: "Déplacer ce fichier de l'autre côté (Cmd+\\)",
@@ -972,7 +990,7 @@ const dict: Record<string, { en: string; fr: string }> = {
   "code.pal.symbolsPlaceholder": { en: "Go to symbol", fr: "Aller au symbole" },
   "code.pal.footer": {
     en: "↑↓ to move · ⏎ to open · esc to close",
-    fr: "↑↓ pour naviguer · ⏎ pour ouvrir · échap pour fermer",
+    fr: "↑↓ pour naviguer · ⏎ pour ouvrir · échap pour fermér",
   },
   "code.pal.loading": { en: "Indexing the workspace…", fr: "Indexation de l'espace de travail…" },
   "code.pal.none": { en: "Nothing matches.", fr: "Aucune correspondance." },
@@ -1116,13 +1134,13 @@ const dict: Record<string, { en: string; fr: string }> = {
   "update.checking": { en: "Checking...", fr: "Vérification..." },
   "update.upToDate": {
     en: "Galactus %s is the latest version.",
-    fr: "Galactus %s est la derniere version.",
+    fr: "Galactus %s est la dernière version.",
   },
   "update.found": { en: "Version %s is available.", fr: "La version %s est disponible." },
   "update.version": { en: "Version %s", fr: "Version %s" },
   "update.failed": { en: "Update failed: %s", fr: "Échec de la mise à jour : %s" },
   "update.install": { en: "Download and install", fr: "Télécharger et installer" },
-  "update.downloading": { en: "Downloading...", fr: "Telechargement..." },
+  "update.downloading": { en: "Downloading...", fr: "Téléchargement…" },
   "update.later": { en: "Not now", fr: "Pas maintenant" },
   "update.declined": {
     en: "Staying on version %s. The offer comes back at the next launch.",
@@ -1131,28 +1149,28 @@ const dict: Record<string, { en: string; fr: string }> = {
   "update.restart": { en: "Restart now", fr: "Redémarrer" },
   "update.readyHint": {
     en: "Installed. Galactus uses it after a restart.",
-    fr: "Installee. Galactus l'utilisera après un redemarrage.",
+    fr: "Installée. Galactus l'utilisera après un redémarrage.",
   },
   "update.installedHint": {
     en: "The new version is on disk. Restart when you are ready.",
-    fr: "La nouvelle version est sur le disque. Redemarre quand tu veux.",
+    fr: "La nouvelle version est sur le disque. Redémarrez quand vous voulez.",
   },
   "update.busyJobs": {
     en: "A run is still working. Updating now would end it with no way back. Wait for it to finish, or stop it in Runs.",
-    fr: "Un run est encore en cours. Mettre a jour maintenant l'interromprait sans retour possible. Attends la fin, ou arrete-le dans Runs.",
+    fr: "Un run est encore en cours. Mettre à jour maintenant l'interromprait sans retour possible. Attends la fin, ou arrêtez-le dans Runs.",
   },
   "update.serverWarn": {
     en: "This machine serves a model and may run scheduled jobs. Restarting stops both until Galactus is back.",
-    fr: "Cette machine sert un modèle et peut exécuter des taches planifiees. Redémarrer arrete les deux jusqu'au retour de Galactus.",
+    fr: "Cette machine sert un modèle et peut exécuter des tâches planifiées. Redémarrer arrête les deux jusqu'au retour de Galactus.",
   },
   "update.autoTitle": { en: "Check at launch", fr: "Vérifier au lancement" },
   "update.autoHint": {
     en: "Look once, a few seconds after start. It never downloads and never restarts on its own.",
-    fr: "Regarder une fois, quelques secondes après le demarrage. Aucun telechargement ni redemarrage automatique.",
+    fr: "Regarder une fois, quelques secondes après le démarrage. Aucun téléchargement ni redémarrage automatique.",
   },
   "update.autoServer": {
     en: "Off in server mode: a machine running unattended is never interrupted by an offer nobody is there to decline.",
-    fr: "Desactive en mode serveur : une machine sans personne devant n'est jamais interrompue par une offre que personne ne peut refuser.",
+    fr: "Désactivé en mode serveur : une machine sans personne devant n'est jamais interrompue par une offre que personne ne peut refuser.",
   },
 
   // ---- page section headings ----
@@ -1351,7 +1369,7 @@ const dict: Record<string, { en: string; fr: string }> = {
   },
   "runs.preauthHint": {
     en: "git push and git pull are the only two things that still stop an autonomous run, because the attended gate shows them every time. Nobody is watching this one, so decide here or it will stop.",
-    fr: "git push et git pull sont les deux seules choses qui arretent encore une run autonome, parce que la validation surveillee les montre a chaque fois. Personne ne regarde celle-ci : décide ici, sinon elle s'arretera.",
+    fr: "git push et git pull sont les deux seules choses qui arrêtent encore une run autonome, parce que la validation surveillée les montre a chaque fois. Personne ne regarde celle-ci : décide ici, sinon elle s'arrêtera.",
   },
   "runs.turns": { en: "Turns", fr: "Tours" },
   "runs.turnsUnit": { en: "turns", fr: "tours" },

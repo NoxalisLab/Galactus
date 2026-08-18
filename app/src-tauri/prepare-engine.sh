@@ -88,6 +88,21 @@ cp "$ROOT/LICENSE" "$HERE/packaged/LICENSE"
 cp "$ROOT/NOTICE" "$HERE/packaged/NOTICE"
 echo "Licences embarquees"
 
+# Les notes de CETTE version, pour l ecran "nouveautes" au premier lancement
+# apres une mise a jour. Embarquees plutot que retelechargees : l utilisateur
+# qui installe par DMG n a jamais vu le manifeste, et apres un redemarrage il
+# n y a plus rien a interroger.
+VER="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"])' "$HERE/tauri.conf.json")"
+NOTES_SRC="$ROOT/app/RELEASE-NOTES-v$VER.md"
+if [ -f "$NOTES_SRC" ]; then
+  cp "$NOTES_SRC" "$HERE/packaged/release-notes.md"
+  echo "Notes de version embarquees (v$VER)"
+else
+  # Pas un echec : une version de travail n a pas encore ses notes.
+  rm -f "$HERE/packaged/release-notes.md"
+  echo "AVERTISSEMENT: pas de notes pour la v$VER, l ecran nouveautes sera muet"
+fi
+
 # Skills livrees avec l'app (semees dans Application Support au premier lancement).
 if [ -d "$ROOT/app/skills" ]; then
   rm -rf "$HERE/packaged/skills"
