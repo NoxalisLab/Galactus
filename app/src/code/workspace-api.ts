@@ -54,6 +54,8 @@ export interface SymbolHit {
 export interface SearchOpts {
   caseSensitive: boolean;
   wholeWord: boolean;
+  /** Read the query as a regular expression rather than as literal text. */
+  regex: boolean;
   /** Glob patterns a path must match to be searched. Empty means "all". */
   include: string[];
   /** Glob patterns that remove a path from the search. */

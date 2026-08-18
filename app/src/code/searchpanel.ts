@@ -36,6 +36,7 @@ export interface SearchPanelState {
   query: string;
   caseSensitive: boolean;
   wholeWord: boolean;
+  regex: boolean;
   /** Raw text of the include / exclude boxes, comma or space separated. */
   include: string;
   exclude: string;
@@ -80,6 +81,7 @@ export function newSearchState(): SearchPanelState {
     query: "",
     caseSensitive: false,
     wholeWord: false,
+    regex: false,
     include: "",
     exclude: "",
     showGlobs: false,
@@ -106,10 +108,29 @@ export function splitGlobs(s: string): string[] {
     .filter(Boolean);
 }
 
+/**
+ * Flip one of the toggles, with the one rule that is not a flip.
+ *
+ * Whole word is a literal-search idea: in a pattern the user writes the
+ * boundary they want. Leaving it on under a pattern would quietly filter out
+ * matches a correct pattern had found, which reads as an engine that does not
+ * work rather than as a setting that is still on.
+ */
+export function toggleOption(state: SearchPanelState, key: string): void {
+  if (key === "case") state.caseSensitive = !state.caseSensitive;
+  else if (key === "word") state.wholeWord = !state.wholeWord;
+  else if (key === "regex") {
+    state.regex = !state.regex;
+    if (state.regex) state.wholeWord = false;
+  } else if (key === "globs") state.showGlobs = !state.showGlobs;
+  else if (key === "replace") state.showReplace = !state.showReplace;
+}
+
 export function searchOpts(state: SearchPanelState): SearchOpts {
   return {
     caseSensitive: state.caseSensitive,
     wholeWord: state.wholeWord,
+    regex: state.regex,
     include: splitGlobs(state.include),
     exclude: splitGlobs(state.exclude),
   };
@@ -285,6 +306,7 @@ export function searchPanelHtml(state: SearchPanelState): string {
     )}" value="${esc(state.query)}"/>` +
     tog("case", "Aa", state.caseSensitive, t("code.search.case")) +
     tog("word", "ab", state.wholeWord, t("code.search.word")) +
+    tog("regex", ".*", state.regex, t("code.search.regex")) +
     tog("globs", "⋯", state.showGlobs, t("code.search.globs")) +
     tog("replace", "⇄", state.showReplace, t("code.search.replaceToggle")) +
     `</div>` +
@@ -475,12 +497,9 @@ export function onSearchPanelEvent(e: Event, state: SearchPanelState, deps: Sear
   const tog = target.closest("[data-toggle]") as HTMLElement | null;
   if (tog) {
     const k = tog.dataset.toggle;
-    if (k === "case") state.caseSensitive = !state.caseSensitive;
-    else if (k === "word") state.wholeWord = !state.wholeWord;
-    else if (k === "globs") state.showGlobs = !state.showGlobs;
-    else if (k === "replace") state.showReplace = !state.showReplace;
+    toggleOption(state, k ?? "");
     deps.repaint("all");
-    if ((k === "case" || k === "word") && state.query) void flushSearchDebounce(state, deps);
+    if ((k === "case" || k === "word" || k === "regex") && state.query) void flushSearchDebounce(state, deps);
     return;
   }
 

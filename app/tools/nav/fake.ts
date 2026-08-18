@@ -10,7 +10,7 @@ export type { SearchHit, SearchOpts, SymbolHit } from "../../src/code/workspace-
 import { FakeWorkspaceApi } from "../../src/code/workspace-api.js";
 import type { SearchHit, SearchOpts, SymbolHit } from "../../src/code/workspace-api.js";
 
-export const OPTS: SearchOpts = { caseSensitive: false, wholeWord: false, include: [], exclude: [] };
+export const OPTS: SearchOpts = { caseSensitive: false, wholeWord: false, regex: false, include: [], exclude: [] };
 
 export function opts(over: Partial<SearchOpts> = {}): SearchOpts {
   return { ...OPTS, ...over };

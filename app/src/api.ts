@@ -270,6 +270,7 @@ export interface GitChange {
 export interface SearchOptsWire {
   case_sensitive: boolean;
   whole_word: boolean;
+  regex: boolean;
   include_globs: string[];
   exclude_globs: string[];
 }

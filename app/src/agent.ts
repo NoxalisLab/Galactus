@@ -2184,6 +2184,9 @@ export class Agent {
             .filter(Boolean);
           result = await searchWorkspaceTool(wsRoot, q, {
             case_sensitive: !!args.case_sensitive,
+            // The model searches literally: a pattern written from a
+            // half-remembered syntax would fail silently as "no matches".
+            regex: false,
             whole_word: !!args.whole_word,
             include_globs: include,
             exclude_globs: [],

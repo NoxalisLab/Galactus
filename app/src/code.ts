@@ -1829,6 +1829,7 @@ const workspaceApi: WorkspaceApi = {
     return api.searchStart(r, query, {
       case_sensitive: o.caseSensitive,
       whole_word: o.wholeWord,
+      regex: o.regex,
       include_globs: o.include,
       exclude_globs: o.exclude,
     });

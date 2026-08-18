@@ -16,6 +16,7 @@ import {
   searchPanelHtml,
   searchResultsHtml,
   splitGlobs,
+  toggleOption,
 } from "../../src/code/searchpanel.js";
 import { paletteRowsHtml, fileRow, markHtml, symbolSub } from "../../src/code/palette.js";
 import { rank } from "../../src/code/fuzzy.js";
@@ -305,6 +306,7 @@ test("glob boxes split on commas and whitespace, empties dropped", () => {
   assert.deepEqual(searchOpts(s), {
     caseSensitive: true,
     wholeWord: false,
+    regex: false,
     include: ["*.ts"],
     exclude: ["vendor/**", "dist/**"],
   });
@@ -407,4 +409,22 @@ test("symbol rows carry their kind and their location", async () => {
   );
   assert.match(html, /class="kind">function</);
   assert.match(html, /plan<b>Rep<\/b>lace/);
+});
+
+test("turning on the pattern toggle drops whole word, which is a literal idea", () => {
+  // With a pattern the user writes the boundary they want. Leaving whole word
+  // on would quietly filter out matches a correct pattern had found, which
+  // reads as an engine that does not work rather than as a setting still on.
+  const s = newSearchState();
+  s.wholeWord = true;
+  toggleOption(s, "regex");
+  assert.equal(s.regex, true);
+  assert.equal(s.wholeWord, false, "whole word must not survive the switch");
+  // Off again leaves whole word where the user put it: it is not restored
+  // behind their back either.
+  toggleOption(s, "regex");
+  assert.equal(s.regex, false);
+  assert.equal(s.wholeWord, false);
+  // And the button is in the panel.
+  assert.match(searchPanelHtml(s), /data-toggle="regex"/);
 });

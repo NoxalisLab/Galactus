@@ -11,6 +11,7 @@ mod hardware;
 mod knowledge;
 mod lsp;
 mod pty;
+mod regexlite;
 mod ssh;
 mod relay;
 mod pylang;

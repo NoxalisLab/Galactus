@@ -692,6 +692,7 @@ const dict: Record<string, { en: string; fr: string }> = {
     en: "Your workspace is still there but macOS is not letting Galactus read it. Open System Settings, Privacy and Security, Files and Folders, and allow Galactus. The folder is remembered and will reopen on its own.",
     fr: "Votre dossier de travail existe toujours mais macOS empêche Galactus de le lire. Ouvrez Réglages Système, Confidentialité et sécurité, Fichiers et dossiers, et autorisez Galactus. Le dossier est mémorisé et se rouvrira tout seul.",
   },
+  "code.search.regex": { en: "Regular expression", fr: "Expression régulière" },
   "fop.newFile": { en: "New file", fr: "Nouveau fichier" },
   "fop.newFolder": { en: "New folder", fr: "Nouveau dossier" },
   "fop.rename": { en: "Rename", fr: "Renommer" },

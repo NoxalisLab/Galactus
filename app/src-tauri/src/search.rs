@@ -705,6 +705,9 @@ fn truncate_utf8(s: &str, max: usize) -> &str {
 pub struct SearchOpts {
     pub case_sensitive: bool,
     pub whole_word: bool,
+    /// Read the query as a regular expression rather than as literal text.
+    /// The engine is regexlite.rs: no dependency, and no pattern can hang it.
+    pub regex: bool,
     pub include_globs: Vec<String>,
     pub exclude_globs: Vec<String>,
 }
@@ -742,9 +745,57 @@ pub struct SearchReport {
     pub cancelled: bool,
 }
 
+/// What a query means, compiled once for the whole run.
+///
+/// Compiling per file would pay the parse a hundred thousand times, and a bad
+/// pattern would be discovered by every worker at once instead of being
+/// reported to the user before anything started.
+pub enum Matcher {
+    Literal { needle: String, case_sensitive: bool, whole_word: bool },
+    Pattern(crate::regexlite::Regex),
+}
+
+impl Matcher {
+    pub fn build(query: &str, opts: &SearchOpts) -> Result<Matcher, String> {
+        if opts.regex {
+            return crate::regexlite::Regex::new(query, opts.case_sensitive).map(Matcher::Pattern);
+        }
+        Ok(Matcher::Literal {
+            needle: query.to_string(),
+            case_sensitive: opts.case_sensitive,
+            whole_word: opts.whole_word,
+        })
+    }
+
+    /// Byte ranges of the matches in a whole file.
+    fn find(&self, text: &str) -> Vec<(usize, usize)> {
+        match self {
+            Matcher::Literal { needle, case_sensitive, whole_word } => {
+                find_matches(text, needle, *case_sensitive, *whole_word)
+            }
+            // Line by line, which is what makes `^` and `$` mean the ends of the
+            // line the user can see, keeps `.` from crossing a newline, and
+            // bounds the engine's state to one line rather than one file.
+            Matcher::Pattern(re) => {
+                let mut out = Vec::new();
+                let mut base = 0usize;
+                for line in text.split_inclusive('\n') {
+                    let bare = line.strip_suffix('\n').unwrap_or(line);
+                    let bare = bare.strip_suffix('\r').unwrap_or(bare);
+                    for (s, e) in re.find_line(bare) {
+                        out.push((base + s, base + e));
+                    }
+                    base += line.len();
+                }
+                out
+            }
+        }
+    }
+}
+
 /// Read and scan one file. Returns false when the file was skipped, so the
 /// caller can report how much of the workspace was really looked at.
-fn scan_file(root: &Path, rel: &str, needle: &str, opts: &SearchOpts, out: &mut Vec<Hit>) -> bool {
+fn scan_file(root: &Path, rel: &str, matcher: &Matcher, out: &mut Vec<Hit>) -> bool {
     if Path::new(rel).components().any(|c| matches!(c, Component::ParentDir)) {
         return false;
     }
@@ -771,7 +822,7 @@ fn scan_file(root: &Path, rel: &str, needle: &str, opts: &SearchOpts, out: &mut 
     let Ok(text) = std::str::from_utf8(&bytes) else {
         return false;
     };
-    let ranges = find_matches(text, needle, opts.case_sensitive, opts.whole_word);
+    let ranges = matcher.find(text);
     if ranges.is_empty() {
         return true;
     }
@@ -808,6 +859,9 @@ pub fn run_search(
     if query.is_empty() {
         return Err("empty query".into());
     }
+    // Before a single file is read: a pattern with a typo in it is an answer
+    // the user gets immediately, not after thirty seconds of walking a tree.
+    let matcher = Matcher::build(query, opts)?;
     let real = std::fs::canonicalize(root).map_err(|e| format!("{}: {e}", root.display()))?;
     let all = cached_files(&real, false)?;
     let include = parse_rules(opts.include_globs.iter().map(|s| s.as_str()));
@@ -842,7 +896,7 @@ pub fn run_search(
                         break;
                     }
                     let mut hits: Vec<Hit> = Vec::new();
-                    if scan_file(&real, &files[i], query, opts, &mut hits) {
+                    if scan_file(&real, &files[i], &matcher, &mut hits) {
                         scanned.fetch_add(1, Ordering::Relaxed);
                     }
                     if hits.is_empty() {
@@ -1068,11 +1122,40 @@ mod tests {
         assert!(!scan_file(
             &std::fs::canonicalize(&root).unwrap(),
             "secret.txt",
-            "TOPSECRET",
-            &opts(),
+            &Matcher::build("TOPSECRET", &opts()).unwrap(),
             &mut direct
         ));
         assert!(direct.is_empty());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_regex_search_finds_what_a_literal_one_cannot() {
+        let base = temp_tree("regex");
+        let root = base.join("w");
+        write(&root.join("a.rs"), b"fn alpha() {}\nfn beta() {}\nlet fnord = 1;\n");
+        let mut o = opts();
+        o.regex = true;
+        let (hits, _) = search_all(&root, r"^fn \w+", &o).unwrap();
+        let found: Vec<&str> = hits.iter().map(|h| h.text.as_str()).collect();
+        assert_eq!(found, ["fn alpha() {}", "fn beta() {}"], "^ must mean the start of a LINE");
+        // The offsets must still land on the match, not on the line.
+        assert_eq!(hits[0].col, 1);
+        assert_eq!(hits[0].len, "fn alpha".len());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_broken_pattern_is_reported_before_any_file_is_read() {
+        // The alternative is thirty seconds of walking a tree to then say the
+        // pattern was wrong all along.
+        let base = temp_tree("badregex");
+        let root = base.join("w");
+        write(&root.join("a.txt"), b"anything\n");
+        let mut o = opts();
+        o.regex = true;
+        let err = search_all(&root, "(unclosed", &o).unwrap_err();
+        assert!(err.contains("never closed"), "{err}");
         let _ = std::fs::remove_dir_all(&base);
     }
 
