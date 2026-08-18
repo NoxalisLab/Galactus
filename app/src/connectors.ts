@@ -135,7 +135,7 @@ export async function compileAndReload(list: EnabledConnector[]): Promise<number
     servers[uniqueKey(preset.id)] = { command: preset.command, args, env };
   }
   const config = JSON.stringify({ mcpServers: servers }, null, 2);
-  await api.settingsSet("mcp", config);
+  await api.mcpConfigSet(config);
   const tools = await api.mcpReload();
   return tools.length;
 }

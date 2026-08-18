@@ -4307,7 +4307,7 @@ async function pickFolderOrSay(): Promise<string | null> {
 
 async function pickRoot() { const p = await pickFolderOrSay(); if (p) await setRoot(p); }
 async function setRoot(p: string) {
-  await api.settingsSet("root", p);
+  await api.rootSet(p);
   root = p;
   try { registry = await api.registry(); } catch { registry = []; }
   try { hw = await api.hwInfo(); } catch {}

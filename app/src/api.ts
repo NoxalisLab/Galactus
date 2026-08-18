@@ -426,6 +426,9 @@ export const api = {
   shellRun: (command: string, timeoutSecs: number) =>
     invoke<string>("tool_shell_run", { command, timeoutSecs }),
   settingsGet: () => invoke<Record<string, string>>("settings_get"),
+  /** The two settings the page may not write directly: they run programs. */
+  mcpConfigSet: (config: string) => invoke<void>("mcp_config_set", { config }),
+  rootSet: (path: string) => invoke<void>("root_set", { path }),
   settingsSet: (key: string, value: string) =>
     invoke<void>("settings_set", { key, value }),
   mcpReload: () => invoke<McpToolInfo[]>("mcp_reload"),

@@ -387,6 +387,10 @@ async function ensureAgent(run: LiveRun): Promise<Agent> {
   // the run's gate answering allow, which is recorded; an auto-approving agent
   // would answer before the gate and record nothing.
   agent.setMode("agent");
+  // A rule granted in somebody's chat does not answer for an unattended run,
+  // and a run does not write rules that would answer for a chat later. The
+  // standing list is module state shared by every agent in the process.
+  agent.setNoStanding(true);
   run.agent = agent;
   try {
     const [settings, memory, tools, skills, folders] = await Promise.all([

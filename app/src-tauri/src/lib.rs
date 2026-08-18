@@ -127,10 +127,72 @@ fn settings_get() -> HashMap<String, String> {
     settings_load()
 }
 
+/// Settings the webview may not write.
+///
+/// `mcp` is a list of programs the app spawns, and `root` decides which
+/// registry is read and which folder the app trusts. Either one written from
+/// the page is arbitrary code execution with no dialog in front of it. The
+/// content security policy makes that hard to reach, and this is the layer that
+/// makes it pointless: they have their own commands, which validate.
+const PROTECTED_SETTINGS: &[&str] = &["mcp", "root"];
+
 #[tauri::command]
 fn settings_set(key: String, value: String) -> Result<(), String> {
+    if PROTECTED_SETTINGS.contains(&key.as_str()) {
+        return Err(format!("{key} is not set this way"));
+    }
     settings_update(|map| {
         map.insert(key, value);
+    })
+}
+
+/// Write the connector configuration, after checking it is one.
+///
+/// `settings_set` refuses this key, so this is the only way in, and the shape
+/// is verified here rather than at spawn time: every string that reaches
+/// Command comes out of this blob.
+#[tauri::command]
+fn mcp_config_set(config: String) -> Result<(), String> {
+    let parsed: Value = serde_json::from_str(&config).map_err(|e| format!("connectors: {e}"))?;
+    let servers = parsed
+        .get("mcpServers")
+        .and_then(|v| v.as_object())
+        .ok_or("connectors: expected an mcpServers object")?;
+    for (name, cfg) in servers {
+        if name.is_empty() || name.contains(char::is_whitespace) {
+            return Err(format!("connectors: {name:?} is not a usable name"));
+        }
+        let command = cfg.get("command").and_then(|v| v.as_str()).unwrap_or_default();
+        if command.is_empty() || command.contains('\n') {
+            return Err(format!("connectors: {name} has no usable command"));
+        }
+        if let Some(args) = cfg.get("args") {
+            let list = args.as_array().ok_or("connectors: args must be a list")?;
+            if list.iter().any(|a| !a.is_string()) {
+                return Err("connectors: every argument must be text".into());
+            }
+        }
+        if let Some(env) = cfg.get("env") {
+            let map = env.as_object().ok_or("connectors: env must be an object")?;
+            if map.values().any(|v| !v.is_string()) {
+                return Err("connectors: every environment value must be text".into());
+            }
+        }
+    }
+    settings_update(|map| {
+        map.insert("mcp".to_string(), config);
+    })
+}
+
+/// Point the app at a Galactus folder, after checking it is a folder.
+#[tauri::command]
+fn root_set(path: String) -> Result<(), String> {
+    let p = std::fs::canonicalize(&path).map_err(|e| format!("{path}: {e}"))?;
+    if !p.is_dir() {
+        return Err(format!("{path} is not a folder"));
+    }
+    settings_update(|map| {
+        map.insert("root".to_string(), p.to_string_lossy().to_string());
     })
 }
 
@@ -5252,10 +5314,107 @@ async fn tool_fs_read(path: String, max_bytes: usize, offset: Option<u64>) -> Re
 /// Fetch a URL for the agent (curl under the hood: TLS and redirects handled
 /// by the system tool, nothing new to bundle). Output is capped like every
 /// tool; the permission gate on the frontend shows the exact URL.
+#[cfg(test)]
+mod web_fetch_tests {
+    use super::{is_private_host, url_host};
+
+    #[test]
+    fn the_host_is_read_out_of_a_real_url() {
+        assert_eq!(url_host("https://example.com/a/b?c=d").as_deref(), Some("example.com"));
+        assert_eq!(url_host("http://user:pw@example.com:8080/x").as_deref(), Some("example.com"));
+        assert_eq!(url_host("http://[::1]:9000/x").as_deref(), Some("::1"));
+        assert_eq!(url_host("https://EXAMPLE.com").as_deref(), Some("example.com"));
+        assert_eq!(url_host("not a url"), None);
+    }
+
+    #[test]
+    fn this_machine_and_this_network_are_not_the_web() {
+        // Everything a model reaches for when a page tells it to look around:
+        // the engine's own port, the router, the printer, the metadata address.
+        for h in [
+            "127.0.0.1", "localhost", "::1", "0.0.0.0", "10.0.0.5", "192.168.1.1",
+            "172.16.0.1", "172.31.255.255", "169.254.169.254", "printer.local", "fd00::1",
+        ] {
+            assert!(is_private_host(h), "{h} must be refused");
+        }
+    }
+
+    #[test]
+    fn the_actual_web_still_works() {
+        for h in [
+            "example.com", "huggingface.co", "8.8.8.8", "172.32.0.1", "11.0.0.1", "2606:4700::1",
+        ] {
+            assert!(!is_private_host(h), "{h} must be allowed");
+        }
+    }
+}
+
+/// The host of an http(s) URL, lowercased, without port or credentials.
+pub(crate) fn url_host(url: &str) -> Option<String> {
+    let rest = url.split_once("://")?.1;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let authority = authority.rsplit('@').next()?;
+    // IPv6 literals are bracketed, and a bracketed host has no bare colon.
+    let host = if let Some(inner) = authority.strip_prefix('[') {
+        inner.split(']').next()?.to_string()
+    } else {
+        authority.split(':').next()?.to_string()
+    };
+    if host.is_empty() { None } else { Some(host.to_lowercase()) }
+}
+
+/// Whether a host names this machine or the local network.
+///
+/// Literals only. A name that RESOLVES to a private address is not caught here
+/// and cannot be without doing the lookup ourselves; this closes the direct
+/// cases, which are the ones a model reaches for.
+pub(crate) fn is_private_host(host: &str) -> bool {
+    if host == "localhost" || host.ends_with(".localhost") || host.ends_with(".local") {
+        return true;
+    }
+    if host == "::1" || host == "0:0:0:0:0:0:0:1" {
+        return true;
+    }
+    // Unique local addresses (fc00::/7) and IPv6 link-local (fe80::/10).
+    let low = host.to_lowercase();
+    if low.starts_with("fc") || low.starts_with("fd") || low.starts_with("fe8") {
+        if low.contains(':') {
+            return true;
+        }
+    }
+    let octets: Vec<u32> = host.split('.').filter_map(|p| p.parse().ok()).collect();
+    if octets.len() != 4 || host.split('.').count() != 4 {
+        return false;
+    }
+    match (octets[0], octets[1]) {
+        (127, _) => true,
+        (10, _) => true,
+        (0, _) => true,
+        (192, 168) => true,
+        (169, 254) => true, // link-local, and the cloud metadata address
+        (172, b) if (16..=31).contains(&b) => true,
+        _ => false,
+    }
+}
+
 #[tauri::command]
 async fn tool_web_fetch(url: String, max_bytes: Option<usize>) -> Result<String, String> {
     if !(url.starts_with("https://") || url.starts_with("http://")) {
         return Err("only http(s) URLs are allowed".into());
+    }
+    // The machine's own network is not the web.
+    //
+    // Only the scheme was checked, so a model could reach 127.0.0.1, the
+    // engine's own port, a router's admin page, a printer, or the cloud
+    // metadata address, from an app that presents itself as local and offline.
+    // Combined with a page telling it to, that is a scan of the user's network
+    // dressed as a web fetch.
+    if let Some(host) = url_host(&url) {
+        if is_private_host(&host) {
+            return Err(format!(
+                "{host} is on this machine or this network, not the web: refusing"
+            ));
+        }
     }
     let child = Command::new("curl")
         .args([
@@ -8052,6 +8211,8 @@ pub fn run() {
             server_metrics,
             settings_get,
             settings_set,
+            mcp_config_set,
+            root_set,
             mcp_reload,
             mcp_tools,
             mcp_call,

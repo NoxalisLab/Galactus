@@ -135,6 +135,14 @@ fn git(root: &str, args: &[&str]) -> Result<String, String> {
     // Finder, so a bare Command::new("git") would miss a Homebrew install too.
     let program = crate::toolchain::git_program().ok_or(GIT_MISSING)?;
     let out = Command::new(program)
+        // Neutralise the config that turns an ordinary git call into an
+        // arbitrary command. core.fsmonitor, core.pager and core.sshCommand are
+        // programs git runs, and they live in a repository's own .git/config,
+        // which arrives with any clone. The Code view runs `git status` by
+        // itself when a folder is opened, so reading somebody's repository was
+        // enough. Writing those keys is now an elevated action too; this is the
+        // half that protects the repositories already on the disk.
+        .args(["-c", "core.fsmonitor=", "-c", "core.pager=cat", "-c", "core.sshCommand="])
         .arg("-C")
         .arg(root)
         .args(args)
@@ -661,10 +669,20 @@ fn git_checkout_blocking(root: String, branch: String, create: bool) -> Result<S
     if branch.trim().is_empty() {
         return Err("branch name is empty".into());
     }
+    // A leading dash is an option, and a name that matches a path makes git
+    // restore that path from HEAD instead of switching branch: the user is told
+    // the branch changed while their uncommitted work is quietly discarded.
+    if branch.starts_with('-') || branch.contains(char::is_whitespace) {
+        return Err(format!("{branch:?} is not a usable branch name"));
+    }
+    // The separator goes AFTER the name, not before: `checkout <name> --` says
+    // "this is a branch, there are no paths", which is the whole point.
+    // `checkout -- <name>` says the opposite, and would restore a file. Both
+    // forms were tried against a scratch repository before choosing.
     let args: Vec<&str> = if create {
-        vec!["checkout", "-b", branch.as_str()]
+        vec!["checkout", "-b", branch.as_str(), "--"]
     } else {
-        vec!["checkout", branch.as_str()]
+        vec!["checkout", branch.as_str(), "--"]
     };
     let out = git(&root, &args).map(|s| if s.trim().is_empty() { format!("on {branch}") } else { s });
     invalidate_status(&root);
@@ -838,12 +856,29 @@ pub fn is_valid_entry_name(name: &str) -> bool {
     !n.is_empty() && n != "." && n != ".." && !n.contains('/') && !n.contains('\0') && n.len() <= 255
 }
 
+/// Folders the file operations never touch, whoever asks.
+///
+/// `.git` holds the repository itself: deleting it discards every commit that
+/// was not pushed, and renaming it is the same thing with an extra step. Its
+/// config is also executable configuration, which is why writing it is elevated
+/// elsewhere. `.galactus` holds the workspace's own state, including the local
+/// trash these operations write into.
+///
+/// The tree does not show hidden entries, so the menu cannot reach these. The
+/// commands can: they are also called by the model.
+fn is_protected_entry(rel: &str) -> bool {
+    rel.split('/').any(|part| part == ".git" || part == ".galactus")
+}
+
 #[tauri::command]
 pub async fn code_create(root: String, path: String, dir: bool) -> Result<String, String> {
     blocking(move || code_create_blocking(root, path, dir)).await
 }
 
 fn code_create_blocking(root: String, path: String, dir: bool) -> Result<String, String> {
+    if is_protected_entry(&path) {
+        return Err("that is part of the repository or of Galactus itself".into());
+    }
     let name = path.rsplit('/').next().unwrap_or_default();
     if !is_valid_entry_name(name) {
         return Err("that name cannot be used".into());
@@ -854,6 +889,7 @@ fn code_create_blocking(root: String, path: String, dir: bool) -> Result<String,
     if full.exists() {
         return Err(format!("{name} already exists here"));
     }
+    invalidate_status(&root);
     if dir {
         std::fs::create_dir_all(&full).map_err(|e| e.to_string())?;
     } else {
@@ -871,6 +907,9 @@ pub async fn code_rename(root: String, from: String, to: String) -> Result<Strin
 }
 
 fn code_rename_blocking(root: String, from: String, to: String) -> Result<String, String> {
+    if is_protected_entry(&from) || is_protected_entry(&to) {
+        return Err("that is part of the repository or of Galactus itself".into());
+    }
     let name = to.rsplit('/').next().unwrap_or_default();
     if !is_valid_entry_name(name) {
         return Err("that name cannot be used".into());
@@ -889,6 +928,7 @@ fn code_rename_blocking(root: String, from: String, to: String) -> Result<String
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     std::fs::rename(&src, &dst).map_err(|e| e.to_string())?;
+    invalidate_status(&root);
     Ok(to)
 }
 
@@ -922,6 +962,9 @@ pub async fn code_delete(root: String, path: String) -> Result<String, String> {
 }
 
 fn code_delete_blocking(root: String, path: String) -> Result<String, String> {
+    if is_protected_entry(&path) {
+        return Err("that is part of the repository or of Galactus itself".into());
+    }
     let full = inside(&root, &path)?;
     let root_path = std::fs::canonicalize(&root).map_err(|e| e.to_string())?;
     if !full.exists() {
@@ -935,6 +978,7 @@ fn code_delete_blocking(root: String, path: String) -> Result<String, String> {
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .ok_or("nothing to delete")?;
+    invalidate_status(&root);
     let exists = |p: &Path| p.exists();
     if let Some(home) = std::env::var_os("HOME") {
         let trash = PathBuf::from(home).join(".Trash");
@@ -951,9 +995,36 @@ fn code_delete_blocking(root: String, path: String) -> Result<String, String> {
     }
     let local = root_path.join(".galactus").join("trash");
     std::fs::create_dir_all(&local).map_err(|e| e.to_string())?;
+    // A workspace on an external volume takes this path every time, so the
+    // folder is not incidental: without this it shows up as untracked files in
+    // the Changes tab and eventually gets committed.
+    let ignore = root_path.join(".galactus").join(".gitignore");
+    if !ignore.exists() {
+        let _ = std::fs::write(&ignore, b"*\n");
+    }
     let target = trash_target(&local, &name, exists);
     std::fs::rename(&full, &target).map_err(|e| e.to_string())?;
     Ok(format!("moved to .galactus/trash: {name}"))
+}
+
+#[cfg(test)]
+mod protected_entry_tests {
+    use super::is_protected_entry;
+
+    #[test]
+    fn the_repository_and_the_workspace_state_are_off_limits() {
+        // The tree hides these, so the menu cannot reach them. The model can.
+        for rel in [".git", ".git/config", "src/../.git", "sub/.git/hooks/pre-commit", ".galactus/trash"] {
+            assert!(is_protected_entry(rel), "{rel} must be refused");
+        }
+    }
+
+    #[test]
+    fn a_name_that_merely_contains_the_word_is_fine() {
+        for rel in ["gitignore", "src/git.rs", "my.gitconfig", "docs/github.md", ".gitignore"] {
+            assert!(!is_protected_entry(rel), "{rel} must be allowed");
+        }
+    }
 }
 
 #[cfg(test)]
