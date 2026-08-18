@@ -4786,7 +4786,7 @@ async function boot() {
   if (s["autonomy"]) autonomy = s["autonomy"] as Autonomy;
   autoTabOn = s["auto_tab"] !== "0";
   // The Code workspace comes back where it was left.
-  await codeview.initCodeRoot(s["code_root"]).catch(() => {});
+  await codeview.initCodeRoot(s["code_root"], s["code_tabs"]).catch(() => {});
   if (s["ram_mode"] === "eco" || s["ram_mode"] === "perf") ramMode = s["ram_mode"];
   if (s["app_mode"] === "server") appMode = "server";
   modeAskAlways = s["app_mode_ask"] === "1";
@@ -5010,6 +5010,11 @@ async function boot() {
     if (k === "n") {
       e.preventDefault();
       newChat();
+    } else if (view === "code" && codeview.tabShortcut(e)) {
+      // Inside the Code view the tab gestures win: Cmd-1..9 selects a tab
+      // there, and selects a view everywhere else. Consulted before the
+      // navigation branch below so the two cannot both fire.
+      e.preventDefault();
     } else if (k >= "1" && k <= "8" && k.length === 1) {
       e.preventDefault();
       const target = NAV_ORDER[Number(k) - 1];

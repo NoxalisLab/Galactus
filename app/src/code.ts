@@ -43,6 +43,7 @@ import { tabsHtml, onTabsClick } from "./code/tabs";
 import { cmPhrases } from "./code/phrases";
 import { classifyRootError, resolveRestoredRoot } from "./code/restored-root";
 import { affectsPreview, chooseEntry, DEVICE_PRESETS, frameScale } from "./code/preview-pane";
+import { simpleLanguageFor } from "./code/simple-modes";
 import { ReviewGate, reviewInstruction } from "./code/review-gate";
 import { autoTabExtension } from "./code/auto-tab";
 import { inlineEditExtension } from "./code/inline-edit";
@@ -306,10 +307,16 @@ function langFor(path: string): Extension[] {
       return [html()];
     case "css":
       return [css()];
-    default:
+    default: {
+      // YAML, TOML, shell, .env and the bare-name files (Dockerfile, Makefile).
+      // Written by hand against StreamLanguage rather than pulled in with a
+      // fifty-mode dependency to get four: see code/simple-modes.ts.
+      const simple = simpleLanguageFor(path);
+      if (simple) return [simple];
       // Everything else still gets line numbers, search and undo; only the
       // grammar is missing, which is a plain editor, not a broken one.
       return [];
+    }
   }
 }
 
@@ -369,7 +376,7 @@ export function pendingCount(): number {
 }
 
 /** Restore the workspace chosen in a previous session. */
-export async function initCodeRoot(saved: string | undefined): Promise<void> {
+export async function initCodeRoot(saved: string | undefined, savedTabs?: string): Promise<void> {
   const outcome = await resolveRestoredRoot(saved, async (candidate) => {
     try {
       await api.codeTree(candidate, "");
@@ -398,8 +405,123 @@ export async function initCodeRoot(saved: string | undefined): Promise<void> {
   await refreshGit().catch(() => {});
   await loadDir("");
   await startWorkspaceServices();
+  // Last, and never fatal: reopening files is a convenience, and a workspace
+  // that opens with an empty editor is merely less pleasant, not broken.
+  await restoreOpenTabs(savedTabs).catch(() => undefined);
 }
 
+
+
+/**
+ * Close one tab, from wherever the gesture came.
+ *
+ * Lifted out of the click handler the day the keyboard needed it too: Cmd-W did
+ * nothing, which for anyone arriving from another editor is the single most
+ * often repeated disappointment of the first hour.
+ */
+function closeTab(rel: string): void {
+  if (editor) docs.capture(editor, editor.scrollSnapshot());
+  forgetPython(rel);
+  closeRustBuffer(rel);
+  docs.close(rel);
+  paintMid();
+  paintTree();
+  rememberOpenTabs();
+}
+
+/** Move to the next or previous tab, wrapping. */
+function cycleTab(delta: number): void {
+  const list = docs.list();
+  if (list.length < 2) return;
+  const cur = docs.activeRel();
+  const i = Math.max(0, list.findIndex((d) => d.rel === cur));
+  const next = list[(i + delta + list.length) % list.length];
+  if (!next || next.rel === cur) return;
+  if (editor) docs.capture(editor, editor.scrollSnapshot());
+  docs.activate(next.rel);
+  mountEditor();
+  paintEditorChrome();
+  paintTree();
+}
+
+/** Select a tab by its position, 1-based, as every editor's Cmd-1..9 does. */
+function selectTabAt(n: number): void {
+  const list = docs.list();
+  const target = list[n - 1];
+  if (!target || target.rel === docs.activeRel()) return;
+  if (editor) docs.capture(editor, editor.scrollSnapshot());
+  docs.activate(target.rel);
+  mountEditor();
+  paintEditorChrome();
+  paintTree();
+}
+
+/**
+ * Keyboard gestures for the tab strip. Returns true when it consumed the event.
+ *
+ * Exposed rather than bound here because the key listener that can see these
+ * lives in main.ts, alongside every other shortcut: two competing global
+ * listeners is how a shortcut starts working in one view and not another.
+ */
+export function tabShortcut(e: KeyboardEvent): boolean {
+  if (!root) return false;
+  const meta = e.metaKey && !e.altKey;
+  if (meta && e.key.toLowerCase() === "w" && !e.shiftKey) {
+    const rel = docs.activeRel();
+    if (!rel) return false;
+    closeTab(rel);
+    return true;
+  }
+  if (e.ctrlKey && e.key === "Tab") {
+    cycleTab(e.shiftKey ? -1 : 1);
+    return true;
+  }
+  if (meta && !e.shiftKey && e.key >= "1" && e.key <= "9" && e.key.length === 1) {
+    selectTabAt(Number(e.key));
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Remember which files are open, so a relaunch reopens them.
+ *
+ * Only the paths. The scroll position and the undo history belong to a session
+ * and restoring a stale one would be worse than starting clean.
+ */
+function rememberOpenTabs(): void {
+  const rels = docs.list().map((d) => d.rel);
+  const active = docs.activeRel();
+  void deps?.saveSetting("code_tabs", JSON.stringify({ rels, active })).catch(() => undefined);
+}
+
+/** Reopen what was open, skipping anything that has since gone. */
+async function restoreOpenTabs(saved: string | undefined): Promise<void> {
+  if (!saved?.trim() || !root) return;
+  let parsed: { rels?: unknown; active?: unknown };
+  try {
+    parsed = JSON.parse(saved);
+  } catch {
+    return;
+  }
+  const rels = Array.isArray(parsed.rels) ? parsed.rels.filter((r): r is string => typeof r === "string") : [];
+  // Bounded: a session with fifty tabs open would otherwise spend its first
+  // seconds reading fifty files nobody asked for yet.
+  for (const rel of rels.slice(0, 12)) {
+    try {
+      await openFile(rel);
+    } catch {
+      // Deleted, renamed, or on a volume that is not back. Skip it silently:
+      // the file being gone is not an error the user needs a dialog about.
+    }
+  }
+  if (typeof parsed.active === "string" && docs.list().some((d) => d.rel === parsed.active)) {
+    docs.activate(parsed.active);
+    mountEditor();
+    paintEditorChrome();
+  }
+  paintTree();
+}
 
 // ---------------------------------------------------------------- preview
 
@@ -1114,6 +1236,7 @@ export async function openFile(rel: string): Promise<void> {
     deps?.paintNav();
   }
   docs.open(rel, saved, prop?.after);
+  rememberOpenTabs();
   if (prop) setReview(rel, saved);
   applyTsBindings(rel);
   applyRustBindings(rel);

@@ -1,0 +1,9 @@
+{
+  "compilerOptions": {
+    "target": "ES2022", "module": "ESNext", "moduleResolution": "Bundler",
+    "lib": ["ES2022"], "strict": true, "skipLibCheck": true, "types": [],
+    "rootDir": "../..", "outDir": "./out", "sourceMap": false, "declaration": false,
+    "paths": { "@codemirror/language": ["../../node_modules/@codemirror/language/dist/index.d.ts"] }
+  },
+  "files": ["modes.test.ts"]
+}
