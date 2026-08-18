@@ -48,3 +48,23 @@ test("ordinary conversations are not touched", () => {
   assert.deepEqual(wholeTurnsOnly(thread), thread);
   assert.deepEqual(wholeTurnsOnly([]), []);
 });
+
+test("an orphan sitting behind a complete round is still dropped", () => {
+  // The loop absorbed every consecutive tool message as an "answer": once the
+  // announced ids were covered it pushed the whole run, orphans included, and
+  // the engine rejected the thread on the first reply.
+  const kept = wholeTurnsOnly([user("hi"), calling("a"), answer("a"), answer("stray"), assistant("done")]);
+  assert.deepEqual(kept, [user("hi"), calling("a"), answer("a"), assistant("done")]);
+});
+
+test("an announcement with no ids cannot be proved complete, so it goes", () => {
+  // Nothing can be paired with it. Keeping it means keeping an assistant
+  // message whose tool_calls will never be answered.
+  const noId = { role: "assistant" as const, content: "", tool_calls: [{ type: "function" }] };
+  assert.deepEqual(wholeTurnsOnly([user("hi"), noId as never, answer("x")]), [user("hi")]);
+});
+
+test("two complete rounds in a row both survive", () => {
+  const thread = [user("hi"), calling("a"), answer("a"), calling("b"), answer("b"), assistant("done")];
+  assert.deepEqual(wholeTurnsOnly(thread), thread);
+});

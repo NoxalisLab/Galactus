@@ -818,6 +818,10 @@ const dict: Record<string, { en: string; fr: string }> = {
     en: "This file is under review. Answer the proposal first, then move it.",
     fr: "Ce fichier est en cours de revue. Répondez d'abord à la proposition, puis déplacez-le.",
   },
+  "code.closeSaveFailed": {
+    en: "It was not saved, so the tab stays open. Fix what the message above says, then close it again.",
+    fr: "Il n'a pas été enregistré : l'onglet reste ouvert. Corrigez ce que dit le message ci-dessus, puis refermez-le.",
+  },
   "code.closeDirtyTitle": { en: "Save %s before closing?", fr: "Enregistrer %s avant de fermér ?" },
   "code.closeDirtyBody": {
     en: "It has changes that are not on the disk. Closing without saving loses them.",

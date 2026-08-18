@@ -544,6 +544,14 @@ async function closeTabAsking(rel: string): Promise<void> {
     );
     if (keep) {
       await saveFile(rel);
+      // saveFile never throws: it catches everything and shows a toast, which
+      // includes the backend refusing a stale save and a full disk. Closing
+      // regardless discarded the very buffer this dialog exists to protect, in
+      // exactly the case where saving failed.
+      if (reg.isDirty(rel)) {
+        deps?.toast(t("code.closeSaveFailed"));
+        return;
+      }
     } else {
       // The dialog offers Save or Cancel; anything else keeps the tab open,
       // which is the safe end of a two-way choice about losing work.

@@ -43,18 +43,26 @@ export function wholeTurnsOnly<T extends ChatMessage>(messages: T[]): T[] {
     const m = messages[i];
     const calls = m.tool_calls;
     if (m.role === "assistant" && calls?.length) {
-      // Every announced call must have its answer directly after.
-      const ids = new Set(calls.map((c) => c.id).filter(Boolean));
+      // An announcement with no usable id cannot be paired with anything, so
+      // it cannot be proved complete. It goes, with whatever follows it.
+      const ids = new Set(calls.map((c) => c.id).filter((id): id is string => !!id));
       let j = i + 1;
       const answers: T[] = [];
+      // Only the answers that belong to THIS announcement. Absorbing every
+      // consecutive tool message kept the orphans sitting behind a complete
+      // round: the ids were covered, so the whole run was pushed, orphans
+      // included, and the engine rejected the thread on the first reply.
       while (j < messages.length && messages[j].role === "tool") {
         const id = messages[j].tool_call_id;
-        if (id) ids.delete(id);
+        if (!id || !ids.has(id)) break;
+        ids.delete(id);
         answers.push(messages[j]);
         j++;
       }
-      if (ids.size > 0) {
-        // Incomplete: drop the announcement and the partial answers with it.
+      if (ids.size > 0 || calls.length !== answers.length) {
+        // Incomplete, or announced without ids: drop the announcement and the
+        // partial answers with it, then carry on from the same place so a
+        // following orphan is judged on its own.
         i = j - 1;
         continue;
       }
