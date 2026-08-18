@@ -30,10 +30,13 @@ fn print_models(root: &Path) -> Result<(), String> {
         let (dir, _pack, _) = model_paths(root, id);
         // Meme regle que l'app : les packs resolus (registre, settings, mono)
         // doivent exister, le GLM double-pack compte comme installe.
-        let installed = find_gguf(&dir).is_some()
-            && resolve_packs(root, id, &m)
+        // Meme regle que l'app, is_installed comprise : un modele dense n'a pas de
+        // pack et n'en aura jamais, donc exiger le sien affichait "non" a cote
+        // d'un modele dont les poids sont entierement sur le disque.
+        let pack_present = resolve_packs(root, id, &m)
                 .map(|(i, e)| i.is_file() && e.is_file())
                 .unwrap_or(false);
+        let installed = is_installed(is_dense(&m), find_gguf(&dir).is_some(), pack_present);
         println!(
             "{:<20} {:>7.0}G {:>10}  {}",
             id,
@@ -107,7 +110,12 @@ fn serve(root: &Path, model_id: &str, args: &[String]) -> Result<(), String> {
     // Un binaire llama.cpp d'origine accepte tous les drapeaux et ignore les
     // variables GALACTUS_H4_* : il servirait le modele en natif. Verifier le
     // cablage avant de lancer quoi que ce soit.
-    engine_is_wired(&bin)?;
+    // Un modele dense en est dispense : il n'affirme rien sur les experts,
+    // son statut de registre est stock_unmodified, et un binaire d'origine le
+    // sert correctement. Exiger le marqueur la refusait pour rien.
+    if !dense {
+        engine_is_wired(&bin)?;
+    }
 
     let ctx_total = ctx_slot * slots;
     let expert_total = entry["expert_bytes_total"].as_u64().unwrap_or(u64::MAX);

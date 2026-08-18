@@ -692,6 +692,21 @@ const dict: Record<string, { en: string; fr: string }> = {
     en: "Your workspace is still there but macOS is not letting Galactus read it. Open System Settings, Privacy and Security, Files and Folders, and allow Galactus. The folder is remembered and will reopen on its own.",
     fr: "Votre dossier de travail existe toujours mais macOS empêche Galactus de le lire. Ouvrez Réglages Système, Confidentialité et sécurité, Fichiers et dossiers, et autorisez Galactus. Le dossier est mémorisé et se rouvrira tout seul.",
   },
+  "fop.newFile": { en: "New file", fr: "Nouveau fichier" },
+  "fop.newFolder": { en: "New folder", fr: "Nouveau dossier" },
+  "fop.rename": { en: "Rename", fr: "Renommer" },
+  "fop.delete": { en: "Move to Trash", fr: "Mettre à la corbeille" },
+  "fop.namePrompt": { en: "Name", fr: "Nom" },
+  "fop.nameHint": {
+    en: "One name, no slashes. It is created next to what you clicked.",
+    fr: "Un seul nom, sans barre oblique. Il est créé à côté de ce que vous avez cliqué.",
+  },
+  "fop.renameHint": { en: "The new name of this entry.", fr: "Le nouveau nom de cet élément." },
+  "fop.deleteTitle": { en: "Move to Trash?", fr: "Mettre à la corbeille ?" },
+  "fop.deleteBody": {
+    en: "%s goes to the Trash. Nothing is erased: drag it back if this was a mistake.",
+    fr: "%s part à la corbeille. Rien n'est effacé : glissez-le pour le récupérer si c'était une erreur.",
+  },
   "clone.button": { en: "Clone a repository", fr: "Cloner un dépôt" },
   "clone.title": { en: "Clone a repository", fr: "Cloner un dépôt" },
   "clone.urlHint": {

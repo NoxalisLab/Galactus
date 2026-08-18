@@ -665,20 +665,38 @@ pub fn kb_folders() -> Vec<String> {
 /// Store the folder list and drop the in-memory index (a stale disk index is
 /// rejected at load time because its folder list no longer matches).
 #[tauri::command]
-pub fn kb_set_folders(folders: Vec<String>) -> Result<(), String> {
+pub async fn kb_set_folders(folders: Vec<String>) -> Result<(), String> {
     // Through the shared serialized update: settings.json has writers on three
     // threads, and a private read-modify-write here would drop their keys.
     let encoded = serde_json::to_string(&folders).map_err(|e| e.to_string())?;
     crate::settings_update(|map| {
         map.insert(SETTINGS_KEY.to_string(), encoded);
     })?;
-    *kb_state().lock().unwrap_or_else(|e| e.into_inner()) = None;
+    // Off the main thread to take the lock. A search holding it is holding it
+    // through a full index build, seconds on a large folder set, and a
+    // synchronous Tauri command waiting there freezes the window: no repaint,
+    // no scrolling, no way to cancel. The settings write above already happened,
+    // so the folder list is correct even if this drop is a moment late.
+    let _ = tauri::async_runtime::spawn_blocking(|| {
+        *kb_state().lock().unwrap_or_else(|e| e.into_inner()) = None;
+    })
+    .await;
     Ok(())
 }
 
 /// (Re)build the index from the configured folders and persist it.
 #[tauri::command]
 pub async fn kb_reindex() -> Result<KbStats, String> {
+    // On a blocking thread, like kb_search and for the same reason: build_index
+    // walks every configured folder and reads every file. Running that on the
+    // async runtime starves a worker, and this command is the one a user fires
+    // deliberately on a large vault.
+    tauri::async_runtime::spawn_blocking(kb_reindex_blocking)
+        .await
+        .map_err(|e| format!("the knowledge thread died: {e}"))?
+}
+
+fn kb_reindex_blocking() -> Result<KbStats, String> {
     let folders = indexing_folders();
     if folders.is_empty() {
         return Err("no knowledge folders configured".to_string());
@@ -695,12 +713,15 @@ pub async fn kb_reindex() -> Result<KbStats, String> {
 /// nested is absent here and its files are counted once.
 #[tauri::command]
 pub fn kb_stats() -> Option<KbStats> {
-    if let Some(index) = kb_state()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .as_ref()
-    {
-        return Some(index.stats());
+    // try_lock, never lock. This runs on the main thread, and the lock is held
+    // for the whole of an index build by whoever triggered one. Waiting for it
+    // would freeze the window for as long as that build takes, to paint a file
+    // count. When the lock is busy the persisted figures answer just as well,
+    // and they are the figures of the index that is about to be replaced.
+    if let Ok(guard) = kb_state().try_lock() {
+        if let Some(index) = guard.as_ref() {
+            return Some(index.stats());
+        }
     }
     read_persisted().map(|s| KbStats {
         files: s.files,

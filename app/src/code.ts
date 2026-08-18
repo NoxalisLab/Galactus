@@ -44,6 +44,7 @@ import { cmPhrases } from "./code/phrases";
 import { classifyRootError, resolveRestoredRoot } from "./code/restored-root";
 import { affectsPreview, chooseEntry, DEVICE_PRESETS, frameScale } from "./code/preview-pane";
 import { simpleLanguageFor } from "./code/simple-modes";
+import { dirOf, joinRel, nameOf, renameTarget, targetDir } from "./code/fileops";
 import type { SshHost } from "./api";
 import { ReviewGate, reviewInstruction } from "./code/review-gate";
 import { autoTabExtension } from "./code/auto-tab";
@@ -1175,6 +1176,133 @@ function treeRowsHtml(sub: string, depth: number): string {
     }
   }
   return out;
+}
+
+
+// ---------------------------------------------------------------- file operations
+//
+// Create, rename and move to Trash, from the tree, with the keyboard shortcuts
+// people already have in their fingers. Confinement and the trash rule live in
+// the backend (code.rs); this side is the menu and the refresh.
+
+/** Reload the folder a path sits in, and repaint. Cheap: one directory. */
+async function refreshDirOf(rel: string): Promise<void> {
+  await loadDir(dirOf(rel));
+  paintTree();
+}
+
+async function newEntry(anchor: string | null, isDir: boolean, folder: boolean): Promise<void> {
+  if (!root) return;
+  const name = (await promptModal(
+    folder ? t("fop.newFolder") : t("fop.newFile"),
+    t("fop.nameHint"),
+    folder ? t("fop.namePrompt") : "notes.md",
+  ))?.trim();
+  if (!name) return;
+  const rel = joinRel(targetDir(anchor, isDir), name);
+  try {
+    await api.codeCreate(root, rel, folder);
+  } catch (e: any) {
+    deps?.toast(String(e?.message ?? e));
+    return;
+  }
+  await refreshDirOf(rel);
+  // A new file opens; a new folder opens in the tree, where the next click is.
+  if (folder) {
+    expanded.add(rel);
+    await loadDir(rel);
+    paintTree();
+  } else {
+    await openFile(rel);
+  }
+}
+
+async function renameEntry(rel: string): Promise<void> {
+  if (!root) return;
+  const current = nameOf(rel);
+  const name = (await promptModal(t("fop.rename"), t("fop.renameHint"), current))?.trim();
+  if (!name || name === current) return;
+  const dest = renameTarget(rel, name);
+  try {
+    await api.codeRename(root, rel, dest);
+  } catch (e: any) {
+    deps?.toast(String(e?.message ?? e));
+    return;
+  }
+  // An open tab pointed at the old name: close it and reopen the new one, so
+  // the next save cannot recreate the file under the name that just went away.
+  const wasOpen = docs.list().some((d) => d.rel === rel);
+  if (wasOpen) closeTab(rel);
+  await refreshDirOf(dest);
+  if (wasOpen) await openFile(dest);
+}
+
+async function deleteEntry(rel: string): Promise<void> {
+  if (!root) return;
+  const name = nameOf(rel);
+  const ok = await confirmModal(
+    t("fop.deleteTitle"),
+    t("fop.deleteBody").replace("%s", name),
+    "",
+    t("fop.delete"),
+  );
+  if (!ok) return;
+  let where: string;
+  try {
+    where = await api.codeDelete(root, rel);
+  } catch (e: any) {
+    deps?.toast(String(e?.message ?? e));
+    return;
+  }
+  if (docs.list().some((d) => d.rel === rel)) closeTab(rel);
+  expanded.delete(rel);
+  treeCache.delete(rel);
+  await refreshDirOf(rel);
+  // Says where it went, because "moved to Trash" and "moved to .galactus/trash"
+  // are two different places to go looking for it.
+  deps?.toast(where, "ok");
+}
+
+/** The tree's context menu, at the pointer. */
+function fileMenu(x: number, y: number, rel: string | null, isDir: boolean): void {
+  document.querySelector(".fmenu")?.remove();
+  const items: Array<[string, () => void]> = [
+    [t("fop.newFile"), () => void newEntry(rel, isDir, false)],
+    [t("fop.newFolder"), () => void newEntry(rel, isDir, true)],
+  ];
+  if (rel) {
+    items.push([t("fop.rename"), () => void renameEntry(rel)]);
+    items.push([t("fop.delete"), () => void deleteEntry(rel)]);
+  }
+  const m = el(
+    `<div class="fmenu" style="left:${x}px;top:${y}px">` +
+      items.map(([label], i) => `<button class="fmi" data-i="${i}">${esc(label)}</button>`).join("") +
+      `</div>`,
+  );
+  const close = () => {
+    m.remove();
+    document.removeEventListener("mousedown", onAway, true);
+    document.removeEventListener("keydown", onKey, true);
+  };
+  const onAway = (e: MouseEvent) => {
+    if (!m.contains(e.target as Node)) close();
+  };
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === "Escape") close();
+  };
+  m.addEventListener("click", (e) => {
+    const b = (e.target as HTMLElement).closest("[data-i]") as HTMLElement | null;
+    if (!b) return;
+    close();
+    items[Number(b.dataset.i)][1]();
+  });
+  document.body.appendChild(m);
+  // Kept on screen: a menu opened near the bottom edge used to run off it.
+  const r = m.getBoundingClientRect();
+  if (r.bottom > window.innerHeight) m.style.top = `${Math.max(4, window.innerHeight - r.height - 4)}px`;
+  if (r.right > window.innerWidth) m.style.left = `${Math.max(4, window.innerWidth - r.width - 4)}px`;
+  document.addEventListener("mousedown", onAway, true);
+  document.addEventListener("keydown", onKey, true);
 }
 
 /** Six shimmering rows, so "still loading" never looks like "nothing here". */
@@ -2765,6 +2893,19 @@ export function codeView(): HTMLElement {
   };
   left.addEventListener("input", routeSearch);
   left.addEventListener("keydown", routeSearch);
+  // Right-click in the tree: on a row it acts on that entry, on the empty
+  // space below it acts on the workspace root, which is where a new file at
+  // top level comes from.
+  left.addEventListener("contextmenu", (e) => {
+    if (leftTab !== "files") return;
+    const target = e.target as HTMLElement;
+    if (!target.closest("#ctree")) return;
+    e.preventDefault();
+    const dirRow = target.closest("[data-dir]") as HTMLElement | null;
+    const fileRow = target.closest("[data-file]") as HTMLElement | null;
+    const rel = dirRow?.dataset.dir ?? fileRow?.dataset.file ?? null;
+    fileMenu(e.clientX, e.clientY, rel, !!dirRow);
+  });
   left.addEventListener("click", (e) => {
     const target = e.target as HTMLElement;
 

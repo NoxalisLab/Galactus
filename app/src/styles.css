@@ -1769,3 +1769,29 @@ html.pane-dragging .pvw-frame { pointer-events: none; }
 .row-u.queued .bub-u { opacity: .62; border: 1px dashed var(--bd2); }
 .row-u.queued .qtag { display: block; margin-top: 4px; font-size: 10.5px;
   color: var(--dim); font-style: italic; }
+
+/* Tree context menu: create, rename, move to Trash. Positioned at the pointer
+   by code.ts, which also keeps it inside the window. */
+.fmenu {
+  position: fixed;
+  z-index: 60;
+  min-width: 180px;
+  padding: 4px;
+  border: 1px solid var(--bd3);
+  border-radius: 8px;
+  background: var(--card);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+}
+.fmi {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--tx);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.fmi:hover { background: var(--bd2); }

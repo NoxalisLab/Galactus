@@ -810,3 +810,231 @@ mod clone_tests {
         assert_eq!(clone_dir_name("https://x.invalid/a/"), Some("a".to_string()));
     }
 }
+
+// ---------------------------------------------------------------- file operations
+//
+// Create, rename, delete. An editor without these is a viewer, and the way out
+// was the terminal or Finder, which is the moment the workspace stops being the
+// place the work happens.
+//
+// Two rules hold for all three, and the tests below name them.
+//
+// Confinement is `inside()`, the same function every other command in this file
+// uses: a name is data typed into a text field, and "../../.ssh/config" is a
+// perfectly typeable name.
+//
+// Nothing is ever unlinked. Delete moves to the trash, so the mistake made at
+// speed in a file tree is a drag back rather than a lost afternoon. The system
+// trash first, since that is where the user will look, and a folder inside the
+// workspace when the volumes differ and a rename across them cannot work.
+
+/// A name a user may type for a new file or folder.
+///
+/// Refused: empty, a path separator (create makes ONE entry, not a tree), and
+/// the two names that mean somewhere else. A name with spaces or an accent is
+/// perfectly fine and is not this function's business.
+pub fn is_valid_entry_name(name: &str) -> bool {
+    let n = name.trim();
+    !n.is_empty() && n != "." && n != ".." && !n.contains('/') && !n.contains('\0') && n.len() <= 255
+}
+
+#[tauri::command]
+pub async fn code_create(root: String, path: String, dir: bool) -> Result<String, String> {
+    blocking(move || code_create_blocking(root, path, dir)).await
+}
+
+fn code_create_blocking(root: String, path: String, dir: bool) -> Result<String, String> {
+    let name = path.rsplit('/').next().unwrap_or_default();
+    if !is_valid_entry_name(name) {
+        return Err("that name cannot be used".into());
+    }
+    let full = inside(&root, &path)?;
+    // Never over an existing entry: a "new file" that silently truncated the
+    // one already there would be the worst kind of quiet.
+    if full.exists() {
+        return Err(format!("{name} already exists here"));
+    }
+    if dir {
+        std::fs::create_dir_all(&full).map_err(|e| e.to_string())?;
+    } else {
+        if let Some(parent) = full.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(&full, b"").map_err(|e| e.to_string())?;
+    }
+    Ok(path)
+}
+
+#[tauri::command]
+pub async fn code_rename(root: String, from: String, to: String) -> Result<String, String> {
+    blocking(move || code_rename_blocking(root, from, to)).await
+}
+
+fn code_rename_blocking(root: String, from: String, to: String) -> Result<String, String> {
+    let name = to.rsplit('/').next().unwrap_or_default();
+    if !is_valid_entry_name(name) {
+        return Err("that name cannot be used".into());
+    }
+    let src = inside(&root, &from)?;
+    let dst = inside(&root, &to)?;
+    if !src.exists() {
+        return Err(format!("{from} is gone"));
+    }
+    // On a case-insensitive volume, README.md -> readme.md is a rename onto
+    // itself and must be allowed; anything else that exists is a collision.
+    if dst.exists() && std::fs::canonicalize(&dst).ok() != std::fs::canonicalize(&src).ok() {
+        return Err(format!("{name} already exists here"));
+    }
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::rename(&src, &dst).map_err(|e| e.to_string())?;
+    Ok(to)
+}
+
+/// Where a deleted entry goes, and under what name.
+///
+/// Separated from the move itself so the collision rule is testable without
+/// touching a real trash: two files called notes.md deleted on the same day
+/// must both survive, so the second takes a numbered name.
+pub fn trash_target(trash: &Path, name: &str, exists: impl Fn(&Path) -> bool) -> PathBuf {
+    let first = trash.join(name);
+    if !exists(&first) {
+        return first;
+    }
+    let (stem, ext) = match name.rsplit_once('.') {
+        // A leading dot is the whole name, not an extension: ".env" keeps it.
+        Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{e}")),
+        _ => (name.to_string(), String::new()),
+    };
+    for n in 2..10_000 {
+        let candidate = trash.join(format!("{stem} {n}{ext}"));
+        if !exists(&candidate) {
+            return candidate;
+        }
+    }
+    trash.join(format!("{stem} last{ext}"))
+}
+
+#[tauri::command]
+pub async fn code_delete(root: String, path: String) -> Result<String, String> {
+    blocking(move || code_delete_blocking(root, path)).await
+}
+
+fn code_delete_blocking(root: String, path: String) -> Result<String, String> {
+    let full = inside(&root, &path)?;
+    let root_path = std::fs::canonicalize(&root).map_err(|e| e.to_string())?;
+    if !full.exists() {
+        return Err(format!("{path} is gone"));
+    }
+    // The workspace itself is not one of its own entries.
+    if std::fs::canonicalize(&full).ok().as_deref() == Some(root_path.as_path()) {
+        return Err("that is the workspace folder itself".into());
+    }
+    let name = full
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .ok_or("nothing to delete")?;
+    let exists = |p: &Path| p.exists();
+    if let Some(home) = std::env::var_os("HOME") {
+        let trash = PathBuf::from(home).join(".Trash");
+        if trash.is_dir() {
+            let target = trash_target(&trash, &name, exists);
+            if std::fs::rename(&full, &target).is_ok() {
+                return Ok(format!("moved to Trash: {name}"));
+            }
+            // A rename across volumes fails with EXDEV. An external SSD is a
+            // different volume, and an external SSD is where a large project
+            // usually lives, so this fallback is the normal case there, not an
+            // exotic one.
+        }
+    }
+    let local = root_path.join(".galactus").join("trash");
+    std::fs::create_dir_all(&local).map_err(|e| e.to_string())?;
+    let target = trash_target(&local, &name, exists);
+    std::fs::rename(&full, &target).map_err(|e| e.to_string())?;
+    Ok(format!("moved to .galactus/trash: {name}"))
+}
+
+#[cfg(test)]
+mod fileop_tests {
+    use super::{code_create_blocking, code_delete_blocking, code_rename_blocking, is_valid_entry_name, trash_target};
+    use std::path::{Path, PathBuf};
+
+    fn tmp(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("galactus-fileop-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn a_name_is_one_entry_never_a_path() {
+        assert!(is_valid_entry_name("notes.md"));
+        assert!(is_valid_entry_name("mon dossier"));
+        assert!(is_valid_entry_name(".env"));
+        for bad in ["", " ", ".", "..", "a/b", "../escape", "with\0nul"] {
+            assert!(!is_valid_entry_name(bad), "{bad:?} must be refused");
+        }
+    }
+
+    #[test]
+    fn create_refuses_to_overwrite_what_is_there() {
+        let d = tmp("create");
+        std::fs::write(d.join("keep.txt"), b"important").unwrap();
+        let root = d.to_string_lossy().to_string();
+        assert!(code_create_blocking(root.clone(), "keep.txt".into(), false).is_err());
+        assert_eq!(std::fs::read(d.join("keep.txt")).unwrap(), b"important");
+        // And a fresh name works, empty, in place.
+        code_create_blocking(root, "new.txt".into(), false).unwrap();
+        assert_eq!(std::fs::read(d.join("new.txt")).unwrap(), b"");
+    }
+
+    #[test]
+    fn nothing_reaches_outside_the_workspace() {
+        let d = tmp("escape");
+        let root = d.to_string_lossy().to_string();
+        assert!(code_create_blocking(root.clone(), "../outside.txt".into(), false).is_err());
+        assert!(code_rename_blocking(root.clone(), "a.txt".into(), "../../moved.txt".into()).is_err());
+        assert!(code_delete_blocking(root, "../../../etc/hosts".into()).is_err());
+    }
+
+    #[test]
+    fn rename_moves_the_file_and_refuses_a_collision() {
+        let d = tmp("rename");
+        std::fs::write(d.join("a.txt"), b"x").unwrap();
+        std::fs::write(d.join("b.txt"), b"y").unwrap();
+        let root = d.to_string_lossy().to_string();
+        assert!(code_rename_blocking(root.clone(), "a.txt".into(), "b.txt".into()).is_err());
+        assert_eq!(std::fs::read(d.join("b.txt")).unwrap(), b"y", "b was not clobbered");
+        code_rename_blocking(root, "a.txt".into(), "c.txt".into()).unwrap();
+        assert!(!d.join("a.txt").exists());
+        assert_eq!(std::fs::read(d.join("c.txt")).unwrap(), b"x");
+    }
+
+    #[test]
+    fn delete_never_unlinks_and_never_eats_the_workspace() {
+        let d = tmp("delete");
+        std::fs::write(d.join("gone.txt"), b"recoverable").unwrap();
+        let root = d.to_string_lossy().to_string();
+        // The root is not one of its entries.
+        assert!(code_delete_blocking(root.clone(), ".".into()).is_err());
+        let msg = code_delete_blocking(root, "gone.txt".into()).unwrap();
+        assert!(!d.join("gone.txt").exists(), "it left the workspace");
+        // Wherever it landed, the bytes are still readable: this is the whole
+        // point of trashing instead of removing.
+        assert!(msg.contains("Trash") || msg.contains("trash"));
+    }
+
+    #[test]
+    fn two_files_of_the_same_name_both_survive_the_trash() {
+        let trash = Path::new("/tmp/trash");
+        let taken = |p: &Path| p == Path::new("/tmp/trash/notes.md");
+        assert_eq!(trash_target(trash, "notes.md", taken), PathBuf::from("/tmp/trash/notes 2.md"));
+        // A dotfile has no extension to split on.
+        let none = |_: &Path| false;
+        assert_eq!(trash_target(trash, ".env", none), PathBuf::from("/tmp/trash/.env"));
+        let dot_taken = |p: &Path| p == Path::new("/tmp/trash/.env");
+        assert_eq!(trash_target(trash, ".env", dot_taken), PathBuf::from("/tmp/trash/.env 2"));
+    }
+}

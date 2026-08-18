@@ -508,6 +508,12 @@ export const api = {
   codeRead: (root: string, path: string) => invoke<string>("code_read", { root, path }),
   codeWrite: (root: string, path: string, content: string) =>
     invoke<void>("code_write", { root, path, content }),
+  codeCreate: (root: string, path: string, dir: boolean) =>
+    invoke<string>("code_create", { root, path, dir }),
+  codeRename: (root: string, from: string, to: string) =>
+    invoke<string>("code_rename", { root, from, to }),
+  /** Moves to the Trash, never unlinks. Returns where it landed. */
+  codeDelete: (root: string, path: string) => invoke<string>("code_delete", { root, path }),
   gitInfo: (root: string) => invoke<GitInfo>("git_info", { root }),
   gitStatus: (root: string) => invoke<GitChange[]>("git_status", { root }),
   gitLog: (root: string, limit?: number, path?: string) =>

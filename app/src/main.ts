@@ -2244,7 +2244,7 @@ function threadLabel(th: Thread): string {
  * only performed on its own when the running model is genuinely unfit AND the
  * detection is confident; a mere "a better model exists" is always an offer.
  */
-async function autoRouteTask(text: string): Promise<void> {
+async function autoRouteTask(text: string, target: store.ThreadTarget): Promise<void> {
   const mode = getAutoMode();
   if (mode === "off") return;
 
@@ -2259,7 +2259,7 @@ async function autoRouteTask(text: string): Promise<void> {
     setCurrentTask(taskId);
     applyTaskPersona();
     const td = tasks.find((x) => x.id === taskId);
-    store.pushNotice(store.mainThread(store.current()), t("auto.switched").replace("%s", td?.label ?? taskId));
+    store.pushNotice(target, t("auto.switched").replace("%s", td?.label ?? taskId));
   }
 
   if (!plan.modelId) return;
@@ -2269,7 +2269,7 @@ async function autoRouteTask(text: string): Promise<void> {
   if (mode === "auto" && mayAutoSwap(plan)) {
     // Costly but warranted: tell the user what is happening, then reload.
     // The engine goes away, so EVERY live thread stops, not just this one.
-    store.pushNotice(store.mainThread(store.current()), t("auto.swapping").replace("%s", name));
+    store.pushNotice(target, t("auto.swapping").replace("%s", name));
     paintChat();
     stopAllThreads();
     try {
@@ -2278,7 +2278,7 @@ async function autoRouteTask(text: string): Promise<void> {
       await api.serverStart(plan.modelId, null);
       await waitServerReady(180);
     } catch (e: any) {
-      store.pushError(store.mainThread(store.current()), String(e?.message ?? e));
+      store.pushError(target, String(e?.message ?? e));
     }
     await refreshServer();
     render();
@@ -2333,7 +2333,10 @@ async function submitChat(): Promise<void> {
   input.style.height = "";
   submitting = true;
   try {
-    await autoRouteTask(text);
+    // The thread the user is writing IN, not the conversation's main thread:
+    // a message sent from a teammate's thread used to announce its model swap
+    // somewhere the user was not looking, and report its failure there too.
+    await autoRouteTask(text, active());
   } finally {
     submitting = false;
   }
@@ -4678,7 +4681,10 @@ async function exportConversation(id: string, trigger: HTMLElement): Promise<voi
         plan: Array.isArray(v.plan) ? v.plan : [],
         team: Array.isArray(v.team) ? v.team : [],
       };
-    } catch {
+    } catch (e: any) {
+      // Never silent: the button had been pressed, and returning here left the
+      // user watching a menu that did nothing.
+      toast(String(e?.message ?? e));
       return;
     }
   }
@@ -4694,6 +4700,9 @@ async function exportConversation(id: string, trigger: HTMLElement): Promise<voi
   } catch (e: any) {
     trigger.textContent = "!";
     trigger.title = String(e?.message ?? e);
+    // The mark on the row is easy to miss, and the reason is what matters: a
+    // read-only folder and a full disk fail differently.
+    toast(String(e?.message ?? e));
   }
 }
 
