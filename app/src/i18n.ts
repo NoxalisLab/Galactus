@@ -693,6 +693,10 @@ const dict: Record<string, { en: string; fr: string }> = {
     fr: "Votre dossier de travail existe toujours mais macOS empêche Galactus de le lire. Ouvrez Réglages Système, Confidentialité et sécurité, Fichiers et dossiers, et autorisez Galactus. Le dossier est mémorisé et se rouvrira tout seul.",
   },
   "code.search.regex": { en: "Regular expression", fr: "Expression régulière" },
+  "code.splitHint": {
+    en: "Move this file to the other side (Cmd+\\)",
+    fr: "Déplacer ce fichier de l'autre côté (Cmd+\\)",
+  },
   "fop.newFile": { en: "New file", fr: "Nouveau fichier" },
   "fop.newFolder": { en: "New folder", fr: "Nouveau dossier" },
   "fop.rename": { en: "Rename", fr: "Renommer" },

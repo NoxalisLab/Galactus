@@ -45,6 +45,7 @@ import { classifyRootError, resolveRestoredRoot } from "./code/restored-root";
 import { affectsPreview, chooseEntry, DEVICE_PRESETS, frameScale } from "./code/preview-pane";
 import { simpleLanguageFor } from "./code/simple-modes";
 import { dirOf, joinRel, nameOf, renameTarget, targetDir } from "./code/fileops";
+import { encodeTabs, parseTabs, TAB_RESTORE_CAP } from "./code/tabstate";
 import { lineChanges } from "./code/changebar";
 import { setChanges } from "./code/changegutter";
 import type { SshHost } from "./api";
@@ -211,7 +212,78 @@ let mid: "editor" | "patch" | "refs" = "editor";
 let patch: { title: string; sub: string; body: string } | null = null;
 let refsHtml = "";
 
+/**
+ * The focused pane's view. An alias, kept in step with `views[pane]` by
+ * `setEditor` and `focusPane`, so every existing command can keep saying
+ * `editor` and mean "the editor the user is typing in".
+ */
 let editor: EditorView | null = null;
+
+/** Set (or clear) the view of a pane, keeping the alias honest. */
+function setEditor(i: 0 | 1, v: EditorView | null): void {
+  views[i] = v;
+  if (i === pane) editor = v;
+}
+
+/** Move the focus to a pane, with everything that follows from it. */
+function focusPane(i: 0 | 1): void {
+  if (i === 1 && !splitOpen()) return;
+  if (editor) docs.capture(editor, editor.scrollSnapshot());
+  pane = i;
+  docs = registries[i];
+  editor = views[i];
+  // The active tab and the file header both belong to a pane: repaint both
+  // strips, or the other side keeps looking focused.
+  paintTabs();
+  paintFileHead();
+  paintTabs(other());
+  paintFileHead(other());
+  // And the lit edge that says which side a keystroke lands in. Moved here
+  // rather than left to the next full repaint, which may never come.
+  for (const el2 of document.querySelectorAll<HTMLElement>("#codemid [data-pane]")) {
+    el2.classList.toggle("on", Number(el2.dataset.pane) === pane);
+  }
+  scheduleChangeBar();
+}
+
+/** The pane that is not focused. */
+function other(): 0 | 1 {
+  return pane === 0 ? 1 : 0;
+}
+
+/**
+ * The registry holding a file, whichever pane that is.
+ *
+ * Everything keyed on a PATH goes through here rather than through `docs`: a
+ * proposal from the model, a review being resolved, a linter refresh. Looking
+ * only in the focused pane would silently do nothing for a file open on the
+ * other side, which is the sort of bug that reads as "the model edited it and
+ * nothing happened".
+ */
+function regOf(rel: string): Docs | null {
+  if (registries[0].has(rel)) return registries[0];
+  if (registries[1].has(rel)) return registries[1];
+  return null;
+}
+
+/** The document for a path, in either pane. */
+function docOf(rel: string): Doc | null {
+  return regOf(rel)?.get(rel) ?? null;
+}
+
+/** Every open document, both panes, in tab order. */
+function allDocs(): Doc[] {
+  return [...registries[0].list(), ...registries[1].list()];
+}
+
+/** The live view showing this file, or null when it is not on screen. */
+function viewOf(rel: string): EditorView | null {
+  for (const i of [0, 1] as const) {
+    const v = views[i];
+    if (v && registries[i].byView(v)?.rel === rel) return v;
+  }
+  return null;
+}
 const mergeComp = new Compartment();
 
 /** Files opened recently, most recent first. Feeds the palette's ranking. */
@@ -329,7 +401,23 @@ function langFor(path: string): Extension[] {
  * through here, which is what makes `docs.byView()` exact: a state built
  * anywhere else would carry no `docRel` facet and its edits would be dropped.
  */
-const docs: Docs = new Docs((rel, text, extra): EditorState =>
+/**
+ * The editor is split into at most two panes, side by side.
+ *
+ * Each pane owns a REGISTRY of its own: its tabs, its documents, its editor
+ * view. `docs` and `editor` below always point at the focused pane, which is
+ * what lets every existing command (save, close, open, the palette) keep
+ * working unchanged: they act on the pane the user is in, which is what the
+ * user means.
+ *
+ * A file is never open in both panes at once. Two views over one document need
+ * the two states kept in step on every keystroke, and getting that subtly wrong
+ * means a save writing the wrong text, which is the one failure an editor may
+ * not have. Asking for a file already open on the other side moves the focus
+ * there instead: the file the user wanted is on screen either way.
+ */
+function newRegistry(): Docs {
+  return new Docs((rel, text, extra): EditorState =>
   EditorState.create({
     doc: text,
     extensions: [
@@ -369,7 +457,20 @@ const docs: Docs = new Docs((rel, text, extra): EditorState =>
       extra,
     ],
   })
-);
+  );
+}
+
+/** The two panes. The second one exists only while it holds a tab. */
+const registries: [Docs, Docs] = [newRegistry(), newRegistry()];
+const views: [EditorView | null, EditorView | null] = [null, null];
+/** Which pane the user is in. Every command acts on this one. */
+let pane: 0 | 1 = 0;
+/** The split is open when the second pane has something in it. */
+function splitOpen(): boolean {
+  return registries[1].size > 0;
+}
+/** The focused pane's registry. Reassigned by focusPane, never by hand. */
+let docs: Docs = registries[0];
 
 export function codeRoot(): string | null {
   return root;
@@ -428,6 +529,47 @@ function closeTab(rel: string): void {
   forgetPython(rel);
   closeRustBuffer(rel);
   docs.close(rel);
+  // An empty second pane is not a pane: it closes, and the focus comes back to
+  // the left, rather than leaving half the column showing "pick a file".
+  if (registries[1].size === 0 && pane === 1) {
+    pane = 0;
+    docs = registries[0];
+    editor = views[0];
+  }
+  paintMid();
+  paintTree();
+  rememberOpenTabs();
+}
+
+/**
+ * Send the focused file to the other pane.
+ *
+ * A move, not a copy: the same file open on both sides would need two editor
+ * states kept in step on every keystroke, and a save writing the wrong text is
+ * the one failure an editor may not have.
+ */
+async function moveToOtherPane(): Promise<void> {
+  const d = docs.active();
+  if (!d || !root) return;
+  const rel = d.rel;
+  const target = other();
+  if (editor) docs.capture(editor, editor.scrollSnapshot());
+  // Anything unsaved travels with it: the buffer is re-read from disk on the
+  // other side, so an unsaved edit would be lost without this.
+  const text = d.state.doc.toString();
+  const dirty = docs.isDirty(rel);
+  const from = docs;
+  from.close(rel);
+  const to = registries[target];
+  const doc = to.open(rel, d.saved);
+  if (dirty) {
+    to.rebuild(rel, text);
+  } else {
+    void doc;
+  }
+  pane = target;
+  docs = to;
+  editor = views[target];
   paintMid();
   paintTree();
   rememberOpenTabs();
@@ -484,6 +626,17 @@ export function tabShortcut(e: KeyboardEvent): boolean {
     selectTabAt(Number(e.key));
     return true;
   }
+  // The same gesture as everywhere else: Cmd+\\ sends this file to the other
+  // side, and back again from there.
+  if (meta && e.key === "\\") {
+    void moveToOtherPane();
+    return true;
+  }
+  // Move between panes without the mouse. Only meaningful while split.
+  if (e.metaKey && e.altKey && (e.key === "ArrowLeft" || e.key === "ArrowRight") && splitOpen()) {
+    focusPane(e.key === "ArrowRight" ? 1 : 0);
+    return true;
+  }
   return false;
 }
 
@@ -494,24 +647,25 @@ export function tabShortcut(e: KeyboardEvent): boolean {
  * and restoring a stale one would be worse than starting clean.
  */
 function rememberOpenTabs(): void {
-  const rels = docs.list().map((d) => d.rel);
-  const active = docs.activeRel();
-  void deps?.saveSetting("code_tabs", JSON.stringify({ rels, active })).catch(() => undefined);
+  // Both panes, and which side was focused: reopening a split workspace as a
+  // single column would quietly undo the layout the user set up.
+  const payload = encodeTabs({
+    rels: registries[0].list().map((d) => d.rel),
+    active: registries[0].activeRel(),
+    right: registries[1].list().map((d) => d.rel),
+    rightActive: registries[1].activeRel(),
+    pane,
+  });
+  void deps?.saveSetting("code_tabs", payload).catch(() => undefined);
 }
 
 /** Reopen what was open, skipping anything that has since gone. */
 async function restoreOpenTabs(saved: string | undefined): Promise<void> {
-  if (!saved?.trim() || !root) return;
-  let parsed: { rels?: unknown; active?: unknown };
-  try {
-    parsed = JSON.parse(saved);
-  } catch {
-    return;
-  }
-  const rels = Array.isArray(parsed.rels) ? parsed.rels.filter((r): r is string => typeof r === "string") : [];
+  const state = parseTabs(saved);
+  if (!state || !root) return;
   // Bounded: a session with fifty tabs open would otherwise spend its first
   // seconds reading fifty files nobody asked for yet.
-  for (const rel of rels.slice(0, 12)) {
+  for (const rel of state.rels.slice(0, TAB_RESTORE_CAP)) {
     try {
       await openFile(rel);
     } catch {
@@ -519,11 +673,29 @@ async function restoreOpenTabs(saved: string | undefined): Promise<void> {
       // the file being gone is not an error the user needs a dialog about.
     }
   }
-  if (typeof parsed.active === "string" && docs.list().some((d) => d.rel === parsed.active)) {
-    docs.activate(parsed.active);
-    mountEditor();
-    paintEditorChrome();
+  if (state.active && registries[0].has(state.active)) registries[0].activate(state.active);
+  if (state.right.length) {
+    const back = pane;
+    pane = 1;
+    docs = registries[1];
+    for (const rel of state.right.slice(0, TAB_RESTORE_CAP)) {
+      try {
+        await openFile(rel);
+      } catch {
+        // Same as above: a file that is gone is not a dialog.
+      }
+    }
+    if (state.rightActive && registries[1].has(state.rightActive)) {
+      registries[1].activate(state.rightActive);
+    }
+    pane = back;
+    docs = registries[back];
   }
+  if (state.pane === 1 && splitOpen()) {
+    pane = 1;
+    docs = registries[1];
+  }
+  paintMid();
   paintTree();
 }
 
@@ -844,8 +1016,9 @@ export async function fileProposal(
   if (!existed) creations.add(rel);
   // A file already open, foreground OR background, enters review mode in its
   // own document; anything else is listed as pending and opens on a click.
-  if (docs.has(rel)) {
-    docs.open(rel, existed ? before : "", content);
+  const holder = regOf(rel);
+  if (holder) {
+    holder.open(rel, existed ? before : "", content);
     setReview(rel, existed ? before : "");
     applyTsBindings(rel);
     applyRustBindings(rel);
@@ -921,9 +1094,13 @@ async function setWorkspace(p: string): Promise<void> {
   // Reopening the same folder is not a switch and must not threaten anything.
   if (next !== root && !(await confirmDroppingProposals())) return;
   root = next;
-  docs.closeAll();
-  editor?.destroy();
-  editor = null;
+  // Both panes: a workspace switch leaves nothing of the old one open.
+  for (const i of [0, 1] as const) {
+    registries[i].closeAll();
+    views[i]?.destroy();
+    setEditor(i, null);
+  }
+  focusPane(0);
   proposals.clear();
   reviewGate.resolveAll("discarded");
   // Keyed on the relative path like `proposals`, so it has to go with them:
@@ -1325,7 +1502,9 @@ function onEditorUpdate(u: ViewUpdate): void {
   // itself, not on whatever happens to be active. That is the fix for the
   // corruption where an accepted hunk in one file rewrote another file's
   // "content on disk".
-  const d = docs.byView(u.view);
+  // Both registries: an update can come from either pane, and looking only in
+  // the focused one would drop every edit made in the other side's editor.
+  const d = registries[0].byView(u.view) ?? registries[1].byView(u.view);
   if (!d) return;
   d.state = u.state;
   if (u.docChanged) {
@@ -1353,7 +1532,7 @@ function onEditorUpdate(u: ViewUpdate): void {
     // that resolved the last chunk finishes applying first.
     const rel = d.rel;
     setTimeout(() => {
-      if (docs.get(rel)?.mergeBase !== null) void finishReview(rel);
+      if (docOf(rel)?.mergeBase !== null) void finishReview(rel);
     }, 0);
   }
   paintFileHead();
@@ -1366,8 +1545,9 @@ function onEditorUpdate(u: ViewUpdate): void {
  * survives the diff appearing and disappearing.
  */
 function setReview(rel: string, base: string | null): void {
-  const d = docs.get(rel);
-  if (!d) return;
+  const reg = regOf(rel);
+  const d = reg?.get(rel) ?? null;
+  if (!reg || !d) return;
   d.mergeBase = base;
   const content =
     base === null
@@ -1378,10 +1558,10 @@ function setReview(rel: string, base: string | null): void {
           gutter: true,
           collapseUnchanged: { margin: 3, minSize: 4 },
         });
-  const live = editor !== null && docs.byView(editor)?.rel === rel;
-  if (live) {
-    editor!.dispatch({ effects: mergeComp.reconfigure(content) });
-    docs.capture(editor!);
+  const liveView = viewOf(rel);
+  if (liveView) {
+    liveView.dispatch({ effects: mergeComp.reconfigure(content) });
+    reg.capture(liveView);
   } else {
     d.state = d.state.update({ effects: mergeComp.reconfigure(content) }).state;
   }
@@ -1418,10 +1598,11 @@ async function finishReview(rel: string): Promise<void> {
   const proposal = proposals.get(rel);
   proposals.delete(rel);
   setReview(rel, null);
-  await docs.settle(rel);
-  const d = docs.get(rel);
+  const reg = regOf(rel);
+  await (reg ?? docs).settle(rel);
+  const d = reg?.get(rel) ?? null;
   const finalContent = d?.state.doc.toString() ?? proposal?.before ?? "";
-  if (d) docs.setSaved(rel, finalContent);
+  if (d && reg) reg.setSaved(rel, finalContent);
   if (proposal) {
     const decision = finalContent === proposal.after
       ? "accepted"
@@ -1441,29 +1622,50 @@ async function finishReview(rel: string): Promise<void> {
  * view; a tab switch is `setState`, which is what preserves the undo history,
  * the folds, the selection and (with the snapshot below) the scroll.
  */
-function mountEditor(): void {
-  const host = document.getElementById("cmhost");
-  const d = docs.active();
+function mountEditor(which: 0 | 1 = pane): void {
+  const host = document.getElementById(`cmhost${which}`);
+  const reg = registries[which];
+  const d = reg.active();
+  let view = views[which];
   if (!host || !d || d.error !== null) {
-    editor?.destroy();
-    editor = null;
+    view?.destroy();
+    setEditor(which, null);
     return;
   }
-  if (!editor || !host.contains(editor.dom)) {
-    editor?.destroy();
-    editor = new EditorView({ state: d.state, parent: host });
-  } else if (docs.byView(editor)?.rel !== d.rel) {
-    docs.capture(editor, editor.scrollSnapshot());
-    editor.setState(d.state);
+  if (!view || !host.contains(view.dom)) {
+    view?.destroy();
+    view = new EditorView({ state: d.state, parent: host });
+    setEditor(which, view);
+    // Typing in a pane is what focuses it, the way it works everywhere else.
+    view.dom.addEventListener("focusin", () => {
+      if (pane !== which) focusPane(which);
+    });
+  } else if (reg.byView(view)?.rel !== d.rel) {
+    reg.capture(view, view.scrollSnapshot());
+    view.setState(d.state);
   }
-  if (d.scroll) editor.dispatch({ effects: d.scroll });
-  applyReveal();
-  scheduleOutline();
-  scheduleChangeBar();
+  if (d.scroll) view.dispatch({ effects: d.scroll });
+  if (which === pane) {
+    applyReveal();
+    scheduleOutline();
+    scheduleChangeBar();
+  }
 }
 
 export async function openFile(rel: string): Promise<void> {
   if (!root) return;
+  // Already open on the other side: go there rather than opening a second copy.
+  // Two editors over one document need their states kept in step on every
+  // keystroke, and a save writing the wrong text is the one failure an editor
+  // may not have. The file the user asked for is on screen either way.
+  if (!docs.has(rel) && registries[other()].has(rel)) {
+    focusPane(other());
+    docs.activate(rel);
+    mountEditor();
+    paintEditorChrome();
+    paintTree();
+    return;
+  }
   // The moment the Rust server is actually worth its cold index. Fired before
   // the read rather than after, so the server is already coming up while the
   // file loads; it is idempotent, so every later .rs open is free.
@@ -1565,7 +1767,7 @@ async function reloadOpenFromDisk(): Promise<void> {
   }
   // The view is showing a state object that no longer exists: force a remount.
   editor?.destroy();
-  editor = null;
+  setEditor(pane, null);
 }
 
 /** Keep the recency list the file palette ranks with. */
@@ -1626,9 +1828,10 @@ async function rejectAll(): Promise<void> {
   const d = docs.active();
   if (!d || d.mergeBase === null) return;
   const base = d.mergeBase;
-  if (editor && docs.byView(editor)?.rel === d.rel) {
-    editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: base } });
-    docs.capture(editor);
+  const liveView = viewOf(d.rel);
+  if (liveView) {
+    liveView.dispatch({ changes: { from: 0, to: liveView.state.doc.length, insert: base } });
+    docs.capture(liveView);
   } else {
     d.state = d.state.update({ changes: { from: 0, to: d.state.doc.length, insert: base } }).state;
   }
@@ -1640,18 +1843,20 @@ async function discardProposal(rel: string): Promise<void> {
   proposals.delete(rel);
   creations.delete(rel);
   reviewGate.resolve(rel, "rejected");
-  const d = docs.get(rel);
-  if (d && d.mergeBase !== null) {
+  const reg = regOf(rel);
+  const d = reg?.get(rel) ?? null;
+  if (reg && d && d.mergeBase !== null) {
     const base = d.mergeBase;
-    if (editor && docs.byView(editor)?.rel === rel) {
-      editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: base } });
-      docs.capture(editor);
+    const v = viewOf(rel);
+    if (v) {
+      v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: base } });
+      reg.capture(v);
     } else {
       d.state = d.state.update({ changes: { from: 0, to: d.state.doc.length, insert: base } }).state;
     }
     setReview(rel, null);
-    docs.setSaved(rel, base);
-    if (docs.activeRel() === rel) paintMid();
+    reg.setSaved(rel, base);
+    if (reg.activeRel() === rel) paintMid();
   }
   paintPending();
   paintTree();
@@ -1994,7 +2199,7 @@ const tsDeps: TsBindings.TsBindingDeps = {
  */
 function applyTsBindings(rel?: string): void {
   if (!tsbind) return;
-  const targets = rel ? [docs.get(rel)].filter((d): d is Doc => d !== null) : docs.list();
+  const targets = rel ? [docOf(rel)].filter((d): d is Doc => d !== null) : allDocs();
   for (const d of targets) {
     if (!/\.(m|c)?[jt]sx?$/i.test(d.rel)) continue;
     const support = langFor(d.rel);
@@ -2003,9 +2208,10 @@ function applyTsBindings(rel?: string): void {
     // module-level Language singletons, so attaching the completion source to
     // `support.language` reaches the very grammar this document is parsed by.
     const ext = tsbind.tsIntelExtensions(support[0] as never, tsDeps);
-    if (editor && docs.byView(editor)?.rel === d.rel) {
-      editor.dispatch({ effects: intelComp.reconfigure(ext) });
-      docs.capture(editor);
+    const v = viewOf(d.rel);
+    if (v) {
+      v.dispatch({ effects: intelComp.reconfigure(ext) });
+      regOf(d.rel)?.capture(v);
     } else {
       d.state = d.state.update({ effects: intelComp.reconfigure(ext) }).state;
     }
@@ -2022,15 +2228,16 @@ function applyTsBindings(rel?: string): void {
  * four members, and two objects saying the same thing is how they drift.
  */
 function applyRustBindings(rel?: string): void {
-  const targets = rel ? [docs.get(rel)].filter((d): d is Doc => d !== null) : docs.list();
+  const targets = rel ? [docOf(rel)].filter((d): d is Doc => d !== null) : allDocs();
   for (const d of targets) {
     if (!isRust(d.rel)) continue;
     const support = langFor(d.rel);
     if (!support.length) continue;
     const ext = rustIntelExtensions(support[0] as never, tsDeps);
-    if (editor && docs.byView(editor)?.rel === d.rel) {
-      editor.dispatch({ effects: intelComp.reconfigure(ext) });
-      docs.capture(editor);
+    const v = viewOf(d.rel);
+    if (v) {
+      v.dispatch({ effects: intelComp.reconfigure(ext) });
+      regOf(d.rel)?.capture(v);
     } else {
       d.state = d.state.update({ effects: intelComp.reconfigure(ext) }).state;
     }
@@ -2615,17 +2822,22 @@ function branchesHtml(): string {
   );
 }
 
-let lastTabsHtml = "";
+const lastTabsHtml: [string, string] = ["", ""];
 
-function paintTabs(): void {
-  const host = document.getElementById("ctabshost");
-  if (!host) return;
-  lastTabsHtml = tabsHtml(docs.list(), docs.activeRel(), new Set(proposals.keys()), {
+function tabsFor(which: 0 | 1): string {
+  const reg = registries[which];
+  return tabsHtml(reg.list(), reg.activeRel(), new Set(proposals.keys()), {
     close: t("code.tabClose"),
     unsaved: t("code.unsaved"),
     proposed: t("code.reviewing"),
   });
-  host.innerHTML = lastTabsHtml;
+}
+
+function paintTabs(which: 0 | 1 = pane): void {
+  const host = document.getElementById(`ctabshost${which}`);
+  if (!host) return;
+  lastTabsHtml[which] = tabsFor(which);
+  host.innerHTML = lastTabsHtml[which];
 }
 
 /**
@@ -2633,23 +2845,19 @@ function paintTabs(): void {
  * bar the pointer may be hovering, sixty times a second, is not: only a real
  * change (the dirty dot appearing, a proposal landing) redraws it.
  */
-function paintTabsIfChanged(): void {
-  const host = document.getElementById("ctabshost");
+function paintTabsIfChanged(which: 0 | 1 = pane): void {
+  const host = document.getElementById(`ctabshost${which}`);
   if (!host) return;
-  const next = tabsHtml(docs.list(), docs.activeRel(), new Set(proposals.keys()), {
-    close: t("code.tabClose"),
-    unsaved: t("code.unsaved"),
-    proposed: t("code.reviewing"),
-  });
-  if (next === lastTabsHtml) return;
-  lastTabsHtml = next;
+  const next = tabsFor(which);
+  if (next === lastTabsHtml[which]) return;
+  lastTabsHtml[which] = next;
   host.innerHTML = next;
 }
 
-function paintFileHead(): void {
-  const box = document.getElementById("cfilehead");
+function paintFileHead(which: 0 | 1 = pane): void {
+  const box = document.getElementById(`cfilehead${which}`);
   if (!box) return;
-  box.innerHTML = fileHeadHtml();
+  box.innerHTML = fileHeadHtml(which);
 }
 
 /**
@@ -2669,11 +2877,17 @@ function rustBadgeHtml(rel: string): string {
   return `<span class="fbadge rustlsp" title="${esc(text)}">${esc(text)}</span>`;
 }
 
-function fileHeadHtml(): string {
-  const d = docs.active();
+function fileHeadHtml(which: 0 | 1 = pane): string {
+  const reg = registries[which];
+  const d = reg.active();
   if (!d) return "";
   const pending = d.mergeBase !== null;
-  const dirty = !pending && docs.isDirty(d.rel);
+  const dirty = !pending && reg.isDirty(d.rel);
+  // The split button sends this file to the other side; on the pane that IS the
+  // other side it closes the split by sending the file back.
+  const splitBtn = `<button class="bs fsplit" data-split="${which}" title="${esc(t("code.splitHint"))}">${
+    which === 0 ? "⫿⫿" : "⇤"
+  }</button>`;
   return (
     `<span class="fp mono" title="${esc(d.rel)}">${LRM}${esc(d.rel)}</span>` +
     tierBadgeHtml(tierFor(d.rel, tsActive(), rustReady())) +
@@ -2686,6 +2900,7 @@ function fileHeadHtml(): string {
     (pending ? `<span class="fbadge">${esc(t("code.reviewing"))}</span>` : "") +
     (dirty ? `<span class="fbadge dirty">${esc(t("code.unsaved"))}</span>` : "") +
     `<span class="grow"></span>` +
+    splitBtn +
     (pending
       ? `<button class="bs" id="frejall">${esc(t("code.rejectAll"))}</button><button class="bp" id="faccall">${esc(t("code.acceptAll"))}</button>`
       : `<button class="bs" id="fsave" ${dirty ? "" : "disabled"}>${esc(t("code.save"))}</button>`)
@@ -2695,9 +2910,14 @@ function fileHeadHtml(): string {
 function paintMid(): void {
   const box = document.getElementById("codemid");
   if (!box) return;
-  if (editor) docs.capture(editor, editor.scrollSnapshot());
-  editor?.destroy();
-  editor = null;
+  // Both views: the whole column is about to be replaced, and a view left
+  // pointing at removed DOM is a view that stops taking keystrokes.
+  for (const i of [0, 1] as const) {
+    const v = views[i];
+    if (v) registries[i].capture(v, v.scrollSnapshot());
+    v?.destroy();
+    setEditor(i, null);
+  }
   box.innerHTML = "";
 
   if (mid === "patch" && patch) {
@@ -2725,36 +2945,48 @@ function paintMid(): void {
     return;
   }
 
+  // One pane, or two side by side. Each one carries its own tab strip, file
+  // header and editor host, which is what lets them be painted independently.
+  const panes: Array<0 | 1> = splitOpen() ? [0, 1] : [0];
+  box.classList.toggle("split", panes.length > 1);
+  for (const which of panes) {
+    box.appendChild(paneEl(which));
+  }
+  for (const which of panes) {
+    paintTabs(which);
+    mountEditor(which);
+  }
+}
+
+/** One pane's chrome: tabs, header, and the editor host or an empty state. */
+function paneEl(which: 0 | 1): HTMLElement {
+  const wrap = el(`<div class="cpane${which === pane ? " on" : ""}" data-pane="${which}"></div>`);
   // The tab strip lives above the file header and survives every repaint of
   // the pane below it.
-  box.appendChild(el(`<div id="ctabshost"></div>`));
-
-  const d = docs.active();
+  wrap.appendChild(el(`<div id="ctabshost${which}"></div>`));
+  const d = registries[which].active();
   if (!d) {
-    box.appendChild(
+    wrap.appendChild(
       el(`<div class="cempty-wrap"><div class="empty-block">
         <span class="big">⌘</span>
         <b>${esc(t("code.pickFileTitle"))}</b>
         <span>${esc(t("code.pickFile"))}</span>
       </div></div>`)
     );
-    paintTabs();
-    return;
+    return wrap;
   }
-  box.appendChild(el(`<div class="cfilehead" id="cfilehead">${fileHeadHtml()}</div>`));
+  wrap.appendChild(el(`<div class="cfilehead" id="cfilehead${which}">${fileHeadHtml(which)}</div>`));
   if (d.error) {
-    box.appendChild(
+    wrap.appendChild(
       el(`<div class="cerror"><b>${esc(t("code.cannotOpen"))}</b><span class="mono">${esc(d.error)}</span></div>`)
     );
-    paintTabs();
-    return;
+    return wrap;
   }
   if (d.mergeBase !== null) {
-    box.appendChild(el(`<div class="creviewbar">${esc(t("code.reviewHint"))}</div>`));
+    wrap.appendChild(el(`<div class="creviewbar">${esc(t("code.reviewHint"))}</div>`));
   }
-  box.appendChild(el(`<div class="cmhost" id="cmhost"></div>`));
-  paintTabs();
-  mountEditor();
+  wrap.appendChild(el(`<div class="cmhost" id="cmhost${which}"></div>`));
+  return wrap;
 }
 
 /**
@@ -3088,15 +3320,16 @@ export function codeView(): HTMLElement {
   // Middle column: the tab strip, then the file header's own buttons.
   const midBox = wrap.querySelector<HTMLElement>("#codemid")!;
   midBox.addEventListener("click", (e) => {
+    // Which pane was clicked, before anything else: a click on the other side's
+    // tab must act on the other side, not on the pane that happened to be
+    // focused a moment ago.
+    const paneEl = (e.target as HTMLElement).closest("[data-pane]") as HTMLElement | null;
+    const clicked = (paneEl ? Number(paneEl.dataset.pane) : pane) as 0 | 1;
+    if (clicked !== pane) focusPane(clicked);
     const tab = onTabsClick(e as MouseEvent);
     if (tab) {
       if (tab.action === "close") {
-        if (editor) docs.capture(editor, editor.scrollSnapshot());
-        forgetPython(tab.rel);
-        closeRustBuffer(tab.rel);
-        docs.close(tab.rel);
-        paintMid();
-        paintTree();
+        closeTab(tab.rel);
       } else if (tab.rel !== docs.activeRel()) {
         docs.activate(tab.rel);
         mountEditor();
@@ -3107,6 +3340,10 @@ export function codeView(): HTMLElement {
     }
     const b = (e.target as HTMLElement).closest("button") as HTMLButtonElement | null;
     if (!b || b.disabled) return;
+    if (b.dataset.split !== undefined) {
+      void moveToOtherPane();
+      return;
+    }
     if (b.id === "fsave") void saveOpenFile();
     else if (b.id === "faccall") void acceptAll();
     else if (b.id === "frejall") void rejectAll();
@@ -3235,7 +3472,8 @@ registerRustLsp({
   // again. `forceLinting` is the only way to ask CodeMirror to re-run a
   // debounced linter out of band.
   refresh: (rel) => {
-    if (editor && docs.byView(editor)?.rel === rel) forceLinting(editor);
+    const v = viewOf(rel);
+    if (v) forceLinting(v);
   },
 });
 registerTreeDiagnostics((id, src) =>
