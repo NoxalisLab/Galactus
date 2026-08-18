@@ -1770,6 +1770,95 @@ fn read_tool_verdict(body: &str) -> Option<bool> {
 }
 
 #[cfg(test)]
+mod preview_serving_tests {
+    use super::{percent_decode, preview_file_for, preview_mime, preview_set_root};
+    use std::path::{Path, PathBuf};
+
+    fn scratch(name: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!("galactus-preview-{name}"));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(p.join("sub")).unwrap();
+        std::fs::write(p.join("index.html"), b"<h1>hi</h1>").unwrap();
+        std::fs::write(p.join("styles.css"), b"body{}").unwrap();
+        std::fs::write(p.join("sub/deep.js"), b"//").unwrap();
+        p
+    }
+
+    #[test]
+    fn a_bare_path_is_the_index() {
+        let dir = scratch("index");
+        preview_set_root(Some(dir.display().to_string())).unwrap();
+        assert!(preview_file_for("/").unwrap().ends_with("index.html"));
+        assert!(preview_file_for("").unwrap().ends_with("index.html"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sub_resources_resolve_inside_the_folder() {
+        // The reason this exists at all: a site is index.html PLUS the files it
+        // asks for. The published-document path answers one document and would
+        // have served the HTML again for styles.css.
+        let dir = scratch("sub");
+        preview_set_root(Some(dir.display().to_string())).unwrap();
+        assert!(preview_file_for("/styles.css").unwrap().ends_with("styles.css"));
+        assert!(preview_file_for("/sub/deep.js").unwrap().ends_with("deep.js"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn nothing_outside_the_folder_is_served() {
+        // The containment IS the security. Canonicalising first is what makes it
+        // hold: "..", an absolute path and a symlink out of the tree all look
+        // innocent until the filesystem has resolved them.
+        let dir = scratch("escape");
+        preview_set_root(Some(dir.display().to_string())).unwrap();
+        for path in ["/../../../etc/hosts", "/etc/passwd", "/sub/../../../../etc/hosts"] {
+            assert!(preview_file_for(path).is_none(), "{path} must not be served");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_symlink_pointing_out_is_refused() {
+        let dir = scratch("symlink");
+        #[cfg(unix)]
+        {
+            let _ = std::os::unix::fs::symlink("/etc/hosts", dir.join("out.txt"));
+            preview_set_root(Some(dir.display().to_string())).unwrap();
+            assert!(preview_file_for("/out.txt").is_none(), "a link out of the tree is out");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn nothing_is_served_when_no_folder_is_set() {
+        preview_set_root(None).unwrap();
+        assert!(preview_file_for("/index.html").is_none());
+    }
+
+    #[test]
+    fn a_space_in_a_name_survives_the_url() {
+        let dir = scratch("space");
+        std::fs::write(dir.join("my file.css"), b"body{}").unwrap();
+        preview_set_root(Some(dir.display().to_string())).unwrap();
+        assert!(preview_file_for("/my%20file.css").is_some(), "a browser escapes the space");
+        assert_eq!(percent_decode("a%20b%2Fc"), "a b/c");
+        assert_eq!(percent_decode("plain"), "plain", "and leaves the rest alone");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unknown_extension_is_not_guessed_at() {
+        // Serving an unknown binary as text/html is how a download becomes a
+        // page the webview tries to render.
+        assert_eq!(preview_mime(Path::new("a.html")), "text/html; charset=utf-8");
+        assert_eq!(preview_mime(Path::new("a.woff2")), "font/woff2");
+        assert_eq!(preview_mime(Path::new("a.zzz")), "application/octet-stream");
+        assert_eq!(preview_mime(Path::new("noext")), "application/octet-stream");
+    }
+}
+
+#[cfg(test)]
 mod folder_chooser_tests {
     use super::classify_chooser_failure;
 
@@ -7347,6 +7436,102 @@ fn preview_slot() -> &'static Mutex<(u64, String)> {
     SLOT.get_or_init(|| Mutex::new((0, String::new())))
 }
 
+/// The folder the preview serves files from, when it is serving a site.
+///
+/// Distinct from the published-HTML slot above, which answers one document with
+/// no sub-resources. A site is a folder: index.html asks for styles.css, which
+/// asks for a font, and every one of those has to resolve to a real file inside
+/// one directory and nowhere else.
+fn preview_root_slot() -> &'static Mutex<Option<PathBuf>> {
+    static ROOT: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+    ROOT.get_or_init(|| Mutex::new(None))
+}
+
+/// Point the preview at a folder, or at nothing.
+#[tauri::command]
+fn preview_set_root(root: Option<String>) -> Result<(), String> {
+    let resolved = match root.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(p) => Some(std::fs::canonicalize(p).map_err(|e| format!("{p}: {e}"))?),
+        None => None,
+    };
+    *preview_root_slot().lock().unwrap_or_else(|e| e.into_inner()) = resolved;
+    Ok(())
+}
+
+/// Resolve one request path inside the preview root, or refuse.
+///
+/// The containment check is the whole of the security here, and it is the same
+/// shape as `inside()` in code.rs: canonicalise, then require the result to
+/// start with the root. Canonicalising is what makes it hold, because "..",
+/// a symlink out of the tree and an absolute path all become visible only after
+/// the filesystem has resolved them.
+fn preview_file_for(path: &str) -> Option<PathBuf> {
+    let root = preview_root_slot().lock().unwrap_or_else(|e| e.into_inner()).clone()?;
+    let rel = path.trim_start_matches('/');
+    let rel = if rel.is_empty() { "index.html" } else { rel };
+    // Percent-decoding, for the space in "my file.css". Only the escape itself:
+    // anything else is left alone and will simply fail to open.
+    let decoded = percent_decode(rel);
+    let candidate = std::fs::canonicalize(root.join(&decoded)).ok()?;
+    if !candidate.starts_with(&root) {
+        return None;
+    }
+    candidate.is_file().then_some(candidate)
+}
+
+/// Minimal percent-decoding for a request path.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok();
+            if let Some(v) = hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The content type for a file the preview serves.
+///
+/// A table rather than a crate. It is twenty lines, it covers what a static
+/// site is made of, and an unknown extension is served as an opaque stream
+/// rather than guessed at, because a wrong text/html on a binary is worse than
+/// a download.
+fn preview_mime(path: &Path) -> &'static str {
+    match path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase().as_str() {
+        "html" | "htm" => "text/html; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "js" | "mjs" => "text/javascript; charset=utf-8",
+        "json" | "map" => "application/json; charset=utf-8",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "avif" => "image/avif",
+        "ico" => "image/x-icon",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        "ttf" => "font/ttf",
+        "otf" => "font/otf",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "wasm" => "application/wasm",
+        "txt" | "md" => "text/plain; charset=utf-8",
+        _ => "application/octet-stream",
+    }
+}
+
 /// Publish HTML for the preview frame and return the URL to point it at. The
 /// id changes on every call so the webview reloads instead of serving a
 /// cached document; only the latest page is kept.
@@ -7512,7 +7697,59 @@ fn with_updates<R: tauri::Runtime>(b: tauri::Builder<R>) -> tauri::Builder<R> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     with_updates(tauri::Builder::default())
-        .register_uri_scheme_protocol("gxpreview", |_app, _request| {
+        .register_uri_scheme_protocol("gxpreview", |_app, request| {
+            // TWO things answer on this scheme, and they are not the same shape.
+            //
+            // /p/<n> is the Chat preview: one self-contained document with no
+            // sub-resources, published by preview_publish. Sealed as tightly as
+            // it has always been.
+            //
+            // Anything else is the Code preview: a folder on disk, where
+            // index.html asks for styles.css which asks for a font. Those files
+            // have to resolve, so this branch serves them, and its policy has to
+            // allow the document to load them. It still cannot reach the network:
+            // every source below is the preview scheme itself.
+            let path = request.uri().path().to_string();
+            if !path.starts_with("/p/") {
+                let Some(file) = preview_file_for(&path) else {
+                    return tauri::http::Response::builder()
+                        .status(404)
+                        .header("Content-Type", "text/plain; charset=utf-8")
+                        .body(b"not found in the preview folder".to_vec())
+                        .unwrap_or_else(|_| {
+                            tauri::http::Response::builder().status(500).body(Vec::new()).unwrap()
+                        });
+                };
+                let mime = preview_mime(&file);
+                let body = std::fs::read(&file).unwrap_or_default();
+                let mut builder = tauri::http::Response::builder()
+                    .status(200)
+                    .header("Content-Type", mime)
+                    .header("Cache-Control", "no-store");
+                if mime.starts_with("text/html") {
+                    // 'self' here means this scheme and this scheme only, which
+                    // is the preview folder. The seal that matters is unchanged:
+                    // no http, no https, so a page the model wrote cannot carry
+                    // anything out, and a CDN it references simply does not load.
+                    builder = builder.header(
+                        "Content-Security-Policy",
+                        "default-src 'none'; \
+                         img-src 'self' data: blob:; \
+                         style-src 'self' 'unsafe-inline' data:; \
+                         script-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; \
+                         font-src 'self' data:; \
+                         media-src 'self' data: blob:; \
+                         connect-src 'self'; \
+                         form-action 'none'; \
+                         base-uri 'none'; \
+                         frame-src 'self'; \
+                         frame-ancestors 'self'",
+                    );
+                }
+                return builder.body(body).unwrap_or_else(|_| {
+                    tauri::http::Response::builder().status(500).body(Vec::new()).unwrap()
+                });
+            }
             let html = preview_slot()
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -7712,7 +7949,8 @@ pub fn run() {
             scheduler::jobs_report,
             scheduler::jobs_preview,
             tray_set,
-            preview_publish
+            preview_publish,
+            preview_set_root
         ])
         .build(tauri::generate_context!())
         .expect("error while running Galactus")

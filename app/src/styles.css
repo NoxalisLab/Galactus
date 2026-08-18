@@ -1735,3 +1735,30 @@ html.pane-dragging .pvw-frame { pointer-events: none; }
 .samp small { font-size: 10.5px; color: var(--dim); font-family: var(--mono); }
 .samp input { width: 72px; background: var(--inset); border: 1px solid var(--bd2); border-radius: 0;
   padding: 6px 8px; color: var(--tx); font-size: 12.5px; font-family: var(--mono); }
+
+/* The preview pane sits BESIDE the editor, never inside it. paintMid empties
+   #codemid on every repaint, and an iframe rebuilt on every repaint loses the
+   scroll position and the running state of the page it is showing. The terminal
+   lives outside for the same reason. */
+.codemidrow { flex: 1; min-height: 0; display: flex; }
+.codemidrow > .codemid { flex: 1; min-width: 0; }
+.codeprev { flex: none; width: clamp(320px, 34vw, 760px); min-width: 0; display: none;
+  flex-direction: column; border-left: 1px solid var(--bd); background: var(--bg); }
+.codemidwrap.showprev .codeprev { display: flex; }
+.codemidwrap.showprev .code-prev-splitter { display: block; }
+.code-prev-splitter { display: none; }
+.codeprev-head { display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+  border-bottom: 1px solid var(--bd); font-size: 11.5px; color: var(--dim); flex: none; }
+.codeprev-head .nm { font-family: var(--mono); color: var(--tx); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.codeprev-head .sp { margin-left: auto; }
+.codeprev-note { padding: 4px 8px; font-size: 11px; color: var(--warn);
+  border-bottom: 1px solid var(--bd); flex: none; }
+/* The stage is the grey around a device frame. Fill mode has no frame, so the
+   iframe simply takes the whole stage. */
+.codeprev-stage { flex: 1; min-height: 0; overflow: auto; display: flex;
+  align-items: flex-start; justify-content: center; background: var(--inset); }
+.codeprev-stage iframe { border: 0; background: #fff; display: block; }
+.codeprev-stage.framed iframe { box-shadow: 0 8px 40px rgba(0,0,0,.55); }
+.codeprev-empty { margin: auto; padding: 24px; font-size: 12px; color: var(--dim);
+  text-align: center; line-height: 1.6; }

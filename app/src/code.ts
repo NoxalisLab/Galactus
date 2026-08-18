@@ -42,6 +42,7 @@ import { editorExtensions, intelComp } from "./code/extensions";
 import { tabsHtml, onTabsClick } from "./code/tabs";
 import { cmPhrases } from "./code/phrases";
 import { classifyRootError, resolveRestoredRoot } from "./code/restored-root";
+import { affectsPreview, chooseEntry, DEVICE_PRESETS, frameScale } from "./code/preview-pane";
 import { ReviewGate, reviewInstruction } from "./code/review-gate";
 import { autoTabExtension } from "./code/auto-tab";
 import { inlineEditExtension } from "./code/inline-edit";
@@ -399,6 +400,167 @@ export async function initCodeRoot(saved: string | undefined): Promise<void> {
   await startWorkspaceServices();
 }
 
+
+// ---------------------------------------------------------------- preview
+
+/**
+ * The preview pane's state, kept at module level for the same reason the
+ * terminal's is: render() in main.ts rebuilds this whole view on every
+ * navigation, and an iframe rebuilt with it would lose the scroll position and
+ * the running state of the page it shows. The element is re-parented instead.
+ */
+let prevOpen = false;
+let prevHost: HTMLElement | null = null;
+let prevFrame: HTMLIFrameElement | null = null;
+let prevEntry: string | null = null;
+let prevDevice = DEVICE_PRESETS[0];
+let prevGen = 0;
+let prevTimer: ReturnType<typeof setTimeout> | null = null;
+
+function togglePreview(wrap: HTMLElement): void {
+  prevOpen = !prevOpen;
+  mountPreview(wrap);
+}
+
+/** The workspace changed: the page previewed a moment ago no longer exists. */
+function disposePreview(): void {
+  prevOpen = false;
+  prevHost = null;
+  prevFrame = null;
+  prevEntry = null;
+  if (prevTimer) { clearTimeout(prevTimer); prevTimer = null; }
+  void api.previewSetRoot(null).catch(() => undefined);
+}
+
+/**
+ * Put the preview into THIS instance of the Code view.
+ *
+ * Mirror of mountTerminal, including the part that matters: the host element is
+ * built once and moved, never rebuilt, so the page inside keeps its scroll and
+ * its state across every repaint of the editor beside it.
+ */
+function mountPreview(wrap: HTMLElement): void {
+  const box = wrap.querySelector<HTMLElement>("#codeprev");
+  const midwrap = wrap.querySelector<HTMLElement>("#codemidwrap");
+  if (!box || !midwrap) return;
+  midwrap.classList.toggle("showprev", prevOpen);
+  if (!prevOpen || !root) return;
+  if (!prevHost) {
+    prevHost = el(`<div class="codeprev-inner" style="display:flex;flex-direction:column;flex:1;min-height:0"></div>`);
+  }
+  if (prevHost.parentElement !== box) {
+    box.innerHTML = "";
+    box.appendChild(prevHost);
+  }
+  void api.previewSetRoot(root).catch(() => undefined);
+  paintPreview();
+}
+
+/** Choose what to show, then draw the pane around it. */
+function paintPreview(): void {
+  if (!prevHost || !prevOpen) return;
+  const top = (treeCache.get("") ?? []).filter((e) => !e.dir).map((e) => e.name);
+  const entry = chooseEntry(docs.activeRel(), top);
+  const changed = entry !== prevEntry;
+  prevEntry = entry;
+
+  const pending = proposals.size;
+  const head = `<div class="codeprev-head">
+      <span class="nm">${esc(entry ?? "")}</span>
+      <span class="sp"></span>
+      ${DEVICE_PRESETS.map((d) =>
+        `<button class="bs" data-dev="${d.id}"${d.id === prevDevice.id ? ' style="border-color:var(--acc)"' : ""}>${esc(d.label)}</button>`,
+      ).join("")}
+      <button class="bs" data-prev-reload>${esc(t("prev.reload"))}</button>
+    </div>
+    ${pending > 0 ? `<div class="codeprev-note">${esc(t("prev.pending").replace("%n", String(pending)))}</div>` : ""}
+    <div class="codeprev-note" style="color:var(--dim)">${esc(t("prev.sealed"))}</div>`;
+
+  if (!entry) {
+    prevHost.innerHTML = `${head}<div class="codeprev-stage"><div class="codeprev-empty">${esc(t("prev.nothing"))}</div></div>`;
+    prevFrame = null;
+    wirePreviewHead();
+    return;
+  }
+  if (changed || !prevFrame) {
+    prevHost.innerHTML = `${head}<div class="codeprev-stage"></div>`;
+    const stage = prevHost.querySelector<HTMLElement>(".codeprev-stage")!;
+    prevFrame = el(
+      // No allow-same-origin: the page lives in an opaque origin with no access
+      // to the app and no IPC. Same isolation the Chat preview uses.
+      `<iframe sandbox="allow-scripts allow-forms" title="preview"></iframe>`,
+    ) as HTMLIFrameElement;
+    stage.appendChild(prevFrame);
+    reloadPreview();
+  } else {
+    // Only the header changed: replace it without touching the frame, or the
+    // page loses its scroll every time a proposal count moves.
+    const old = prevHost.querySelector(".codeprev-head");
+    const notes = prevHost.querySelectorAll(".codeprev-note");
+    notes.forEach((n) => n.remove());
+    if (old) old.outerHTML = head;
+  }
+  wirePreviewHead();
+  sizePreviewFrame();
+}
+
+function wirePreviewHead(): void {
+  prevHost?.querySelectorAll<HTMLElement>("[data-dev]").forEach((b) => {
+    b.addEventListener("click", () => {
+      prevDevice = DEVICE_PRESETS.find((d) => d.id === b.dataset.dev) ?? DEVICE_PRESETS[0];
+      paintPreview();
+    });
+  });
+  prevHost?.querySelector("[data-prev-reload]")?.addEventListener("click", () => reloadPreview());
+}
+
+/**
+ * Apply the device frame.
+ *
+ * The iframe keeps the device's CSS pixels and is SCALED, never resized: a
+ * media query must answer for the phone, not for the pane it is drawn in.
+ */
+function sizePreviewFrame(): void {
+  if (!prevFrame || !prevHost) return;
+  const stage = prevHost.querySelector<HTMLElement>(".codeprev-stage");
+  if (!stage) return;
+  const d = prevDevice;
+  if (d.width === null) {
+    stage.classList.remove("framed");
+    prevFrame.style.cssText = "width:100%;height:100%;transform:none";
+    return;
+  }
+  stage.classList.add("framed");
+  const k = frameScale(d.width, stage.clientWidth || d.width);
+  prevFrame.style.cssText =
+    `width:${d.width}px;height:${d.height}px;transform:scale(${k});` +
+    `transform-origin:top center;margin:12px 0`;
+}
+
+/** Point the frame at the entry again, with a fresh id so nothing is cached. */
+function reloadPreview(): void {
+  if (!prevFrame || !prevEntry) return;
+  prevGen += 1;
+  prevFrame.src = `gxpreview://localhost/${prevEntry}?v=${prevGen}`;
+}
+
+/**
+ * A file just reached the disk.
+ *
+ * Debounced, because accepting a multi-file change writes N files in a burst
+ * and N reloads would be N thrown-away scroll positions for one edit. Filtered,
+ * because a README changing is not a reason to reload a page at all.
+ */
+function notifyPreviewWrite(rel: string): void {
+  if (!prevOpen || !affectsPreview(rel)) return;
+  if (prevTimer) clearTimeout(prevTimer);
+  prevTimer = setTimeout(() => {
+    prevTimer = null;
+    paintPreview();
+    reloadPreview();
+  }, 250);
+}
+
 // ---------------------------------------------------------------- proposals
 
 /**
@@ -535,6 +697,7 @@ async function setWorkspace(p: string): Promise<void> {
   // Same for the shells: their cwd is a folder the user just left, and a
   // terminal sitting in a directory the file tree no longer shows is a trap.
   disposeTerminal();
+  disposePreview();
   await deps?.saveSetting("code_root", root);
   // Everything from here is DECORATION on a switch that has already happened:
   // the folder is chosen and written to the settings. These three were awaited
@@ -852,6 +1015,7 @@ function writeAccepted(rel: string, content: string): void {
   void docs
     .queueWrite(rel, async () => {
       await api.codeWrite(root!, rel, content);
+      notifyPreviewWrite(rel);
       docs.setSaved(rel, content);
       if (creations.delete(rel)) indexStale = true;
       await refreshGit();
@@ -1037,6 +1201,7 @@ async function saveOpenFile(): Promise<void> {
   const content = d.state.doc.toString();
   try {
     await api.codeWrite(root, d.rel, content);
+    notifyPreviewWrite(d.rel);
     docs.setSaved(d.rel, content);
     if (creations.delete(d.rel)) indexStale = true;
     await refreshGit();
@@ -1057,6 +1222,7 @@ async function acceptAll(): Promise<void> {
   const content = d.state.doc.toString();
   try {
     await api.codeWrite(root, d.rel, content);
+    notifyPreviewWrite(d.rel);
   } catch (e: any) {
     deps?.toast(t("code.saveFail").replace("%s", String(e?.message ?? e)));
     return;
@@ -1811,6 +1977,7 @@ function headHtml(): string {
     branch +
     netButtons +
     `<button class="bs" id="cpick">${esc(t("code.change"))}</button>` +
+    `<button class="bs" id="cprevt">${esc(t("prev.toggle"))}</button>` +
     `<button class="bs" id="ctermt">${esc(t("term.toggle"))}</button>` +
     `<button class="iconbtn cagentt" id="cagentt" title="${esc(t("code.agentPane"))}">☰</button>`
   );
@@ -2241,6 +2408,7 @@ function disposeTerminal(): void {
 function toggleTerminal(wrap: HTMLElement): void {
   termOpen = !termOpen;
   mountTerminal(wrap);
+  mountPreview(wrap);
 }
 
 /**
@@ -2272,6 +2440,7 @@ function mountTerminal(wrap: HTMLElement): void {
         if (!termOpen) return;
         termOpen = false;
         mountTerminal(wrap);
+  mountPreview(wrap);
       },
       cell: measureCell,
     });
@@ -2332,6 +2501,7 @@ export function codeView(): HTMLElement {
     else if (b.id === "cpull") void pull();
     else if (b.id === "cagentt") wrap.querySelector(".codebody")!.classList.toggle("showagent");
     else if (b.id === "ctermt") toggleTerminal(wrap);
+    else if (b.id === "cprevt") togglePreview(wrap);
   });
 
   // Left column: tabs, pending proposals, tree / search / outline / git.
@@ -2552,6 +2722,7 @@ export function codeView(): HTMLElement {
     paintLeft();
     paintMid();
     mountTerminal(wrap);
+  mountPreview(wrap);
     await startWorkspaceServices();
   })();
 

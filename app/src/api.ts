@@ -314,6 +314,14 @@ export const api = {
   // Hands the preview document to the app's own scheme and returns its URL:
   // served that way it carries its own content policy instead of inheriting
   // the app's, which blocks everything external.
+  /**
+   * Point the preview at a folder, or at nothing.
+   *
+   * Distinct from previewPublish, which hands over one self-contained document.
+   * A site is a folder: index.html asks for styles.css, and only a root can
+   * resolve that.
+   */
+  previewSetRoot: (root: string | null) => invoke<void>("preview_set_root", { root }),
   previewPublish: (html: string) => invoke<string>("preview_publish", { html }),
   hwInfo: () => invoke<HwInfo>("hw_info"),
   registry: () => invoke<ModelEntry[]>("load_registry"),

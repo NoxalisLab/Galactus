@@ -1148,6 +1148,20 @@ const dict: Record<string, { en: string; fr: string }> = {
   "term.new": { en: "New terminal", fr: "Nouveau terminal" },
   "term.close": { en: "Close this terminal", fr: "Fermer ce terminal" },
   "term.clear": { en: "Clear the screen and the history", fr: "Effacer l'écran et l'historique" },
+  "prev.toggle": { en: "Preview", fr: "Aperçu" },
+  "prev.nothing": {
+    en: "No page to preview yet. Open an .html file, or ask the agent to create index.html.",
+    fr: "Aucune page à prévisualiser. Ouvrez un fichier .html, ou demandez à l'agent de créer index.html.",
+  },
+  "prev.pending": {
+    en: "%n change(s) waiting for you. The preview shows the files on disk, so they are not in it yet.",
+    fr: "%n modification(s) en attente. L'aperçu montre les fichiers sur le disque : elles n'y sont donc pas encore.",
+  },
+  "prev.sealed": {
+    en: "Nothing loads from the internet here. A page that uses a CDN renders without it.",
+    fr: "Rien ne se charge depuis internet ici. Une page qui utilise un CDN s'affiche sans lui.",
+  },
+  "prev.reload": { en: "Reload", fr: "Recharger" },
   "term.toggle": { en: "Terminal", fr: "Terminal" },
   "term.empty": {
     en: "No terminal open. Press + to start one in the workspace folder.",
