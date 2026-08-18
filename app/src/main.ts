@@ -593,16 +593,34 @@ function toast(msg: string, kind: "err" | "ok" = "err") {
     host = document.createElement("div");
     host.className = "toasts";
     host.id = "toasts";
+    // Announced to a screen reader. This is the only channel for a failed
+    // model start, a failed install and a connector's error, and none of it
+    // reached anyone who does not look at that corner of the window.
+    host.setAttribute("role", "status");
+    host.setAttribute("aria-live", "polite");
     document.body.appendChild(host);
   }
   const item = document.createElement("div");
   item.className = `toast ${kind}`;
   item.textContent = msg;
+  if (kind === "err") item.setAttribute("role", "alert");
+  const close = document.createElement("button");
+  close.className = "toastx";
+  close.type = "button";
+  close.textContent = "✕";
+  close.setAttribute("aria-label", t("common.close"));
+  close.addEventListener("click", () => item.remove());
+  item.appendChild(close);
   host.appendChild(item);
-  setTimeout(() => {
-    item.classList.add("out");
-    setTimeout(() => item.remove(), 300);
-  }, 5000);
+  // An error stays until it is dismissed. Five seconds is not enough to read a
+  // three line failure from the engine, and that is exactly what this carries:
+  // the message disappeared while the reader was still on the first line.
+  if (kind === "ok") {
+    setTimeout(() => {
+      item.classList.add("out");
+      setTimeout(() => item.remove(), 300);
+    }, 5000);
+  }
 }
 
 // ---------- helpers ----------
@@ -943,7 +961,12 @@ function wireCopy(btn: HTMLElement, getText: () => string) {
       const prev = btn.textContent;
       btn.textContent = t("srvfail.copied");
       setTimeout(() => { btn.textContent = prev; }, 1400);
-    } catch {}
+    } catch {
+      // The webview can refuse the clipboard. Three of the four call sites
+      // showed "Copied" regardless, so the user pasted and got something else,
+      // and one of them is a key that is shown exactly once.
+      toast(t("common.copyFailed"));
+    }
   });
 }
 
@@ -2995,6 +3018,15 @@ function modelsView(): HTMLElement {
   const hwUnknown = !hw;
   const available = hwUnknown ? registry : registry.filter((m) => verdict(m).ok);
   const unavailable = registry.filter((m) => !verdict(m).ok);
+  // The loading card, in the view where the load was started. It existed and
+  // was painted only in the chat: from the Models page the card turned into
+  // Measure and Stop the instant the click landed, and the only trace of a
+  // load that can take minutes was an 11 px line in the sidebar. People
+  // concluded it was finished, or broken.
+  if (server.running && server.phase === "starting") {
+    const host = wrap.querySelector<HTMLElement>("#srvfail");
+    if (host) host.appendChild(loadingCard());
+  }
   if (hwUnknown) {
     grid.before(el(`<div class="cerror"><b>${esc(t("models.hwUnknown"))}</b></div>`));
   }
@@ -3069,6 +3101,14 @@ function modelsView(): HTMLElement {
     } else if (runningHere) {
       const box = el(`<span style="display:flex;gap:8px"></span>`);
       const bench = el(`<button class="bs">${esc(t("models.bench"))}</button>`) as HTMLButtonElement;
+      // Inert while the model loads, and it SAYS so. The handler already
+      // returned early, with no disabled state and no message: the button
+      // appeared the moment the model started, and pressing it during a load
+      // that takes minutes did nothing at all, twice, three times.
+      if (server.phase !== "ready") {
+        bench.disabled = true;
+        bench.title = t("models.benchNotReady");
+      }
       bench.addEventListener("click", async () => {
         if (server.phase !== "ready") return;
         bench.disabled = true;
@@ -3303,7 +3343,15 @@ function customForm(dashed: HTMLElement, holder: HTMLElement): HTMLElement {
     const name = (form.querySelector<HTMLInputElement>("#cn")!.value || "").trim();
     const command = (form.querySelector<HTMLInputElement>("#cc")!.value || "").trim();
     const argStr = (form.querySelector<HTMLInputElement>("#ca")!.value || "").trim();
-    if (!name || !command) return;
+    // Said, not swallowed. Pressing Add with a field empty did nothing at all:
+    // no message, no highlight, no focus, so the reader pressed it again and
+    // concluded the app was broken.
+    const problem = !name ? t("conn.needName") : !command ? t("conn.needCommand") : "";
+    if (problem) {
+      toast(problem);
+      form.querySelector<HTMLInputElement>(!name ? "#cn" : "#cc")?.focus();
+      return;
+    }
     enabled.push({ id: `custom:${name}`, values: {}, custom: { name, command, args: argStr ? argStr.split(/\s+/) : [] } });
     mcpCount = await saveEnabled(enabled);
     render();
@@ -4002,7 +4050,8 @@ function settingsView(): HTMLElement {
         <div class="seg" id="bindseg"><button data-b="127.0.0.1" class="${relayBind === "127.0.0.1" ? "on" : ""}">${esc(t("net.localOnly"))}</button><button data-b="0.0.0.0" class="${relayBind === "0.0.0.0" ? "on" : ""}">${esc(t("net.network"))}</button></div>
       </div>
       <div class="set-row"><div class="grow"><b>${esc(t("net.key"))}</b><span>${esc(t("net.keyHint"))}</span><span class="mono api-url" id="relaykey">${relayKey ? esc(relayKey) : ""}</span></div>
-        <button class="bs" id="newkey">${esc(t("net.newKey"))}</button>
+        ${relayKey ? `<button class="bs" id="copykey">${esc(t("net.copyKey"))}</button>` : ""}
+      <button class="bs" id="newkey">${esc(t("net.newKey"))}</button>
       </div>
       <div class="set-row"><div class="grow"><b>${esc(t("net.snippets"))}</b><span>${esc(t("net.snippetsHint"))}</span><span class="mono api-url">${relay.running ? esc(`${t("net.open")} http://${relayHost()}:${relay.port}/v1`) : esc(t("net.closed"))}</span></div>
         <button class="bs" id="relaytoggle">${relay.running ? esc(t("net.stop")) : esc(t("net.start"))}</button>
@@ -4231,6 +4280,11 @@ function settingsView(): HTMLElement {
       render();
     })
   );
+  // The key is shown once and the help text tells the reader to copy it, with
+  // no button to do it: they selected a secret by hand while it was already in
+  // their clipboard, or was not, silently, if the webview refused.
+  const copyKey = wrap.querySelector<HTMLButtonElement>("#copykey");
+  if (copyKey) wireCopy(copyKey, () => relayKey);
   wrap.querySelector<HTMLButtonElement>("#newkey")!.addEventListener("click", async () => {
     relayKey = await api.relayNewKey();
     try {
@@ -4484,7 +4538,15 @@ async function refreshServer() {
   );
 }
 
-let composerDraft = "";
+/**
+ * Unsent text, per thread.
+ *
+ * It used to be one string for the whole app: a sentence typed in one
+ * conversation and not sent reappeared in the composer of the next one after a
+ * switch. Enter sends without confirming, so that is a message delivered to the
+ * wrong person.
+ */
+const composerDrafts = new Map<string, string>();
 /** Where each view was scrolled to, so a rebuild can put it back. */
 const pageScroll: Partial<Record<View, number>> = {};
 
@@ -4522,7 +4584,15 @@ function wireUiSemantics(scope: ParentNode): void {
       control.setAttribute("aria-checked", String(control.classList.contains("on")));
     });
   });
-  scope.querySelectorAll<HTMLElement>(".iconbtn, .dashed, .link, .auton, .conv").forEach((control) => {
+  // `.send` is the app's primary action and was a bare div: no role, no tab
+  // stop, no name, and its disabled state announced to nobody. The others
+  // shared that fate: dictation, deep search, the back links, the brief
+  // toggle and the close crosses.
+  scope
+    .querySelectorAll<HTMLElement>(
+      ".iconbtn, .dashed, .link, .auton, .conv, .send, .tool-btn, .back, .crumb, .brieftgl, .x, .cx",
+    )
+    .forEach((control) => {
     if (control.matches("button, a, input, textarea, select, [role]")) return;
     control.setAttribute("role", "button");
     control.tabIndex = 0;
@@ -4543,7 +4613,11 @@ function render() {
   // survives every render (server events, install progress, view switches).
   {
     const ci = document.getElementById("ci") as HTMLTextAreaElement | null;
-    if (ci) composerDraft = ci.value;
+    if (ci) {
+      const key = active().key;
+      if (ci.value) composerDrafts.set(key, ci.value);
+      else composerDrafts.delete(key);
+    }
   }
   // And a rebuild must never eat the scroll position either. An install emits a
   // progress event every few hundred milliseconds, each one a full render, and
@@ -4646,10 +4720,13 @@ function render() {
   // The Code view mounts the same thread pane as the Chat view, so both are
   // painted the same way: one thread, two places to read it from.
   if (view === "chat" || view === "code") {
-    if (composerDraft) {
+    {
+      // Only this thread's draft. Restoring a global one put somebody's unsent
+      // sentence in front of another conversation, where Enter would send it.
+      const draft = composerDrafts.get(active().key) ?? "";
       const ci = document.getElementById("ci") as HTMLTextAreaElement | null;
-      if (ci && !ci.value) {
-        ci.value = composerDraft;
+      if (draft && ci && !ci.value) {
+        ci.value = draft;
         ci.dispatchEvent(new Event("input"));
       }
     }

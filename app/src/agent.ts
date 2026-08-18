@@ -1023,8 +1023,17 @@ function mcpToolDefs(mcp: McpToolInfo[]): ToolDef[] {
  * behaviour rather than a race; every other tool touches this workspace, where
  * two writes, or a write and a read of one path, would be a real bug.
  */
+/**
+ * Calls that may overlap.
+ *
+ * `ask_agent` only: recruiting is NOT parallelisable with asking. A model that
+ * emits spawn_agent("backend") and then ask_agent("backend", …) in the same
+ * message had both start together, and the ask failed with "no teammate named
+ * backend" for a turn that was described perfectly. The tool description
+ * encourages exactly that pairing.
+ */
 function isDelegation(call: ToolCall): boolean {
-  return call.function.name === "spawn_agent" || call.function.name === "ask_agent";
+  return call.function.name === "ask_agent";
 }
 
 export class Agent {
@@ -1123,8 +1132,14 @@ export class Agent {
     this.messages = [{ role: "system", content: this.systemPrompt() }];
   }
 
+  /** The tool list changed, so its measured size has to be taken again. */
+  private forgetToolSize(): void {
+    this.toolTokens = null;
+  }
+
   setMcpTools(tools: McpToolInfo[]) {
     this.mcp = tools;
+    this.forgetToolSize();
   }
 
   setSkills(skills: SkillInfo[]) {
@@ -1460,7 +1475,12 @@ export class Agent {
       chars += (typeof m.content === "string" ? m.content.length : 0) + 20;
       if (m.tool_calls) for (const tc of m.tool_calls) chars += tc.function.name.length + tc.function.arguments.length + 30;
     }
-    return Math.ceil(chars / BYTES_PER_TOKEN) + 2500; // + tool schemas overhead
+    // The tool schemas, measured rather than assumed at 2500. The list
+    // includes every connector's definition, each up to a kilobyte of
+    // description plus a whole input schema: with half a dozen connectors the
+    // fixed constant understated the turn by more than the reply reserve,
+    // which is exactly how a request ends up rejected for length.
+    return Math.ceil(chars / BYTES_PER_TOKEN) + this.toolSchemaTokens();
   }
 
   /**
@@ -2066,6 +2086,26 @@ export class Agent {
   setPort(port: number): void {
     this.port = port;
   }
+
+  /** Roughly what the tool definitions cost in this turn's request. */
+  private toolSchemaTokens(): number {
+    if (this.toolTokens === null) {
+      const tools = builtinTools(
+        this.hasVault,
+        this.role,
+        this.hasKb,
+        this.canDelegate(),
+        codeWorkspace !== null,
+        this.memoryOn,
+      );
+      const size = JSON.stringify([...tools, ...mcpToolDefs(this.mcp)]).length;
+      this.toolTokens = Math.ceil(size / BYTES_PER_TOKEN);
+    }
+    return this.toolTokens;
+  }
+
+  /** Cached per turn: the list only changes when connectors reload. */
+  private toolTokens: number | null = null;
 
   setNoStanding(on: boolean): void {
     this.noStanding = on;

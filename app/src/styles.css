@@ -1874,3 +1874,20 @@ html.pane-dragging .pvw-frame { pointer-events: none; }
 .whatsnew .newsbody { max-height: 52vh; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; margin: 4px 0 12px; }
 .whatsnew .newsect b { display: block; margin-bottom: 4px; font-size: 13px; }
 .whatsnew .newsect .d { color: var(--tx2); font-size: 12.5px; line-height: 1.55; white-space: pre-wrap; }
+
+/* An error toast waits to be dismissed, so it needs a way to dismiss it. */
+.toast { position: relative; padding-right: 30px; }
+.toastx {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: inherit;
+  opacity: 0.55;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.toastx:hover { opacity: 1; }

@@ -502,6 +502,20 @@ fn python3_cmd() -> Command {
 /// seeded from the registry and scripts bundled with the app. No checkout,
 /// no third-party install: plug and play.
 fn provision_default_root() -> Result<PathBuf, String> {
+    // Once per process, like the configured-root branch already does.
+    //
+    // This is the DEFAULT path, taken by every plug-and-play install, and it
+    // re-copied four files on every call: the registry plus three Python
+    // scripts, so about fifty kilobytes of copy-and-rename. galactus_root() is
+    // called by hw_info, registry_entry, measured_geometry (so by every
+    // plan_cache), load_registry and list_volumes; painting the Models page
+    // runs a recommendation for each of twelve models, each of which plans
+    // twice. That is hundreds of file copies for one screen.
+    static PROVISIONED: OnceLock<Result<PathBuf, String>> = OnceLock::new();
+    PROVISIONED.get_or_init(provision_default_root_once).clone()
+}
+
+fn provision_default_root_once() -> Result<PathBuf, String> {
     let root = app_support().join("data");
     let scripts = root.join("scripts");
     std::fs::create_dir_all(&scripts).map_err(|e| e.to_string())?;
@@ -1930,7 +1944,7 @@ struct ServerStatus {
     footprint: Option<ModeDecision>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn server_status() -> ServerStatus {
     let s = server_state().lock().unwrap_or_else(|e| e.into_inner());
     ServerStatus {
@@ -4402,6 +4416,30 @@ fn engine_is_wired(bin: &Path) -> Result<(), String> {
 // must not run on the main thread.
 #[tauri::command]
 async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -> Result<(), String> {
+    // One start at a time, and the second caller is TOLD rather than queued.
+    //
+    // Two clicks on two cards ran two of these concurrently, and the window
+    // between spawning the engine and taking the state lock includes launching
+    // a watchdog shell: the second start's stop could land inside it, leaving
+    // the first process alive with the whole model resident and nothing
+    // pointing at it.
+    //
+    // A blocking mutex would be wrong here: this function awaits, and holding a
+    // std lock across an await parks a runtime worker and invites a deadlock.
+    // An atomic that refuses is also the better behaviour, since loading a
+    // model takes minutes and a silently queued second start is a surprise.
+    static STARTING: AtomicBool = AtomicBool::new(false);
+    if STARTING.swap(true, Ordering::SeqCst) {
+        return Err("a model is already starting: wait for it, or stop it first".into());
+    }
+    struct Done;
+    impl Drop for Done {
+        fn drop(&mut self) {
+            STARTING.store(false, Ordering::SeqCst);
+        }
+    }
+    // Released on every path out, including the early returns and a panic.
+    let _done = Done;
     let root = galactus_root()?;
     let entry = registry_entry(&root, &model_id)?;
     require_certified_model(&entry)?;
@@ -4827,18 +4865,29 @@ async fn server_stop() -> Result<(), String> {
 }
 
 fn server_stop_impl() -> Result<(), String> {
-    let mut s = server_state().lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(mut child) = s.child.take() {
+    // The child comes OUT of the lock before it is killed and waited on.
+    //
+    // Tearing down an engine holding ninety gigabytes is not instant, and the
+    // lock was held for the whole of it. server_status wants the same lock and
+    // is called from the UI on every tick, so stopping a large model froze the
+    // window until the process was gone.
+    let child = {
+        let mut s = server_state().lock().unwrap_or_else(|e| e.into_inner());
+        let taken = s.child.take();
+        s.model_id = None;
+        s.mode = String::new();
+        s.phase = "stopped".into();
+        s.port = 0;
+        s.ctx_per_slot = 0;
+        // The decision described a process that no longer exists: keeping it
+        // would let the UI report a footprint for nothing.
+        s.footprint = None;
+        taken
+    };
+    if let Some(mut child) = child {
         let _ = child.kill();
         let _ = child.wait();
     }
-    s.model_id = None;
-    s.mode = String::new();
-    s.phase = "stopped".into();
-    s.port = 0;
-    // The decision described a process that no longer exists: keeping it would
-    // let the UI report a footprint for nothing.
-    s.footprint = None;
     Ok(())
 }
 
@@ -7266,28 +7315,71 @@ fn conv_dir() -> PathBuf {
 /// Conversations are plain JSON files, one per thread, plus a lightweight
 /// index rebuilt from them on demand. Shared context across threads comes from
 /// the memory file, which every conversation reads.
-#[tauri::command]
+/// The conversation list, from a cache keyed on each file's stamp.
+///
+/// It used to open, read and parse EVERY conversation file to keep five fields
+/// from each, on the main thread, and it is called at the end of every turn of
+/// every thread. At five hundred conversations of three hundred kilobytes that
+/// is a hundred and fifty megabytes read and parsed after each answer, and it
+/// grows and never comes down.
+///
+/// The cache is keyed on size and modification time, so a file rewritten by
+/// another process is picked up, and nothing has to be invalidated by hand.
+/// `async` as well, since a cold start still reads the folder.
+#[tauri::command(async)]
 fn conv_list() -> Vec<Value> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, (String, Value)>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let dir = conv_dir();
     let mut out: Vec<Value> = Vec::new();
+    let mut seen: Vec<PathBuf> = Vec::new();
     if let Ok(rd) = std::fs::read_dir(&dir) {
         for e in rd.flatten() {
             let p = e.path();
             if p.extension().map(|x| x != "json").unwrap_or(true) {
                 continue;
             }
-            if let Ok(txt) = std::fs::read_to_string(&p) {
-                if let Ok(v) = serde_json::from_str::<Value>(&txt) {
-                    out.push(json!({
-                        "id": v["id"].clone(),
-                        "title": v["title"].clone(),
-                        "created": v["created"].clone(),
-                        "updated": v["updated"].clone(),
-                        "count": v["items"].as_array().map(|a| a.len()).unwrap_or(0),
-                    }));
+            let stamp = e
+                .metadata()
+                .ok()
+                .map(|m| {
+                    let modified = m
+                        .modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_nanos())
+                        .unwrap_or(0);
+                    format!("{}:{modified}", m.len())
+                })
+                .unwrap_or_default();
+            seen.push(p.clone());
+            if let Ok(map) = cache.lock() {
+                if let Some((known, value)) = map.get(&p) {
+                    if *known == stamp {
+                        out.push(value.clone());
+                        continue;
+                    }
                 }
             }
+            let Ok(txt) = std::fs::read_to_string(&p) else { continue };
+            let Ok(v) = serde_json::from_str::<Value>(&txt) else { continue };
+            let summary = json!({
+                "id": v["id"].clone(),
+                "title": v["title"].clone(),
+                "created": v["created"].clone(),
+                "updated": v["updated"].clone(),
+                "count": v["items"].as_array().map(|a| a.len()).unwrap_or(0),
+            });
+            if let Ok(mut map) = cache.lock() {
+                map.insert(p.clone(), (stamp, summary.clone()));
+            }
+            out.push(summary);
         }
+    }
+    // Forget what is gone, so a deleted conversation does not hold memory for
+    // the rest of the session.
+    if let Ok(mut map) = cache.lock() {
+        map.retain(|k, _| seen.contains(k));
     }
     out.sort_by(|a, b| {
         b["updated"]
@@ -8609,6 +8701,15 @@ pub fn run() {
                 // window must close now. The process group is left to the system
                 // to reap, which it does as soon as this process exits.
                 mcp_kill_children();
+                // An install in flight is curl downloading up to two hundred
+                // gigabytes and a Python packer writing tens more. Neither was
+                // touched at exit: they were reparented and carried on filling
+                // the disk with no window and no icon to stop them.
+                if let Ok(map) = install_cancels().lock() {
+                    for flag in map.values() {
+                        flag.store(true, Ordering::SeqCst);
+                    }
+                }
                 // Same reason: a generation holds ten gigabytes and a download
                 // keeps writing seven more after the window has gone.
                 image::kill_child();

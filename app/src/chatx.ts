@@ -25,6 +25,7 @@
 // ---------------------------------------------------------------------------
 
 import { t, getLang } from "./i18n";
+import { redact } from "./redact";
 import { visibleReasoning } from "./reasoning";
 import type { Conversation, ConvMeta, ChatItem } from "./store";
 
@@ -79,7 +80,10 @@ function renderItem(it: ChatItem): string {
     }
     case "tool": {
       const head = `> **${t("chatx.exportTool")}, ${toolLabel(it.name)}**` + (it.arg ? ` \`${it.arg}\`` : "");
-      const body = it.done ? quoted(it.result) : "> " + t("chat.running");
+      // Masked on the way out. A tool result is whatever the agent read, and an
+      // export is a file that gets mailed or pasted into a ticket: the
+      // permission asked whether it could READ the .env, not publish it.
+      const body = it.done ? quoted(redact(it.result).text) : "> " + t("chat.running");
       return body ? head + "\n>\n" + body : head;
     }
     case "error":
@@ -91,7 +95,7 @@ function renderItem(it: ChatItem): string {
       // teammate's own thread is exported in full further down the file.
       const head = `> **${t("chatx.exportAgent")} · ${it.name}**` + (it.role ? ` (${it.role})` : "");
       const ask = quoted(it.ask, 400);
-      const ans = it.answer ? quoted(it.answer, 2000) : "> " + t("chat.running");
+      const ans = it.answer ? quoted(redact(it.answer).text, 2000) : "> " + t("chat.running");
       return [head, ask, ans].filter((x) => x !== "").join("\n>\n");
     }
   }

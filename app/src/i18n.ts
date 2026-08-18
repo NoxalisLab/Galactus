@@ -785,6 +785,20 @@ const dict: Record<string, { en: string; fr: string }> = {
     fr: "Galactus n'a pas pu lire les caractéristiques de ce Mac. Les vitesses et les conseils sont indisponibles pour l'instant ; la liste ci-dessous n'est pas filtrée.",
   },
   "models.chooseFolder": { en: "Choose another folder", fr: "Choisir un autre dossier" },
+  "conn.needName": { en: "Give this connector a name.", fr: "Donnez un nom à ce connecteur." },
+  "conn.needCommand": {
+    en: "Enter the command that starts this connector.",
+    fr: "Indiquez la commande qui lance ce connecteur.",
+  },
+  "net.copyKey": { en: "Copy the key", fr: "Copier la clé" },
+  "common.copyFailed": {
+    en: "The copy did not work. Select the text and copy it by hand.",
+    fr: "La copie n'a pas fonctionné. Sélectionnez le texte et copiez-le à la main.",
+  },
+  "models.benchNotReady": {
+    en: "Available once the model has finished loading",
+    fr: "Disponible une fois le modèle chargé",
+  },
   "models.reco": { en: "Start here", fr: "Commencez par celui-ci" },
   "models.recoWhy": {
     en: "The most capable model that still answers at reading speed on this Mac.",
