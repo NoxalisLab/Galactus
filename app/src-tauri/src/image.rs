@@ -517,7 +517,8 @@ fn run_generation(
     args: Vec<String>,
     out: PathBuf,
 ) -> Result<String, String> {
-    use std::io::{BufReader, Read};
+    // The pipe readers moved into read_engine_stream, which brings its own
+    // imports: these two were left behind by that move.
     use std::process::{Command, Stdio};
 
     let mut child = Command::new(&bin)

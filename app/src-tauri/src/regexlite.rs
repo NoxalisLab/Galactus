@@ -532,7 +532,7 @@ fn shift_targets(prog: &mut [Inst], from: usize, by: usize) {
         // Before the splice: only what pointed PAST the insertion point moves.
         // At or after it: what pointed AT it moves too.
         let threshold = if at < from { from + 1 } else { from };
-        let mut bump = |target: &mut usize| {
+        let bump = |target: &mut usize| {
             if *target >= threshold {
                 *target += by;
             }
