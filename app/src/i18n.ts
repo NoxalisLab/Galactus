@@ -693,6 +693,19 @@ const dict: Record<string, { en: string; fr: string }> = {
     fr: "Votre dossier de travail existe toujours mais macOS empêche Galactus de le lire. Ouvrez Réglages Système, Confidentialité et sécurité, Fichiers et dossiers, et autorisez Galactus. Le dossier est mémorisé et se rouvrira tout seul.",
   },
   "code.search.regex": { en: "Regular expression", fr: "Expression régulière" },
+  "models.notInstalled": { en: "Not installed yet", fr: "Pas encore installé" },
+  "models.expertsWord": { en: "experts", fr: "experts" },
+  "models.metaWhy": {
+    en: "Family, size on disk, and how many of its experts run per token: a Mixture-of-Experts model uses a few of them at a time, which is why it can be larger than your memory.",
+    fr: "Famille, taille sur le disque, et combien de ses experts tournent par jeton : un modèle Mixture-of-Experts n'en utilise que quelques-uns à la fois, et c'est pour cela qu'il peut dépasser votre mémoire.",
+  },
+  "models.reco": { en: "Start here", fr: "Commencez par celui-ci" },
+  "models.recoWhy": {
+    en: "The most capable model that still answers at reading speed on this Mac.",
+    fr: "Le modèle le plus capable qui répond encore à la vitesse de lecture sur ce Mac.",
+  },
+  "srvfail.retry": { en: "Try again", fr: "Réessayer" },
+  "srvfail.retrying": { en: "Starting...", fr: "Démarrage..." },
   "code.splitHint": {
     en: "Move this file to the other side (Cmd+\\)",
     fr: "Déplacer ce fichier de l'autre côté (Cmd+\\)",

@@ -1823,3 +1823,15 @@ html.pane-dragging .pvw-frame { pointer-events: none; }
 .codemid.split .cpane.on { box-shadow: inset 0 2px 0 0 var(--acc); }
 .fsplit { opacity: 0.75; }
 .fsplit:hover { opacity: 1; }
+
+/* "Start here" on one model card. Quieter than the certification chip beside
+   it: it is advice, not a fact about the model. */
+.chip-reco {
+  margin-left: 6px;
+  padding: 1px 7px;
+  border: 1px solid var(--acc);
+  border-radius: 999px;
+  color: var(--acc-tx);
+  font-size: 10px;
+  white-space: nowrap;
+}

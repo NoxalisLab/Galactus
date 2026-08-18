@@ -6,7 +6,9 @@ import assert from "node:assert/strict";
 // @ts-ignore Node types are deliberately not added to the app dependency graph.
 import fs from "node:fs";
 
-import { hasVerifiedDownload, modelAvailability, modelCertification } from "../../src/model-policy.js";
+import { hasVerifiedDownload, modelAvailability, modelCertification,
+  recommendedModel,
+} from "../../src/model-policy.js";
 
 test("only certified Galactus regimes may execute", () => {
   assert.deepEqual(modelCertification("certified"), { canExecute: true, badge: "certified" });
@@ -152,4 +154,40 @@ test("a dense entry declares itself and asks for enough memory to hold itself", 
       `${model.id}: ${model.min_ram_gb} GB floor cannot hold ${weightsGb.toFixed(1)} GB of weights`,
     );
   }
+});
+
+test("the recommendation is the most capable model that stays comfortable", () => {
+  // Size stands for capability, but only among the ones that answer at reading
+  // speed: the biggest model here crawls, and recommending it would be advice
+  // the user regrets after one prompt.
+  const models = [
+    { id: "small", gguf_bytes: 4e9, tps: 90, ok: true },
+    { id: "mid", gguf_bytes: 20e9, tps: 40, ok: true },
+    { id: "big", gguf_bytes: 70e9, tps: 3, ok: true },
+  ];
+  assert.equal(recommendedModel(models), "mid");
+});
+
+test("a machine where nothing is comfortable still gets told where to start", () => {
+  // Silence is not useful advice. The fastest runnable one wins.
+  const models = [
+    { id: "a", gguf_bytes: 70e9, tps: 2, ok: true },
+    { id: "b", gguf_bytes: 30e9, tps: 9, ok: true },
+  ];
+  assert.equal(recommendedModel(models), "b");
+});
+
+test("nothing is recommended when nothing can run or nothing is measured", () => {
+  assert.equal(recommendedModel([]), null);
+  assert.equal(recommendedModel([{ id: "x", gguf_bytes: 4e9, tps: 90, ok: false }]), null);
+  // No measurement is not a reason to guess.
+  assert.equal(recommendedModel([{ id: "x", gguf_bytes: 4e9, tps: null, ok: true }]), null);
+});
+
+test("a model this Mac cannot run is never the recommendation", () => {
+  const models = [
+    { id: "toobig", gguf_bytes: 200e9, tps: 30, ok: false },
+    { id: "fits", gguf_bytes: 20e9, tps: 30, ok: true },
+  ];
+  assert.equal(recommendedModel(models), "fits");
 });

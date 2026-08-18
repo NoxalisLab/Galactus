@@ -29,7 +29,7 @@ import { detectTask, getAutoMode, mayAutoSwap, planSwap, setAutoMode, type AutoM
 import { exportConversationMarkdown, formatStats, searchConversations, wireDropZone } from "./chatx";
 import * as store from "./store";
 import type { ChatItem, Conversation, ConvMeta, SubAgent, ThreadData } from "./store";
-import { hasVerifiedDownload, modelAvailability, modelCertification } from "./model-policy";
+import { hasVerifiedDownload, modelAvailability, modelCertification, recommendedModel } from "./model-policy";
 import { clampSampling, readSampling, SAMPLING_DEFAULT, type Sampling } from "./sampling";
 import { isFollowing } from "./follow";
 import { engineAdvice, isEngineDecodeFailure, modeLabelKey } from "./engine-error";
@@ -73,6 +73,22 @@ let autonomy: Autonomy = "assisted";
 let ramMode: "eco" | "balanced" | "perf" = "balanced";
 let autoTabOn = true;
 let skillsOff: Set<string> = new Set();
+/**
+ * The model the user last asked to run.
+ *
+ * Kept so a failure can offer to try again. The failure card used to end at
+ * "copy the log", which leaves the one thing anybody wants to do next, after a
+ * timeout or a load that lost a race for memory, to a hunt back through the
+ * model list.
+ */
+let lastStartModel: string | null = null;
+
+/** Start a model, remembering which one it was. */
+async function startModel(id: string, cacheGb: number | null = null): Promise<void> {
+  lastStartModel = id;
+  await api.serverStart(id, cacheGb);
+}
+
 let serverFail: {
   kind: "failed" | "timeout";
   code?: number;
@@ -898,7 +914,7 @@ async function acceptTaskSwitch(): Promise<void> {
   try {
     serverFail = null;
     if (server.running) await api.serverStop();
-    await api.serverStart(offer.modelId, null);
+    await startModel(offer.modelId);
   } catch (e: any) {
     toast(String(e?.message ?? e));
   }
@@ -994,16 +1010,40 @@ function serverFailCard(): HTMLElement {
   const title = f.kind === "timeout"
     ? t("srvfail.timeoutTitle")
     : memory ? t("srvfail.memoryTitle") : t("srvfail.title");
+  // Not offered when the engine died for want of memory: pressing it would
+  // reproduce the same failure, and a button that is known not to work is worse
+  // than no button. That case wants a smaller model or a smaller window, which
+  // is what the message above it says.
+  const retryable = !memory && lastStartModel !== null;
   const card = el(`<div class="errcard">
     <div class="eh"><span class="edot"></span><b>${esc(title)}</b>${f.code != null ? `<span class="code">exit ${f.code}</span>` : ""}</div>
     ${memory ? `<span class="eb">${esc(t("srvfail.memoryBody"))}</span>` : ""}
     ${tail ? `<span class="eb">${esc(t("srvfail.body"))}</span><pre class="etail">${esc(tail)}</pre>` : ""}
     <div class="ea">
+      ${retryable ? `<button class="bp" data-retry>${esc(t("srvfail.retry"))}</button>` : ""}
       <button class="bs" data-copy>${esc(t("srvfail.copy"))}</button>
       <button class="bs" data-view>${esc(t("srvfail.viewLog"))}</button>
     </div></div>`);
   wireCopy(card.querySelector<HTMLElement>("[data-copy]")!, () => f.log);
   card.querySelector("[data-view]")!.addEventListener("click", () => { showServerLogModal(); });
+  const retry = card.querySelector<HTMLButtonElement>("[data-retry]");
+  retry?.addEventListener("click", async () => {
+    const id = lastStartModel;
+    if (!id) return;
+    retry.disabled = true;
+    retry.textContent = t("srvfail.retrying");
+    try {
+      serverFail = null;
+      await startModel(id);
+      // The engine has been replaced: no live thread may keep a generation
+      // tied to the process that just died.
+      stopAllThreads();
+    } catch (e: any) {
+      toast(String(e?.message ?? e));
+    }
+    await refreshServer();
+    render();
+  });
   return card;
 }
 
@@ -2275,7 +2315,7 @@ async function autoRouteTask(text: string, target: store.ThreadTarget): Promise<
     try {
       serverFail = null;
       if (server.running) await api.serverStop();
-      await api.serverStart(plan.modelId, null);
+      await startModel(plan.modelId);
       await waitServerReady(180);
     } catch (e: any) {
       store.pushError(target, String(e?.message ?? e));
@@ -2923,6 +2963,17 @@ function modelsView(): HTMLElement {
     ...available.map((m) => Math.max(expectedTps(m) ?? 0, benchResults[m.id] ?? 0)),
     1
   );
+  // One card carries a "start here" badge. The list is a wall of numbers, and a
+  // first-time user has no way to read an architecture and an expert count into
+  // a choice. Only one card, and only when there is a measurement behind it.
+  const suggested = recommendedModel(
+    registry.map((m) => ({
+      id: m.id,
+      gguf_bytes: m.gguf_bytes,
+      tps: benchResults[m.id] ?? expectedTps(m),
+      ok: verdict(m).ok,
+    }))
+  );
   for (const m of available) {
     const v = verdict(m);
     const certification = modelCertification(m.status);
@@ -2948,14 +2999,14 @@ function modelsView(): HTMLElement {
     const card = el(`<div class="mcard ${certification.canExecute ? "" : "uncertified"}" data-mcard="${esc(m.id)}">
       <div class="top">
         <div class="info">
-          <div class="nm"><b>${esc(m.name)}</b><span class="chip-cert ${certification.canExecute ? "" : "pending"}">${certification.canExecute ? "✓" : "◷"} ${esc(certLabel)}</span></div>
-          <span class="meta">${esc(m.arch)} · ${fmtGb(m.gguf_bytes)} · ${m.experts_used ?? "?"}/${m.experts ?? "?"}</span>
+          <div class="nm"><b>${esc(m.name)}</b><span class="chip-cert ${certification.canExecute ? "" : "pending"}">${certification.canExecute ? "✓" : "◷"} ${esc(certLabel)}</span>${m.id === suggested ? `<span class="chip-reco" title="${esc(t("models.recoWhy"))}">${esc(t("models.reco"))}</span>` : ""}</div>
+          <span class="meta" title="${esc(t("models.metaWhy"))}">${esc(m.arch)} · ${fmtGb(m.gguf_bytes)} · ${m.experts_used ?? "?"}/${m.experts ?? "?"} ${esc(t("models.expertsWord"))}</span>
         </div>
         <div class="spd"><b style="color:${speedColor}">${tps && v.ok ? (measured ? "" : "~") + tps.toFixed(0) : "·"}</b><small>${esc(v.ok ? t(measured ? "models.measured" : "models.onThisMac") : "·")}</small></div>
       </div>
       <div class="bar"><div style="width:${bar}%"></div></div>
       <div class="brief" data-brief="${esc(m.id)}"></div>
-      <div class="foot"><span class="n" data-plabel>${prog ? `<b style="color:var(--acc-tx)">${Math.round(prog.pct)}%</b> · ${esc(installLabel(prog.label))}` : esc(v.note || (m.installed ? t("models.installed") : (m.arch + " · " + (m.experts_used ?? "?") + " active")))}</span><span data-a></span></div>
+      <div class="foot"><span class="n" data-plabel>${prog ? `<b style="color:var(--acc-tx)">${Math.round(prog.pct)}%</b> · ${esc(installLabel(prog.label))}` : esc(v.note || (m.installed ? t("models.installed") : t("models.notInstalled")))}</span><span data-a></span></div>
       ${prog ? `<div class="bar" data-prog style="margin-top:2px"><div style="width:${prog.pct}%"></div></div>` : ""}
     </div>`);
     const slot = card.querySelector<HTMLElement>("[data-a]")!;
@@ -3029,7 +3080,7 @@ function modelsView(): HTMLElement {
       b.addEventListener("click", async () => {
         try {
           serverFail = null;
-          await api.serverStart(m.id, null);
+          await startModel(m.id);
           // The backend has now replaced the engine. No live thread may keep
           // a generation tied to the previous process.
           stopAllThreads();
@@ -4207,7 +4258,17 @@ function onboardView(): HTMLElement {
   </div></div>`);
   const checks = wrap.querySelector<HTMLElement>("#checks")!;
   const row = wrap.querySelector<HTMLElement>("#row")!;
-  api.detectRoot().then((found) => {
+  // The catch below is the whole point of this being a named function: this is
+  // the FIRST screen. detectRoot walks volumes and can be refused outright, and
+  // an unhandled rejection here left the dots spinning forever with no button
+  // to press, which is an app that looks broken before it has done anything.
+  api
+    .detectRoot()
+    .catch((e: any) => {
+      toast(String(e?.message ?? e));
+      return null;
+    })
+    .then((found) => {
     if (found) {
       checks.innerHTML = `<div class="chk"><span class="mark">✓</span><span class="l">${esc(t("onboard.detected"))}</span><span class="v mono" style="font-size:11px">${esc(found)}</span></div>`;
       const use = el(`<button class="bp" style="padding:9px 18px">${esc(t("onboard.use"))}</button>`);
