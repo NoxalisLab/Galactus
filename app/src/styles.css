@@ -1762,3 +1762,10 @@ html.pane-dragging .pvw-frame { pointer-events: none; }
 .codeprev-stage.framed iframe { box-shadow: 0 8px 40px rgba(0,0,0,.55); }
 .codeprev-empty { margin: auto; padding: 24px; font-size: 12px; color: var(--dim);
   text-align: center; line-height: 1.6; }
+
+/* A message typed while the model was still answering. It is not being worked
+   on yet, and looking exactly like one that is is what made people think it had
+   been swallowed. */
+.row-u.queued .bub-u { opacity: .62; border: 1px dashed var(--bd2); }
+.row-u.queued .qtag { display: block; margin-top: 4px; font-size: 10.5px;
+  color: var(--dim); font-style: italic; }

@@ -1203,6 +1203,29 @@ export class Agent {
         "call use_skill with its name to load its full instructions, then follow them. Available skills:\n" +
         lines.join("\n");
     }
+      // WRITING to memory, not only reading it.
+      //
+      // The tool existed, the file existed, the injection below existed, and
+      // nothing ever told the model to call it: the memory file had never been
+      // created on a machine that had run hundreds of turns. A tool a model is
+      // not pointed at is a tool that does not exist, and the whole feature sat
+      // dormant while every piece of it worked.
+      //
+      // Triggers, because "use sparingly" on its own produces zero calls: name
+      // the kinds of thing worth keeping, and name what is not, or a model
+      // swings from never remembering to remembering every message.
+      p +=
+        "\n\nMEMORY. You can keep a small number of durable facts across " +
+        "conversations with remember(fact). Call it when the user tells you " +
+        "something that will still be true next week and that would change how " +
+        "you answer: who they are and what they work on, a preference they state " +
+        "(a language, a tone, a tool, a convention they follow), or a constraint " +
+        "of their machine or their project. Write one short sentence in the third " +
+        "person, and say plainly in your reply that you have kept it. Do NOT " +
+        "remember the content of the current task, anything they can simply tell " +
+        "you again, or anything they have not actually said. If something you " +
+        "remember turns out to be wrong, say so rather than storing a contradiction.";
+
     if (this.memory.trim().length > 0) {
       p += "\n\nWhat you remember about the user:\n" + this.memory.trim();
     }

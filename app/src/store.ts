@@ -21,7 +21,23 @@ import { isRunId } from "./runrecord";
 import { appendReasoning as growThought, hasReasoning } from "./reasoning";
 
 export type ChatItem =
-  | { kind: "user"; text: string; /** Set when another agent of the team sent this. */ from?: string }
+  | {
+      kind: "user";
+      text: string;
+      /** Set when another agent of the team sent this. */
+      from?: string;
+      /**
+       * Typed while the model was still answering, and waiting its turn.
+       *
+       * It was pushed as an ordinary user bubble, indistinguishable from one
+       * being answered. During a long turn the sender watched their message sit
+       * there with nothing happening and concluded it had been dropped, which
+       * is the one thing it had not been.
+       *
+       * Cleared when the turn for it actually starts.
+       */
+      queued?: boolean;
+    }
   | { kind: "assistant"; text: string }
   /**
    * What the model thought before it wrote anything. `done` is false only
@@ -428,9 +444,27 @@ function touch(th: ThreadTarget): void {
   save(th.conv);
 }
 
-export function pushUser(th: ThreadTarget, text: string, from?: string): void {
+/**
+ * The oldest waiting message is now being answered: it stops being a promise.
+ *
+ * Matched by text from the head, because that is the order they run in, and
+ * because two identical messages queued twice are two separate promises.
+ */
+export function clearQueuedMark(th: ThreadTarget, text: string): void {
+  for (const it of th.data.items) {
+    if (it.kind === "user" && it.queued && it.text === text) {
+      delete it.queued;
+      return;
+    }
+  }
+}
+
+export function pushUser(th: ThreadTarget, text: string, from?: string, queued?: boolean): void {
   settleReasoning(th);
-  th.data.items.push(from ? { kind: "user", text, from } : { kind: "user", text });
+  const item: Extract<ChatItem, { kind: "user" }> = { kind: "user", text };
+  if (from) item.from = from;
+  if (queued) item.queued = true;
+  th.data.items.push(item);
   touch(th);
 }
 

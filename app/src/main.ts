@@ -1681,14 +1681,19 @@ function scrollChatDownIfFollowing() {
  * labelled and styled apart, so nothing ever arrives in a thread without the
  * user seeing who put it there.
  */
-function userRowEl(text: string, from?: string): HTMLElement {
+function userRowEl(text: string, from?: string, queued?: boolean): HTMLElement {
   if (from) {
     return el(`<div class="row-u from-agent">
       <div class="bub-u"><span class="fromtag">${esc(t("chat.fromAgent").replace("%s", from))}</span>${esc(text)}</div>
       <div class="av u agent" title="${esc(t("chat.fromAgent").replace("%s", from))}">⇄</div>
     </div>`);
   }
-  return el(`<div class="row-u"><div class="bub-u">${esc(text)}</div><div class="av u">${esc(t("chat.you")[0] || "V")}</div></div>`);
+  // A queued message says it is waiting. Without that it is the same bubble as
+  // one being answered, and during a long turn its sender concludes it was
+  // dropped, which is the one thing it was not.
+  return el(`<div class="row-u${queued ? " queued" : ""}"><div class="bub-u">${esc(text)}${
+    queued ? `<span class="qtag">${esc(t("chat.queuedTag"))}</span>` : ""
+  }</div><div class="av u">${esc(t("chat.you")[0] || "V")}</div></div>`);
 }
 
 function assistantBodyEl(): { row: HTMLElement; body: HTMLElement } {
@@ -1887,7 +1892,7 @@ function paintChat(): void {
   for (const it of sess.data.items) {
     if (it.kind === "user") {
       body = null;
-      log.appendChild(userRowEl(it.text, it.from));
+      log.appendChild(userRowEl(it.text, it.from, it.queued));
     } else if (it.kind === "assistant") {
       if (!body) { const r = assistantBodyEl(); log.appendChild(r.row); body = r.body; }
       const md = el(`<div class="msg-a md"></div>`);
@@ -2476,8 +2481,11 @@ async function dispatchTurn(sess: Thread, text: string, opts: TurnOptions = {}):
 /** After a turn ends (done or error), a queued message starts the next one. */
 function dispatchQueued(sess: Thread): void {
   const next = sess.queued.shift();
-  if (next) void dispatchTurn(sess, next, {});
-  else renderSidebarOnly();
+  if (next) {
+    // Its turn has come: the bubble stops saying it is waiting.
+    store.clearQueuedMark(sess, next);
+    void dispatchTurn(sess, next, {});
+  } else renderSidebarOnly();
 }
 
 // ---------- the team (spawn_agent / list_agents / ask_agent) ----------

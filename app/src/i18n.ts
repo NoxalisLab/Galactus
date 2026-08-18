@@ -113,6 +113,7 @@ const dict: Record<string, { en: string; fr: string }> = {
 
   "chat.placeholder": { en: "Message Galactus… (⇧⏎ for a new line)", fr: "Écrire à Galactus… (⇧⏎ pour un saut de ligne)" },
   "chat.noserver": { en: "Start a model in Models to begin.", fr: "Démarre un modèle dans Modèles pour commencer." },
+  "chat.queuedTag": { en: "waiting its turn", fr: "en attente de son tour" },
   "chat.you": { en: "You", fr: "Vous" },
   "chat.localHint": { en: "100% local · your Mac", fr: "100% local · ton Mac" },
   "chat.plan": { en: "Plan", fr: "Plan" },
