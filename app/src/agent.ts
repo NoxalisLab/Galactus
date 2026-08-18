@@ -15,6 +15,7 @@ import {
 } from "./api";
 import type { SearchEvent, SearchOptsWire } from "./api";
 import { getLang, t } from "./i18n";
+import { wholeTurnsOnly } from "./agent-history";
 import {
   isElevatedCommand,
   isElevatedMcp,
@@ -268,6 +269,7 @@ export function untrusted(source: string, body: string): string {
     `\n\n[END OF UNTRUSTED CONTENT from ${source}]`
   );
 }
+
 
 // ---------------- the code workspace ----------------
 //
@@ -1327,8 +1329,17 @@ export class Agent {
     this.abort?.abort();
   }
 
+  /**
+   * The thread, as a copy.
+   *
+   * It used to return the live array. The store keeps that reference and writes
+   * it 1500 ms later, by which time the turn has moved on: the file regularly
+   * ended on an assistant message carrying tool_calls whose tool results had
+   * not been pushed yet. Reopening that conversation replayed orphan tool_calls,
+   * which the engine's chat template rejects outright.
+   */
   history(): ChatMessage[] {
-    return this.messages;
+    return this.messages.map((m) => ({ ...m }));
   }
 
   /** What earlier turns condensed, so the caller can store it with the thread. */
@@ -1344,7 +1355,7 @@ export class Agent {
    */
   loadHistory(messages: ChatMessage[], contextSummary = ""): void {
     if (contextSummary) this.contextSummary = contextSummary;
-    const body = messages.filter((m) => m.role !== "system");
+    const body = wholeTurnsOnly(messages.filter((m) => m.role !== "system"));
     this.messages = [{ role: "system", content: this.systemPrompt() }, ...body];
   }
 

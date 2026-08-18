@@ -51,6 +51,15 @@ export interface Doc {
   mergeBase: string | null;
   /** Backend error for this file (binary, too large...), null when readable. */
   error: string | null;
+  /**
+   * Size and modification time when this document was last read or written.
+   *
+   * Compared by the backend before every save. Without it the editor happily
+   * reprojected a buffer over a file that a terminal, a formatter or a git
+   * command had rewritten in the meantime, and the work in between was gone
+   * with nothing said.
+   */
+  stamp: string;
   /** Serializes the writes triggered by this document's accepted hunks. */
   writeChain: Promise<void>;
   /**
@@ -114,6 +123,7 @@ export class Docs {
       saved: disk,
       mergeBase,
       error: null,
+      stamp: existing?.stamp ?? "",
       // A reopen must not drop writes that are still in flight for this file.
       writeChain: existing ? existing.writeChain : Promise.resolve(),
       scroll: null,
@@ -132,6 +142,7 @@ export class Docs {
       saved: "",
       mergeBase: null,
       error,
+      stamp: "",
       writeChain: this.map.get(rel)?.writeChain ?? Promise.resolve(),
       scroll: null,
     };
@@ -248,6 +259,12 @@ export class Docs {
   setSaved(rel: string, content: string): void {
     const doc = this.map.get(rel);
     if (doc) doc.saved = content;
+  }
+
+  /** Record what the file looked like on disk at the last read or write. */
+  setStamp(rel: string, stamp: string): void {
+    const doc = this.map.get(rel);
+    if (doc) doc.stamp = stamp;
   }
 
   setMergeBase(rel: string, base: string | null): void {

@@ -190,7 +190,7 @@ function flushPending(id: string): void {
   clearTimeout(timer);
   saveTimers.delete(id);
   const conv = live.get(id);
-  if (conv && conv.items.length > 0) api.convSave(conv.id, JSON.stringify(conv)).catch(() => {});
+  if (conv && conv.items.length > 0) api.convSave(conv.id, JSON.stringify(conv)).then(saved, saveFailed);
 }
 
 /** Flush every pending save (app-wide checkpoint). */
@@ -343,6 +343,43 @@ export async function remove(id: string): Promise<void> {
   await refreshList();
 }
 
+/**
+ * What happens when the disk refuses.
+ *
+ * Every write went out with `.catch(() => {})`. The backend returns a proper
+ * error when the temporary file cannot be written, which is a full disk, a
+ * quota, a folder that is no longer writable, an encrypted volume that was
+ * unmounted. That error was dropped: the app kept looking perfectly normal for
+ * hours while nothing at all reached the disk, and everything since the last
+ * successful write was gone at the next launch.
+ *
+ * The handler is set by the shell. Reported once per streak rather than per
+ * write, because a failing disk fails every 1500 ms and a wall of toasts is
+ * another way of saying nothing.
+ */
+let onSaveTrouble: ((message: string) => void) | null = null;
+let failingSince = 0;
+
+export function reportSaveFailures(handler: (message: string) => void): void {
+  onSaveTrouble = handler;
+}
+
+function saved(): void {
+  failingSince = 0;
+}
+
+function saveFailed(error: unknown): void {
+  const message = String((error as { message?: string })?.message ?? error);
+  const first = failingSince === 0;
+  failingSince = failingSince || Date.now();
+  if (first) onSaveTrouble?.(message);
+}
+
+/** True while writes are failing, for anything that must not pretend otherwise. */
+export function savesAreFailing(): boolean {
+  return failingSince !== 0;
+}
+
 /** Persist one conversation, debounced: streaming would write on every token. */
 export function save(conv: Conversation, immediate = false): void {
   if (!conv || conv.items.length === 0) return;
@@ -358,7 +395,7 @@ export function save(conv: Conversation, immediate = false): void {
       clearTimeout(timer);
       saveTimers.delete(id);
     }
-    api.convSave(id, JSON.stringify(conv)).catch(() => {});
+    api.convSave(id, JSON.stringify(conv)).then(saved, saveFailed);
     return;
   }
   if (saveTimers.has(id)) return;
@@ -370,7 +407,7 @@ export function save(conv: Conversation, immediate = false): void {
       // the timer was armed, and a captured snapshot would write stale items.
       const fresh = live.get(id) ?? conv;
       if (fresh.items.length === 0) return;
-      api.convSave(id, JSON.stringify(fresh)).catch(() => {});
+      api.convSave(id, JSON.stringify(fresh)).then(saved, saveFailed);
     }, 1500)
   );
 }

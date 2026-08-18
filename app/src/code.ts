@@ -524,6 +524,31 @@ export async function initCodeRoot(saved: string | undefined, savedTabs?: string
  * nothing, which for anyone arriving from another editor is the single most
  * often repeated disappointment of the first hour.
  */
+/**
+ * Close a tab, asking first when it holds work that exists nowhere else.
+ *
+ * Cmd+W on a modified file used to discard the buffer with no question at all.
+ */
+async function closeTabAsking(rel: string): Promise<void> {
+  const reg = regOf(rel) ?? docs;
+  if (reg.isDirty(rel)) {
+    const keep = await confirmModal(
+      t("code.closeDirtyTitle").replace("%s", nameOf(rel)),
+      t("code.closeDirtyBody"),
+      "",
+      t("code.closeDirtySave"),
+    );
+    if (keep) {
+      await saveFile(rel);
+    } else {
+      // The dialog offers Save or Cancel; anything else keeps the tab open,
+      // which is the safe end of a two-way choice about losing work.
+      return;
+    }
+  }
+  closeTab(rel);
+}
+
 function closeTab(rel: string): void {
   if (editor) docs.capture(editor, editor.scrollSnapshot());
   forgetPython(rel);
@@ -551,6 +576,15 @@ function closeTab(rel: string): void {
 async function moveToOtherPane(): Promise<void> {
   const d = docs.active();
   if (!d || !root) return;
+  // A document in review holds the model's proposal as its buffer. Carrying
+  // that text across as an ordinary file turned a diff nobody had read into a
+  // saveable buffer: one Cmd+S wrote the whole proposal to disk, without the
+  // merge view, without the Accept and Reject buttons, and with the pending
+  // marker still claiming it was under review.
+  if (d.mergeBase !== null) {
+    deps?.toast(t("code.splitReview"));
+    return;
+  }
   const rel = d.rel;
   const target = other();
   if (editor) docs.capture(editor, editor.scrollSnapshot());
@@ -615,7 +649,7 @@ export function tabShortcut(e: KeyboardEvent): boolean {
   if (meta && e.key.toLowerCase() === "w" && !e.shiftKey) {
     const rel = docs.activeRel();
     if (!rel) return false;
-    closeTab(rel);
+    void closeTabAsking(rel);
     return true;
   }
   if (e.ctrlKey && e.key === "Tab") {
@@ -1023,6 +1057,16 @@ export async function fileProposal(
   // own document; anything else is listed as pending and opens on a click.
   const holder = regOf(rel);
   if (holder) {
+    // An unsaved buffer is work that exists nowhere else. Docs.open rebuilds
+    // the state when a proposal is passed, which threw it away along with the
+    // undo history: thirty lines typed and not saved, gone, with no Cmd+Z.
+    if (holder.isDirty(rel)) {
+      proposals.delete(rel);
+      creations.delete(rel);
+      paintPending();
+      deps?.paintNav();
+      return `refused: ${rel} has unsaved changes open in the editor. Ask the user to save or discard them first.`;
+    }
     holder.open(rel, existed ? before : "", content);
     setReview(rel, existed ? before : "");
     applyTsBindings(rel);
@@ -1580,11 +1624,21 @@ function setReview(rel: string, base: string | null): void {
  */
 function writeAccepted(rel: string, content: string): void {
   if (!root) return;
-  void docs
+  // The registry that HOLDS this file, not the focused one. Accepting a hunk
+  // in the pane that did not have focus queued the write on a registry that
+  // does not know the file: queueWrite resolves immediately for an unknown
+  // path, so nothing reached the disk, and setSaved then marked the tab clean.
+  // The merge extension accepts on mousedown and calls preventDefault, so the
+  // click never focuses that pane first: it was deterministic, not a race.
+  const reg = regOf(rel) ?? docs;
+  void reg
     .queueWrite(rel, async () => {
+      // No freshness check here on purpose: the merge view's base IS the disk
+      // content it was built from, and a hunk is accepted against that base.
       await api.codeWrite(root!, rel, content);
       notifyPreviewWrite(rel);
-      docs.setSaved(rel, content);
+      reg.setSaved(rel, content);
+      reg.setStamp(rel, await api.codeStamp(root!, rel).catch(() => ""));
       if (creations.delete(rel)) indexStale = true;
       await refreshGit();
       await reloadTree();
@@ -1705,6 +1759,10 @@ export async function openFile(rel: string): Promise<void> {
     deps?.paintNav();
   }
   docs.open(rel, saved, prop?.after);
+  // What the file looked like at this instant, for the save to compare against.
+  if (exists) {
+    docs.setStamp(rel, await api.codeStamp(root, rel).catch(() => ""));
+  }
   rememberOpenTabs();
   if (prop) setReview(rel, saved);
   applyTsBindings(rel);
@@ -1734,7 +1792,11 @@ export async function openFile(rel: string): Promise<void> {
 async function reloadOpenFromDisk(): Promise<void> {
   if (!root) return;
   const kept: string[] = [];
-  for (const d of docs.list()) {
+  // BOTH panes. Iterating the focused registry left the other side holding
+  // buffers from before the checkout, and saveFile has no freshness test: the
+  // next Cmd+S over there wrote the old branch's content over the new one.
+  for (const d of allDocs()) {
+    const reg = regOf(d.rel) ?? docs;
     if (d.mergeBase !== null) continue; // a pending review is the user's to answer
     let disk: string;
     try {
@@ -1742,24 +1804,25 @@ async function reloadOpenFromDisk(): Promise<void> {
     } catch (e: any) {
       // A dirty buffer whose file just vanished is the last copy of that work:
       // turning the tab into an error card would throw it away.
-      if (docs.isDirty(d.rel)) {
+      if (reg.isDirty(d.rel)) {
         kept.push(d.rel);
         continue;
       }
-      docs.openError(d.rel, String(e?.message ?? e));
+      reg.openError(d.rel, String(e?.message ?? e));
       continue;
     }
-    if (disk === d.saved && !docs.isDirty(d.rel)) continue;
-    if (docs.isDirty(d.rel)) {
+    if (disk === d.saved && !reg.isDirty(d.rel)) continue;
+    if (reg.isDirty(d.rel)) {
       // Unsaved edits win over the disk. `saved` is deliberately NOT moved to
       // the new disk content: the dirty marker and the Save button must keep
       // describing a buffer that differs from the file, which it does.
       if (disk !== d.saved) kept.push(d.rel);
       continue;
     }
-    docs.rebuild(d.rel, disk);
-    docs.setSaved(d.rel, disk);
-    docs.setError(d.rel, null);
+    reg.rebuild(d.rel, disk);
+    reg.setSaved(d.rel, disk);
+    reg.setStamp(d.rel, await api.codeStamp(root, d.rel).catch(() => ""));
+    reg.setError(d.rel, null);
     applyTsBindings(d.rel);
     applyRustBindings(d.rel);
     forgetPython(d.rel);
@@ -1770,9 +1833,12 @@ async function reloadOpenFromDisk(): Promise<void> {
       t("code.reloadKeptDirty").replace("%n", String(kept.length)).replace("%s", kept.join(", "))
     );
   }
-  // The view is showing a state object that no longer exists: force a remount.
-  editor?.destroy();
-  setEditor(pane, null);
+  // Both views are showing state objects that no longer exist: force a remount
+  // of each, or the pane that was not focused keeps painting a dead state.
+  for (const i of [0, 1] as const) {
+    views[i]?.destroy();
+    setEditor(i, null);
+  }
 }
 
 /** Keep the recency list the file palette ranks with. */
@@ -1785,6 +1851,14 @@ function remember(rel: string): void {
 
 async function saveOpenFile(): Promise<void> {
   const d = docs.active();
+  if (!d) return;
+  await saveFile(d.rel);
+}
+
+/** Save one file by path, whichever pane holds it. */
+async function saveFile(rel: string): Promise<void> {
+  const reg = regOf(rel) ?? docs;
+  const d = reg.get(rel);
   if (!root || !d) return;
   if (d.mergeBase !== null) {
     deps?.toast(t("code.saveBlocked"));
@@ -1792,9 +1866,10 @@ async function saveOpenFile(): Promise<void> {
   }
   const content = d.state.doc.toString();
   try {
-    await api.codeWrite(root, d.rel, content);
+    await api.codeWrite(root, d.rel, content, d.stamp);
     notifyPreviewWrite(d.rel);
-    docs.setSaved(d.rel, content);
+    reg.setSaved(d.rel, content);
+    reg.setStamp(d.rel, await api.codeStamp(root, d.rel).catch(() => ""));
     if (creations.delete(d.rel)) indexStale = true;
     await refreshGit();
     await reloadTree();
@@ -3343,7 +3418,7 @@ export function codeView(): HTMLElement {
     const tab = onTabsClick(e as MouseEvent);
     if (tab) {
       if (tab.action === "close") {
-        closeTab(tab.rel);
+        void closeTabAsking(tab.rel);
       } else if (tab.rel !== docs.activeRel()) {
         docs.activate(tab.rel);
         mountEditor();

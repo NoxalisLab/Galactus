@@ -693,6 +693,14 @@ const dict: Record<string, { en: string; fr: string }> = {
     fr: "Votre dossier de travail existe toujours mais macOS empêche Galactus de le lire. Ouvrez Réglages Système, Confidentialité et sécurité, Fichiers et dossiers, et autorisez Galactus. Le dossier est mémorisé et se rouvrira tout seul.",
   },
   "code.search.regex": { en: "Regular expression", fr: "Expression régulière" },
+  "store.saveFailed": {
+    en: "Conversations are not being saved: %s. Nothing since the last successful save will survive a restart.",
+    fr: "Les conversations ne sont plus enregistrées : %s. Rien depuis le dernier enregistrement réussi ne survivra à un redémarrage.",
+  },
+  "mem.changedUnderYou": {
+    en: "Galactus recorded something while this was open. Both versions are here: check the text, then save again.",
+    fr: "Galactus a noté quelque chose pendant que c'était ouvert. Les deux versions sont là : vérifiez le texte, puis enregistrez à nouveau.",
+  },
   "perm.image": { en: "draw a picture", fr: "dessiner une image" },
   "nav.images": { en: "Images", fr: "Images" },
   "img.subtitle": {
@@ -762,6 +770,16 @@ const dict: Record<string, { en: string; fr: string }> = {
   },
   "srvfail.retry": { en: "Try again", fr: "Réessayer" },
   "srvfail.retrying": { en: "Starting...", fr: "Démarrage..." },
+  "code.splitReview": {
+    en: "This file is under review. Answer the proposal first, then move it.",
+    fr: "Ce fichier est en cours de revue. Répondez d'abord à la proposition, puis déplacez-le.",
+  },
+  "code.closeDirtyTitle": { en: "Save %s before closing?", fr: "Enregistrer %s avant de fermer ?" },
+  "code.closeDirtyBody": {
+    en: "It has changes that are not on the disk. Closing without saving loses them.",
+    fr: "Il a des modifications qui ne sont pas sur le disque. Fermer sans enregistrer les perd.",
+  },
+  "code.closeDirtySave": { en: "Save and close", fr: "Enregistrer et fermer" },
   "code.splitHint": {
     en: "Move this file to the other side (Cmd+\\)",
     fr: "Déplacer ce fichier de l'autre côté (Cmd+\\)",

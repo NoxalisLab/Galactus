@@ -436,6 +436,8 @@ export const api = {
   mcpCall: (server: string, tool: string, args: unknown) =>
     invoke<string>("mcp_call", { server, tool, args: JSON.stringify(args) }),
   memoryRead: () => invoke<string>("memory_read"),
+  /** Save only if the file still holds `expected`. False when it moved. */
+  memorySave: (text: string, expected: string) => invoke<boolean>("memory_save", { text, expected }),
   memoryWrite: (text: string) => invoke<void>("memory_write", { text }),
   memoryAppend: (text: string) => invoke<string>("memory_append", { text }),
   obsidianSearch: (query: string) => invoke<string>("obsidian_search", { query }),
@@ -535,8 +537,10 @@ export const api = {
   // Rust, not merely here: the model reaches these commands too.
   codeTree: (root: string, sub: string) => invoke<CodeEntry[]>("code_tree", { root, sub }),
   codeRead: (root: string, path: string) => invoke<string>("code_read", { root, path }),
-  codeWrite: (root: string, path: string, content: string) =>
-    invoke<void>("code_write", { root, path, content }),
+  /** `expect` is the stamp from codeStamp; empty skips the freshness check. */
+  codeWrite: (root: string, path: string, content: string, expect?: string) =>
+    invoke<void>("code_write", { root, path, content, expect }),
+  codeStamp: (root: string, path: string) => invoke<string>("code_stamp", { root, path }),
   /** Image generation. Nothing here reaches the network at generation time. */
   imageModels: () => invoke<ImageModelInfo[]>("image_models"),
   imageInstall: (id: string) => invoke<void>("image_install", { id }),

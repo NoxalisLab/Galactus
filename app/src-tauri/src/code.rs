@@ -336,13 +336,69 @@ fn code_read_blocking(root: String, path: String) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|_| "file is not valid UTF-8".into())
 }
 
-#[tauri::command]
-pub async fn code_write(root: String, path: String, content: String) -> Result<(), String> {
-    blocking(move || code_write_blocking(root, path, content)).await
+/// A file's identity on disk, for noticing that it moved under the editor.
+///
+/// Size and modification time, not a hash: the file may be large, this is
+/// checked on every save, and the pair is enough to catch the cases that
+/// matter. A `git stash pop` in the built-in terminal, a formatter on watch, an
+/// npm install rewriting a config: all of them change both.
+pub fn disk_stamp(path: &Path) -> Option<String> {
+    let meta = std::fs::metadata(path).ok()?;
+    let modified = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    Some(format!("{}:{modified}", meta.len()))
 }
 
-fn code_write_blocking(root: String, path: String, content: String) -> Result<(), String> {
+#[tauri::command]
+pub async fn code_stamp(root: String, path: String) -> Result<String, String> {
+    blocking(move || {
+        let full = inside(&root, &path)?;
+        Ok(disk_stamp(&full).unwrap_or_default())
+    })
+    .await
+}
+
+/// Write a file, refusing when it moved under the editor.
+///
+/// `expect` is what the editor believes is on disk, as returned by `code_stamp`.
+/// Empty or absent skips the check, which is what a brand new file wants.
+#[tauri::command]
+pub async fn code_write(
+    root: String,
+    path: String,
+    content: String,
+    expect: Option<String>,
+) -> Result<(), String> {
+    blocking(move || code_write_blocking(root, path, content, expect)).await
+}
+
+fn code_write_blocking(
+    root: String,
+    path: String,
+    content: String,
+    expect: Option<String>,
+) -> Result<(), String> {
     let full = inside(&root, &path)?;
+    // Refuse to overwrite a file that changed since it was read.
+    //
+    // There was no check at all: the editor reprojected a buffer read twenty
+    // minutes earlier and everything written in between was gone, silently.
+    // That is the ordinary case of an editor sitting next to a terminal, and
+    // this app has one built in.
+    if let Some(expected) = expect.filter(|s| !s.is_empty()) {
+        if let Some(now) = disk_stamp(&full) {
+            if now != expected {
+                return Err(format!(
+                    "{path} changed on disk since it was opened. Reload it, or save a copy \
+                     elsewhere, so nothing is lost."
+                ));
+            }
+        }
+    }
     if let Some(parent) = full.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -353,6 +409,13 @@ fn code_write_blocking(root: String, path: String, content: String) -> Result<()
         full.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default()
     ));
     std::fs::write(&tmp, content.as_bytes()).map_err(|e| e.to_string())?;
+    // The temporary is a brand new file, so it carries the process umask and
+    // not the original's mode: without this a 0755 script silently stops being
+    // executable the first time it is saved from the editor.
+    #[cfg(unix)]
+    if let Ok(meta) = std::fs::metadata(&full) {
+        let _ = std::fs::set_permissions(&tmp, meta.permissions());
+    }
     std::fs::rename(&tmp, &full).map_err(|e| e.to_string())?;
     invalidate_status(&root);
     Ok(())
@@ -1107,5 +1170,62 @@ mod fileop_tests {
         assert_eq!(trash_target(trash, ".env", none), PathBuf::from("/tmp/trash/.env"));
         let dot_taken = |p: &Path| p == Path::new("/tmp/trash/.env");
         assert_eq!(trash_target(trash, ".env", dot_taken), PathBuf::from("/tmp/trash/.env 2"));
+    }
+}
+
+#[cfg(test)]
+mod stale_write_tests {
+    use super::{code_write_blocking, disk_stamp};
+
+    fn tmp(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("galactus-stale-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn a_file_rewritten_under_the_editor_is_not_overwritten() {
+        // The everyday case: a terminal next to the editor, git stash pop, then
+        // Cmd+S on a buffer read twenty minutes ago.
+        let d = tmp("stale");
+        let root = d.to_string_lossy().to_string();
+        std::fs::write(d.join("a.txt"), b"original").unwrap();
+        let stamp = disk_stamp(&d.join("a.txt")).unwrap();
+        // Something else writes it. The sleep is needed: modification time has
+        // to actually differ, and two writes in the same nanosecond would not.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(d.join("a.txt"), b"someone else's work").unwrap();
+
+        let refused = code_write_blocking(root.clone(), "a.txt".into(), "editor buffer".into(), Some(stamp));
+        assert!(refused.is_err(), "a stale save must be refused");
+        assert_eq!(std::fs::read(d.join("a.txt")).unwrap(), b"someone else's work");
+
+        // With the current stamp it goes through.
+        let fresh = disk_stamp(&d.join("a.txt")).unwrap();
+        code_write_blocking(root.clone(), "a.txt".into(), "editor buffer".into(), Some(fresh)).unwrap();
+        assert_eq!(std::fs::read(d.join("a.txt")).unwrap(), b"editor buffer");
+
+        // And no stamp at all still writes: a new file has nothing to compare.
+        code_write_blocking(root, "new.txt".into(), "hello".into(), None).unwrap();
+        assert_eq!(std::fs::read(d.join("new.txt")).unwrap(), b"hello");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saving_an_executable_script_leaves_it_executable() {
+        use std::os::unix::fs::PermissionsExt;
+        // write-then-rename creates a brand new file, which takes the umask:
+        // a deploy.sh stopped being runnable the first time it was saved.
+        let d = tmp("mode");
+        let root = d.to_string_lossy().to_string();
+        let script = d.join("deploy.sh");
+        std::fs::write(&script, b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        code_write_blocking(root, "deploy.sh".into(), "#!/bin/sh\necho hi\n".into(), None).unwrap();
+        let mode = std::fs::metadata(&script).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755, "the executable bit must survive a save");
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

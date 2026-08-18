@@ -72,11 +72,47 @@ fn harden_settings_permissions() -> Result<(), String> {
     Ok(())
 }
 
+/// The settings, or an error saying the file exists and cannot be read.
+///
+/// The three cases are different and were all one. A file that is absent is an
+/// empty map, which is correct on a first launch. A file that is present and
+/// does not parse is NOT an empty map: it is a file with the user's Galactus
+/// folder, their knowledge folders, their open tabs and every connector's
+/// environment block, which is where their API tokens live. Reading it as empty
+/// meant the next settings_update wrote a map containing one key and the rest
+/// was gone, silently, on a launch that looked ordinary.
+///
+/// One badly typed value was enough: the map is `String -> String`, the file is
+/// presented to the user as theirs, and `"memory_on": true` typed by hand fails
+/// the whole deserialisation.
+///
+/// The scheduler already applies exactly this rule to jobs.json, with a comment
+/// explaining it at length. It was not applied to the file holding the secrets.
+fn settings_read() -> Result<HashMap<String, String>, String> {
+    let path = settings_path();
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    if raw.trim().is_empty() {
+        return Ok(HashMap::new());
+    }
+    serde_json::from_str(&raw).map_err(|e| {
+        format!(
+            "{} could not be read ({e}). Galactus will not overwrite it: move it aside to start \
+             from scratch, or fix the line it names.",
+            path.display()
+        )
+    })
+}
+
+/// The settings as a map, empty when the file cannot be read.
+///
+/// Kept for the many readers that have no way to report an error. Writers must
+/// use `settings_update`, which refuses rather than overwriting.
 fn settings_load() -> HashMap<String, String> {
-    std::fs::read_to_string(settings_path())
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    settings_read().unwrap_or_default()
 }
 
 fn settings_store(map: &HashMap<String, String>) -> Result<(), String> {
@@ -116,7 +152,9 @@ fn settings_store(map: &HashMap<String, String>) -> Result<(), String> {
 pub(crate) fn settings_update<T>(f: impl FnOnce(&mut HashMap<String, String>) -> T) -> Result<T, String> {
     static SETTINGS_LOCK: Mutex<()> = Mutex::new(());
     let _guard = SETTINGS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let mut map = settings_load();
+    // Refuse rather than overwrite: this is the read-modify-write that would
+    // destroy an unreadable file's contents.
+    let mut map = settings_read()?;
     let out = f(&mut map);
     settings_store(&map)?;
     Ok(out)
@@ -194,6 +232,52 @@ fn root_set(path: String) -> Result<(), String> {
     settings_update(|map| {
         map.insert("root".to_string(), p.to_string_lossy().to_string());
     })
+}
+
+#[cfg(test)]
+mod settings_read_tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("galactus-set-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// The decision itself, with the file read out, so it can be tested without
+    /// touching the real settings path.
+    fn parse(raw: Option<&str>) -> Result<HashMap<String, String>, String> {
+        match raw {
+            None => Ok(HashMap::new()),
+            Some(s) if s.trim().is_empty() => Ok(HashMap::new()),
+            Some(s) => serde_json::from_str(s).map_err(|e| e.to_string()),
+        }
+    }
+
+    #[test]
+    fn absent_is_empty_but_unreadable_is_an_error() {
+        // The distinction that matters: one is a first launch, the other is a
+        // file holding the user's tokens.
+        assert!(parse(None).unwrap().is_empty());
+        assert!(parse(Some("   ")).unwrap().is_empty());
+        assert!(parse(Some("{\"root\": \"/tmp\"}")).is_ok());
+        assert!(parse(Some("{\"root\": ")).is_err(), "truncated");
+        assert!(parse(Some("{\"memory_on\": true}")).is_err(), "wrong value type");
+        assert!(parse(Some("not json at all")).is_err());
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_is_left_alone_on_disk() {
+        // The point is not the error, it is that the bytes survive.
+        let dir = scratch("keep");
+        let file = dir.join("settings.json");
+        std::fs::write(&file, b"{\"root\": \"/tmp\", ").unwrap();
+        let before = std::fs::read(&file).unwrap();
+        assert!(parse(Some(&String::from_utf8_lossy(&before))).is_err());
+        assert_eq!(std::fs::read(&file).unwrap(), before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -6934,15 +7018,62 @@ fn memory_read() -> String {
 
 #[tauri::command]
 fn memory_write(text: String) -> Result<(), String> {
+    let _guard = MEMORY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    memory_store(&text)
+}
+
+/// Save the memory the user edited, unless the agent changed it meanwhile.
+///
+/// The Memory view loads the text once and its Save button wrote it back
+/// wholesale. While that view is open the agent can be recording facts through
+/// `remember`: correcting a comma and pressing Save discarded everything it had
+/// learned since the view opened, with nothing on screen to suggest it.
+#[tauri::command]
+fn memory_save(text: String, expected: String) -> Result<bool, String> {
+    let _guard = MEMORY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let now = memory_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .unwrap_or_default();
+    if now != expected {
+        // false, not an error: the caller shows what happened and offers to
+        // reload, which is information rather than a failure.
+        return Ok(false);
+    }
+    memory_store(&text)?;
+    Ok(true)
+}
+
+/// One lock over the memory file.
+///
+/// `remember` is a read-modify-write and the teammates run in parallel now, so
+/// two facts recorded at the same instant used to keep whichever landed last.
+static MEMORY_LOCK: Mutex<()> = Mutex::new(());
+
+/// Write memory.md the way every other persistent file in this app is written.
+///
+/// It was the one exception: a plain `fs::write`, which truncates first. A full
+/// disk, a crash or a quit during that window left the file empty or cut mid
+/// sentence, with no copy anywhere. Everything the user had told the app to
+/// remember, gone, on an operation nobody thinks of as risky.
+fn memory_store(text: &str) -> Result<(), String> {
     let p = memory_path().ok_or(NO_WORKSPACE_MEMORY)?;
     if let Some(dir) = p.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    std::fs::write(&p, text.as_bytes()).map_err(|e| e.to_string())
+    let tmp = p.with_extension(format!("tmp.{}", std::process::id()));
+    {
+        let mut file = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+        file.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+        // Before the rename, not after: the rename is atomic for the name, not
+        // for the bytes behind it.
+        file.sync_all().map_err(|e| e.to_string())?;
+    }
+    std::fs::rename(&tmp, &p).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn memory_append(text: String) -> Result<String, String> {
+    let _guard = MEMORY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut cur = memory_read();
     if !cur.is_empty() && !cur.ends_with('\n') {
         cur.push('\n');
@@ -8220,6 +8351,7 @@ pub fn run() {
             pick_folder,
             memory_read,
             memory_write,
+            memory_save,
             memory_append,
             obsidian_search,
             obsidian_read,
@@ -8253,6 +8385,7 @@ pub fn run() {
             code::code_tree,
             code::code_read,
             code::code_write,
+            code::code_stamp,
             code::git_info,
             code::git_status,
             code::git_log,

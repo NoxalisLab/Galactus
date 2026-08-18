@@ -821,6 +821,16 @@ function stopThread(sess: Thread): void {
   // press did nothing at all: the mark is what the queued turn reads when its
   // slot arrives.
   if (!sess.agent && sess.generating) sess.cancelPending = true;
+  // Stop means stop, including what was typed while it was running. The queued
+  // messages used to survive: the current turn aborted, its completion handler
+  // fired dispatchQueued, and the next message started immediately. The user
+  // pressed Stop and watched the spinner come straight back.
+  if (sess.queued.length) {
+    dropQueuedBubbles(sess);
+    sess.queued.length = 0;
+    store.save(sess.conv, true);
+    paintChat();
+  }
   sess.agent?.stop();
   cancelPermissions((k) => k === sess.key);
 }
@@ -2358,7 +2368,11 @@ async function submitChat(): Promise<void> {
       input.style.height = "";
       input.dispatchEvent(new Event("input"));
       sess.queued.push(queued);
-      store.pushUser(sess, queued);
+      // The fourth argument is what marks it "waiting its turn". Without it the
+      // badge, its translation and its stylesheet rule were all dead code, and
+      // the bubble was indistinguishable from a message already sent: the
+      // exact confusion the queue was built to remove.
+      store.pushUser(sess, queued, undefined, true);
       paintChat();
       scrollChatDown();
     } else {
@@ -2375,27 +2389,32 @@ async function submitChat(): Promise<void> {
   input.value = "";
   input.style.height = "";
   submitting = true;
+  // The thread the user is writing IN, captured BEFORE the first await.
+  //
+  // autoRouteTask can stop the engine, load another model and wait up to three
+  // minutes. Re-reading active() after that sent the message to whatever thread
+  // was on screen at the end, which is not necessarily the one it was typed in.
+  const target = active();
   try {
-    // The thread the user is writing IN, not the conversation's main thread:
-    // a message sent from a teammate's thread used to announce its model swap
-    // somewhere the user was not looking, and report its failure there too.
-    await autoRouteTask(text, active());
+    await autoRouteTask(text, target);
+    if (!(server.running && server.phase === "ready")) {
+      // Swap failed: give the user their message back instead of losing it.
+      const fresh = document.getElementById("ci") as HTMLTextAreaElement | null;
+      if (fresh) { fresh.value = text; fresh.dispatchEvent(new Event("input")); }
+      return;
+    }
+    // Mentions are resolved HERE, not inside the Agent: what the user sees in
+    // the log is the sentence they wrote, and the attached bodies ride with the
+    // turn. The budget is a third of the live window, the same share agent.ts
+    // gives one tool result, so a mention can never crowd out the conversation.
+    await dispatchTurn(target, await withMentions(text), { show: true });
   } finally {
+    // Released only once the turn is under way. It used to be released before
+    // withMentions, which reads files and asks the engine for its context size:
+    // a second Return during that window started a second turn on the same
+    // Agent, and the two interleaved their messages into one history.
     submitting = false;
   }
-  if (!(server.running && server.phase === "ready")) {
-    // Swap failed: give the user their message back instead of losing it.
-    const fresh = document.getElementById("ci") as HTMLTextAreaElement | null;
-    if (fresh) { fresh.value = text; fresh.dispatchEvent(new Event("input")); }
-    return;
-  }
-  // The thread may have changed while the swap was awaited.
-  //
-  // Mentions are resolved HERE, not inside the Agent: what the user sees in
-  // the log is the sentence they wrote, and the attached bodies ride with the
-  // turn. The budget is a third of the live window, the same share agent.ts
-  // gives one tool result, so a mention can never crowd out the conversation.
-  await dispatchTurn(active(), await withMentions(text), { show: true });
 }
 
 /**
@@ -3315,21 +3334,43 @@ function memoryView(): HTMLElement {
     wsrow.style.display = s === "workspace" ? "flex" : "none";
     scopehint.style.display = s === "workspace" ? "none" : "block";
   }
+  // What the file held when this view loaded it. The Save button compares
+  // against it, because the agent writes to the same file while the view is
+  // open: correcting a comma used to discard every fact recorded meanwhile.
+  let memLoaded = "";
   Promise.all([api.settingsGet(), api.memoryRead()]).then(([s, mem]) => {
     const on = s["memory_on"] !== "0";
     tog.classList.toggle("on", on); body.style.display = on ? "flex" : "none";
     memtext.value = mem;
+    memLoaded = mem;
     wspath.value = s["workspace"] ?? "";
     if (s["obsidian_vault"]) vaultline.textContent = s["obsidian_vault"];
     paintScope(s["memory_scope"] === "workspace" ? "workspace" : "global");
   });
   tog.addEventListener("click", async () => { tog.classList.toggle("on"); const on = tog.classList.contains("on"); body.style.display = on ? "flex" : "none"; await api.settingsSet("memory_on", on ? "1" : "0"); });
-  scope.addEventListener("click", async (e) => { const b = (e.target as HTMLElement).closest("[data-s]") as HTMLElement | null; if (!b) return; paintScope(b.dataset.s!); await api.settingsSet("memory_scope", b.dataset.s!); memtext.value = await api.memoryRead(); });
-  wrap.querySelector("#wspick")!.addEventListener("click", async () => { const p = await pickFolderOrSay(); if (p) { wspath.value = p; await api.settingsSet("workspace", p); memtext.value = await api.memoryRead(); } });
+  scope.addEventListener("click", async (e) => { const b = (e.target as HTMLElement).closest("[data-s]") as HTMLElement | null; if (!b) return; paintScope(b.dataset.s!); await api.settingsSet("memory_scope", b.dataset.s!); memtext.value = memLoaded = await api.memoryRead(); });
+  wrap.querySelector("#wspick")!.addEventListener("click", async () => { const p = await pickFolderOrSay(); if (p) { wspath.value = p; await api.settingsSet("workspace", p); memtext.value = memLoaded = await api.memoryRead(); } });
   {
     const b = wrap.querySelector<HTMLElement>("#memsave")!;
     b.addEventListener("click", async () => {
-      await api.memoryWrite(memtext.value);
+      const wanted = memtext.value;
+      let ok = false;
+      try {
+        ok = await api.memorySave(wanted, memLoaded);
+      } catch (e: any) {
+        toast(String(e?.message ?? e));
+        return;
+      }
+      if (!ok) {
+        // Not an error: the agent recorded something while this was open. Show
+        // what it wrote rather than choosing for the user which one survives.
+        const fresh = await api.memoryRead().catch(() => memLoaded);
+        memLoaded = fresh;
+        memtext.value = fresh + (fresh.endsWith("\n") ? "" : "\n") + wanted.slice(memLoaded.length);
+        toast(t("mem.changedUnderYou"));
+        return;
+      }
+      memLoaded = wanted;
       const prev = b.textContent;
       b.textContent = t("mem.saved");
       setTimeout(() => { b.textContent = prev; }, 1500);
@@ -4841,6 +4882,9 @@ async function boot() {
   // What the runs view cannot know on its own: which port the engine is on
   // right now, whether it can actually drive an agent, and how to say
   // something to the user. Installed before any run can be declared.
+  // A failing disk is told once, and loudly: the alternative is an app that
+  // looks normal while nothing is being kept.
+  store.reportSaveFailures((message) => toast(t("store.saveFailed").replace("%s", message)));
   runsview.configureRuns({
     port: () => server.port,
     ready: () => server.running && server.phase === "ready" && !toolsBlocked(),
