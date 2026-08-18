@@ -2,7 +2,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getVersion } from "@tauri-apps/api/app";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check as checkForUpdate, type Update } from "@tauri-apps/plugin-updater";
-import { api, benchOnce, chatOnce, fetchCtxSize, HwInfo, inlineCodeOnce, InstallVolumes, ModelEntry, onEvent, RelayStatus, ServerStatus, SkillInfo, VolumeInfo } from "./api";
+import { api, benchOnce, chatOnce, fetchCtxSize, HwInfo, inlineCodeOnce, InstallVolumes, ModelEntry, onEvent, RelayStatus, ServerStatus, SkillInfo, VolumeInfo , type Recommendation } from "./api";
 import {
   Agent,
   AgentDirectory,
@@ -2804,6 +2804,7 @@ async function showInstallModal(m: ModelEntry): Promise<void> {
   const spaceline = mm.querySelector<HTMLElement>("#spaceline")!;
   const goBtn = mm.querySelector<HTMLButtonElement>("#go")!;
   const bwBtn = mm.querySelector<HTMLButtonElement>("#bwbtn")!;
+  const chosenLine = mm.querySelector<HTMLElement>("#chosenline")!;
 
   const optLabel = (v: VolumeInfo) =>
     `${v.name} · ${t("installdlg.free").replace("%s", String(v.free_gb))}`;
@@ -2883,17 +2884,75 @@ async function showInstallModal(m: ModelEntry): Promise<void> {
     bwBtn.disabled = true;
     bwline.classList.remove("bad");
     bwline.textContent = t("installdlg.measuring");
-    const targets = mode === "dual" ? [iSel, eSel] : [iSel];
+    // Measure EVERY candidate, not only the two currently selected. The
+    // placement below can only compare drives it has numbers for, and asking
+    // the user to select a pair before measuring is asking them to answer the
+    // question this dialog exists to answer.
     try {
-      for (const idx of targets) {
-        bw[idx] = await api.volumeBandwidth(cands[idx].probe);
+      for (let idx = 0; idx < cands.length; idx++) {
+        if (bw[idx] == null) bw[idx] = await api.volumeBandwidth(cands[idx].probe);
       }
+      await applyRecommendedLayout();
       paintVerdict();
     } catch (e: any) {
       bwline.textContent = t("installdlg.measureFail").replace("%s", String(e?.message ?? e));
     }
     bwBtn.disabled = false;
   });
+
+  /**
+   * Let the planner place the pack, now that the drives have been measured.
+   *
+   * This existed in Rust from the start, with its reserve, its bandwidth floor
+   * and eight tests, and nothing ever called it: the only caller passed no
+   * volumes, so the layout was always null and the user was left to reach the
+   * verdict by hand, by choosing dual and pressing Measure. The comment on
+   * DUAL_BANDWIDTH_FLOOR says exactly that, as a defect to fix.
+   */
+  async function applyRecommendedLayout(): Promise<void> {
+    const measured = cands
+      .map((v, i) => ({
+        mount: v.mount,
+        free_bytes: Math.round(v.free_gb * 1e9),
+        bandwidth_gbs: bw[i] ?? undefined,
+      }))
+      .filter((v) => v.bandwidth_gbs !== undefined);
+    if (measured.length < 1) return;
+    let rec: Recommendation;
+    try {
+      rec = await api.recommendForModel(m.id, measured);
+    } catch {
+      // The dialog still works by hand: this only removes the guessing.
+      return;
+    }
+    const layout = rec.layout;
+    if (!layout) return;
+    const indexOf = (mount: string) => cands.findIndex((v) => v.mount === mount);
+    if (layout.kind === "dual" && !single) {
+      const i = indexOf(layout.internal);
+      const e = indexOf(layout.external);
+      if (i >= 0 && e >= 0 && i !== e) {
+        mode = "dual";
+        iSel = i;
+        eSel = e;
+      }
+    } else if (layout.kind === "single") {
+      const i = indexOf(layout.mount);
+      if (i >= 0) {
+        mode = "mono";
+        iSel = i;
+      }
+    }
+    // The sentence was written and translated and never shown, because the key
+    // that returns it had no caller either.
+    const key = layoutBriefKey(layout);
+    if (key) chosenLine.textContent = t(key);
+    // The mode segment reflects what was chosen, then the selects follow.
+    mm.querySelectorAll<HTMLElement>("#mseg button").forEach((x) =>
+      x.classList.toggle("on", x.dataset.m === mode),
+    );
+    paintSel();
+  }
 
   goBtn.addEventListener("click", () => {
     const volumes: InstallVolumes | null =
