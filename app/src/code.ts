@@ -45,6 +45,8 @@ import { classifyRootError, resolveRestoredRoot } from "./code/restored-root";
 import { affectsPreview, chooseEntry, DEVICE_PRESETS, frameScale } from "./code/preview-pane";
 import { simpleLanguageFor } from "./code/simple-modes";
 import { dirOf, joinRel, nameOf, renameTarget, targetDir } from "./code/fileops";
+import { lineChanges } from "./code/changebar";
+import { setChanges } from "./code/changegutter";
 import type { SshHost } from "./api";
 import { ReviewGate, reviewInstruction } from "./code/review-gate";
 import { autoTabExtension } from "./code/auto-tab";
@@ -1103,6 +1105,9 @@ async function refreshGit(): Promise<void> {
   } else {
     changes = [];
   }
+  // A commit, a checkout or a pull moves what "committed" means, and the bar
+  // would otherwise keep comparing against a version that is no longer there.
+  forgetHeads();
 }
 
 async function refreshHistory(): Promise<void> {
@@ -1454,6 +1459,7 @@ function mountEditor(): void {
   if (d.scroll) editor.dispatch({ effects: d.scroll });
   applyReveal();
   scheduleOutline();
+  scheduleChangeBar();
 }
 
 export async function openFile(rel: string): Promise<void> {
@@ -1682,6 +1688,56 @@ function applyReveal(): void {
  * reached the end of the document: the 50 ms budget in `outline()` is
  * deliberate, so the first answer on a large file is partial by design.
  */
+// ---------------------------------------------------------------- change bar
+//
+// The green/blue bar in the gutter. The committed text is fetched once per file
+// and cached, because `git show` is a process and the buffer changes on every
+// keystroke; the diff itself is pure and runs on a short timer.
+
+/** Committed text per path, cleared whenever git's own state moves. */
+const headCache = new Map<string, string | null>();
+let changeTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** The committed version of a file, or null when git has never held it. */
+async function headText(rel: string): Promise<string | null> {
+  if (headCache.has(rel)) return headCache.get(rel)!;
+  let text: string | null = null;
+  if (root && git?.repo) {
+    // A file that is new, ignored, or in a repository with no commit yet has no
+    // committed version, and that is an answer, not a failure.
+    text = await api.gitShowFile(root, "HEAD", rel).catch(() => null);
+  }
+  headCache.set(rel, text);
+  return text;
+}
+
+/** Recompute the bar for the open file, after a pause in typing. */
+function scheduleChangeBar(): void {
+  if (changeTimer) clearTimeout(changeTimer);
+  changeTimer = setTimeout(() => {
+    changeTimer = null;
+    void paintChangeBar();
+  }, 250);
+}
+
+async function paintChangeBar(): Promise<void> {
+  const d = docs.active();
+  if (!d || !editor || d.error !== null) return;
+  const rel = d.rel;
+  const base = await headText(rel);
+  // The user may have switched files while `git show` ran.
+  const still = docs.active();
+  if (!still || still.rel !== rel || !editor) return;
+  const marks = base === null ? [] : lineChanges(base, editor.state.doc.toString());
+  editor.dispatch({ effects: setChanges.of(marks) });
+}
+
+/** Forget the committed text: a commit, a checkout or a pull moved it. */
+function forgetHeads(): void {
+  headCache.clear();
+  scheduleChangeBar();
+}
+
 function scheduleOutline(): void {
   if (outlineTimer) clearTimeout(outlineTimer);
   outlineTimer = setTimeout(() => {

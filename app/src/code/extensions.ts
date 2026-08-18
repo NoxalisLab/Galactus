@@ -54,6 +54,7 @@ import {
 } from "@codemirror/autocomplete";
 import { lintGutter, lintKeymap } from "@codemirror/lint";
 import { acceptAutoTab, clearAutoTab } from "./auto-tab.js";
+import { changeGutter } from "./changegutter.js";
 
 /** Language support for the open file. Swapped when the active tab changes. */
 export const languageComp = new Compartment();
@@ -129,6 +130,9 @@ function parts(opts: EditorOpts): Part[] {
     { name: "highlightSelectionMatches", ext: highlightSelectionMatches() },
     // Not part of basicSetup: the gutter that shows where the diagnostics are.
     { name: "lintGutter", ext: lintGutter() },
+    // Not part of basicSetup either: the bar showing what this file has that
+    // the committed version does not.
+    { name: "changeGutter", ext: changeGutter() },
     // Not part of basicSetup: the translated strings.
     { name: "phrases", ext: EditorState.phrases.of(opts.phrases) },
     // The compartments. Every one of them may legitimately be empty.

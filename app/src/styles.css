@@ -1795,3 +1795,19 @@ html.pane-dragging .pvw-frame { pointer-events: none; }
   cursor: pointer;
 }
 .fmi:hover { background: var(--bd2); }
+
+/* The change bar: what this file has that the committed version does not.
+   Three pixels wide, because it is read out of the corner of the eye and any
+   wider starts competing with the line numbers. */
+.cm-changebar { width: 3px; padding: 0; }
+.cm-chg { width: 3px; height: 100%; }
+.cm-chg-add { background: #3fb950; }
+.cm-chg-mod { background: #4b8dff; }
+/* A deletion has no line of its own: a wedge on the boundary it left behind. */
+.cm-chg-del {
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 5px solid #f85149;
+  margin-top: -4px;
+}
