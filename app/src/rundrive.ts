@@ -36,6 +36,13 @@ export type RunDecision = "once" | "always" | "deny";
 export interface DrivableAgent {
   send(userText: string): Promise<void>;
   stop(): void;
+  /**
+   * Tell the agent why the next refusal happened.
+   *
+   * Optional so the tests can drive a minimal stub, and so a caller that has
+   * no better answer than "the user said no" simply does not set one.
+   */
+  setDenialReason?(reason: string): void;
 }
 
 /**
@@ -135,6 +142,24 @@ export function blockQuestion(req: DrivePermissionRequest, reason: "policy" | "e
  * `askPermission` hook to the returned `askPermission`, and its streaming hooks
  * to the returned callbacks, all of which belong to THIS turn.
  */
+/** The refusal in words that name the actual cause. */
+function refusalText(reason: string | undefined): string {
+  switch (reason) {
+    case "policy":
+      return "refused: outside what this run is allowed to do";
+    case "expired":
+      return "refused: this run is out of time";
+    case "cancelled":
+      return "refused: this run was stopped";
+    case "out_of_turn":
+      return "refused: nothing may be done between turns";
+    case "elevated":
+      return "refused: this needs a person, and a run has none";
+    default:
+      return "refused: not allowed here";
+  }
+}
+
 export async function driveTurn(
   run: Run,
   agent: DrivableAgent,
@@ -143,6 +168,8 @@ export async function driveTurn(
   sink: DriveSink = {},
   grants: DriveGrants | null = null,
 ): Promise<TurnOutcome | null> {
+  // Tool targets seen on the start event, waiting for their outcome.
+  const pendingDetail = new Map<string, string>();
   let outcome: TurnOutcome | null = null;
   await run.execute(async (ctx) => {
     const acc: TurnAccumulator = { text: "", blockedOn: null, error: null };
@@ -167,10 +194,15 @@ export async function driveTurn(
           // later ones would only queue questions nobody asked for yet, and the
           // model's next step probably depends on this one anyway.
           if (acc.blockedOn === null) acc.blockedOn = blockQuestion(req, gated.reason);
+          // What the model is told. "denied by user" is a lie here: nobody is
+          // watching a run, and the model builds its final report on this
+          // sentence, which is what a scheduled job then delivers.
+          agent.setDenialReason?.(refusalText(gated.reason));
           sink.gate?.(req, "deny");
           agent.stop();
           return "deny";
         }
+        agent.setDenialReason?.(refusalText(gated.reason));
         sink.gate?.(req, "deny");
         return "deny";
       },
@@ -179,10 +211,19 @@ export async function driveTurn(
         sink.delta?.(text);
       },
       onTool: (name, detail) => {
+        // Held until the result arrives. The transcript records one line per
+        // tool, and the TARGET is on the start event while the OUTCOME is on
+        // the end one; writing "" as the detail meant the record said which
+        // tool ran and never on what. For anything that does not pass the gate
+        // (search_knowledge, retrieve, use_skill) there was then no trace of a
+        // target anywhere, which is the one question an audit asks.
+        pendingDetail.set(name, detail);
         sink.tool?.(name, detail);
       },
       onToolResult: (name, result) => {
-        ctx.tool(name, "", result);
+        const detail = pendingDetail.get(name) ?? "";
+        pendingDetail.delete(name);
+        ctx.tool(name, detail, result);
         sink.toolResult?.(name, result);
       },
       onError: (err) => {

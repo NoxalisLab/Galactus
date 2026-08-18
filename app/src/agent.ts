@@ -271,6 +271,11 @@ export function untrusted(source: string, body: string): string {
 }
 
 
+/** Whether a tool result is a refusal rather than an answer. */
+function isRefusal(result: string): boolean {
+  return result === "denied by user" || result.startsWith("refused: ");
+}
+
 // ---------------- the code workspace ----------------
 //
 // When the Code view owns a folder, a write INSIDE that folder is not a write:
@@ -1087,6 +1092,14 @@ export class Agent {
 
   constructor(
     private hooks: AgentHooks,
+    /**
+     * The engine's port when this agent was built.
+     *
+     * A run keeps its agent while it is blocked waiting for a human, and the
+     * port is not stable: every engine start picks a free one. After a model
+     * swap the resumed run was talking to a dead port and failed instead of
+     * carrying on, so the port can be refreshed.
+     */
     private port: number,
     private role: AgentRole = "main"
   ) {
@@ -1910,7 +1923,7 @@ export class Agent {
       detail: `${name.trim()} · ${role.trim() || "(no role)"}`,
       elevated: false,
     });
-    if (!ok) return "denied by user";
+    if (!ok) return this.denialReason;
     const member = await directory.spawn(this.convId, name.trim(), role.trim(), brief.trim());
     if (typeof member === "string") return `error: ${member}`;
     return (
@@ -1957,7 +1970,7 @@ export class Agent {
       detail: `${known.name} · ${message.slice(0, 200)}`,
       elevated: false,
     });
-    if (!ok) return "denied by user";
+    if (!ok) return this.denialReason;
     this.hooks.onActivity?.("fleet", known.name);
     return directory.ask(this.convId, known.id, message, { id: this.threadId, name: this.selfName }, [
       ...this.chain,
@@ -1997,7 +2010,7 @@ export class Agent {
     } catch {
       /* preview failure must not block the flow */
     }
-    if (!(await this.gate(req))) return "denied by user";
+    if (!(await this.gate(req))) return this.denialReason;
     const note = await codeWorkspace!.propose(path, rel, content);
     return preview ? `${note}\n\n${plainDiff(preview.before, content, preview.existed)}` : note;
   }
@@ -2049,8 +2062,29 @@ export class Agent {
    * the run's own gate, so nothing appeared in the transcript at all, and a run
    * whose record shows nothing is a run nobody can audit.
    */
+  /** Point this agent at the engine's current port. */
+  setPort(port: number): void {
+    this.port = port;
+  }
+
   setNoStanding(on: boolean): void {
     this.noStanding = on;
+  }
+
+  /**
+   * Why the last refusal happened, in the words the model should read.
+   *
+   * "denied by user" was injected for every refusal, including the ones no
+   * user ever saw: a run out of time, an action outside its policy, a turn
+   * that was cancelled. The model then built its final report on that false
+   * cause, and that report is what a scheduled job delivers to a webhook: a
+   * run could truthfully say "the user refused" about a run nobody watched.
+   */
+  private denialReason = "denied by user";
+
+  /** Set by the host when a refusal has a cause other than a person. */
+  setDenialReason(reason: string): void {
+    this.denialReason = reason || "denied by user";
   }
 
   private async gate(req: PermissionRequest): Promise<boolean> {
@@ -2067,6 +2101,7 @@ export class Agent {
     // written in, and the one thing that must never become unattended is a
     // path that survives across sessions.
     if (!req.elevated && effectiveAutoApprove(this.autoApprove, this.authoredLoaded)) return true;
+    this.denialReason = "denied by user";
     const decision = await this.hooks.askPermission(req);
     // The user may have hit Stop while the dialog was open: an approval that
     // lands after the abort must NOT execute the pending tool.
@@ -2120,8 +2155,9 @@ export class Agent {
     this.steps.push({
       tool,
       detail: detail.slice(0, 600),
-      ok: !result.startsWith("error:") && result !== "denied by user",
-      denied: result === "denied by user",
+      // Any refusal, not just a human one: the reason now names the cause.
+      ok: !result.startsWith("error:") && !isRefusal(result),
+      denied: isRefusal(result),
     });
   }
 
@@ -2185,7 +2221,7 @@ export class Agent {
         const ok = await this.gate({ kind: "fs_read", detail: p, elevated: isElevatedRead(p) });
         const off = Number(args.offset) > 0 ? Math.floor(Number(args.offset)) : undefined;
         const cap = Math.min(Math.max(Math.floor(Number(args.max_bytes)) || 200_000, 1_000), 200_000);
-        result = ok ? await api.fsRead(p, cap, off) : "denied by user";
+        result = ok ? await api.fsRead(p, cap, off) : this.denialReason;
       } else if (name === "write_file") {
         const p = String(args.path ?? "");
         const content = String(args.content ?? "");
@@ -2209,7 +2245,7 @@ export class Agent {
           // Preview failure must not block the permission flow.
         }
         const ok = await this.gate(req);
-        result = ok ? await api.fsWrite(p, content) : "denied by user";
+        result = ok ? await api.fsWrite(p, content) : this.denialReason;
         if (ok && preview) {
           result += "\n\n" + plainDiff(preview.before, content, preview.existed);
         }
@@ -2217,12 +2253,12 @@ export class Agent {
       } else if (name === "list_directory") {
         const p = String(args.path ?? "");
         const ok = await this.gate({ kind: "fs_list", detail: p, elevated: false });
-        result = ok ? await api.fsList(p) : "denied by user";
+        result = ok ? await api.fsList(p) : this.denialReason;
       } else if (name === "fetch_url") {
         const url = String(args.url ?? "");
         const ok = await this.gate({ kind: "web", detail: url, elevated: false });
         const cap = Math.min(Math.max(Math.floor(Number(args.max_bytes)) || 200_000, 1_000), 200_000);
-        result = ok ? untrusted(`the web page ${url}`, await api.webFetch(url, cap)) : "denied by user";
+        result = ok ? untrusted(`the web page ${url}`, await api.webFetch(url, cap)) : this.denialReason;
       } else if (name === "run_command") {
         const cmd = String(args.command ?? "");
         // A command that reaches a remote is asked as "git", with noAlways, and
@@ -2236,13 +2272,13 @@ export class Agent {
           elevated: isElevatedCommand(cmd),
           noAlways: network || undefined,
         });
-        result = ok ? await api.shellRun(cmd, 120) : "denied by user";
+        result = ok ? await api.shellRun(cmd, 120) : this.denialReason;
       } else if (name === "remember") {
         // Memory is injected into every future conversation: an ungated write
         // here would let any read document poison it silently.
         const fact = String(args.fact ?? "");
         const ok = await this.gate({ kind: "memory", detail: fact.slice(0, 300), elevated: false });
-        result = ok ? await api.memoryAppend(fact) : "denied by user";
+        result = ok ? await api.memoryAppend(fact) : this.denialReason;
         if (ok) {
           this.memory = await api.memoryRead();
           if (this.messages[0]?.role === "system") this.messages[0].content = this.systemPrompt();
@@ -2253,13 +2289,13 @@ export class Agent {
           // before it is drawn.
           const wanted = String(args.prompt ?? "");
           const ok = await this.gate({ kind: "image", detail: wanted.slice(0, 300), elevated: false });
-          result = ok ? await this.makeImage(args) : "denied by user";
+          result = ok ? await this.makeImage(args) : this.denialReason;
         } else if (name === "read_document") {
         const p = String(args.path ?? "");
         const ok = await this.gate({ kind: "fs_read", detail: p, elevated: isElevatedRead(p) });
         result = ok
           ? untrusted(`the document ${p}`, await api.docRead(p, args.mode ? String(args.mode) : undefined))
-          : "denied by user";
+          : this.denialReason;
       } else if (name === "spawn_agent") {
         result = await this.spawnAgent(
           String(args.name ?? ""),
@@ -2267,8 +2303,22 @@ export class Agent {
           String(args.brief ?? "")
         );
       } else if (name === "search_knowledge") {
-        // The user opted in by configuring the folders: no dialog, but the
-        // call stays visible as a tool card.
+        // Through the gate as a read.
+        //
+        // The user opting in by configuring the folders is a good reason not to
+        // raise a DIALOG, and it was taken as a reason to skip the gate
+        // entirely. An unattended run under read_only, whose whole promise is
+        // that nothing leaves the machine, could therefore read the user's
+        // notes with no policy able to refuse and no entry in its transcript.
+        // Auto-approve still applies, so nothing changes in a chat.
+        const okKb = await this.gate({
+          kind: "fs_read",
+          detail: `knowledge: ${String(args.query ?? "")}`,
+          elevated: false,
+        });
+        if (!okKb) {
+          result = this.denialReason;
+        } else {
         // Spend what is actually free in the window, not a fixed slice. The
         // reserve keeps room for the rest of the turn: the thread so far, the
         // tool definitions and the answer being generated.
@@ -2283,7 +2333,8 @@ export class Agent {
           ? hits
               .map((h) => `${h.path}:${h.line} (score ${h.score.toFixed(2)})\n${h.snippet}`)
               .join("\n\n---\n\n")
-          : "(no match in the knowledge folders)";
+            : "(no match in the knowledge folders)";
+        }
       } else if (name === "retrieve") {
         // No gate: this reads back only what the app itself spilled, into a
         // directory the model cannot write to, and Rust refuses any path
@@ -2322,7 +2373,7 @@ export class Agent {
         if (!wsRoot) {
           result = "error: no code workspace is open";
         } else if (!(await this.gate({ kind: "fs_read", detail: `${wsRoot}/`, elevated: isElevatedRead(wsRoot) }))) {
-          result = "denied by user";
+          result = this.denialReason;
         } else {
           const q = String(args.query ?? "");
           const limit = Number(args.limit) > 0 ? Math.min(Math.floor(Number(args.limit)), 300) : 60;
@@ -2351,7 +2402,7 @@ export class Agent {
         if (!wsRoot) {
           result = "error: no code workspace is open";
         } else if (!(await this.gate({ kind: "fs_list", detail: `${wsRoot}/`, elevated: false }))) {
-          result = "denied by user";
+          result = this.denialReason;
         } else {
           const q = String(args.query ?? "").toLowerCase();
           const limit = Number(args.limit) > 0 ? Math.min(Math.floor(Number(args.limit)), 300) : 60;
@@ -2380,7 +2431,7 @@ export class Agent {
         const q = String(args.query ?? "");
         const ok = await this.gate({ kind: "conversations", detail: `search: ${q}`, elevated: false });
         if (!ok) {
-          result = "denied by user";
+          result = this.denialReason;
         } else {
           const k = Number(args.k) > 0 ? Math.min(Math.floor(Number(args.k)), 20) : undefined;
           const hits = await api.convSearch(q, k);
@@ -2397,18 +2448,18 @@ export class Agent {
         const id = String(args.id ?? "");
         const ok = await this.gate({ kind: "conversations", detail: `read: ${id}`, elevated: false });
         const cap = Math.min(Math.max(Math.floor(Number(args.max_chars)) || 24_000, 1_000), 200_000);
-        result = ok ? await api.convRead(id, cap) : "denied by user";
+        result = ok ? await api.convRead(id, cap) : this.denialReason;
       } else if (name === "use_skill") {
         result = await this.loadSkill(String(args.name ?? ""));
       } else if (name === "obsidian_search") {
         const ok = await this.gate({ kind: "obsidian", detail: `search: ${args.query}`, elevated: false });
-        result = ok ? await api.obsidianSearch(String(args.query ?? "")) : "denied by user";
+        result = ok ? await api.obsidianSearch(String(args.query ?? "")) : this.denialReason;
       } else if (name === "obsidian_read") {
         const ok = await this.gate({ kind: "obsidian", detail: `read: ${args.note}`, elevated: false });
-        result = ok ? await api.obsidianRead(String(args.note ?? "")) : "denied by user";
+        result = ok ? await api.obsidianRead(String(args.note ?? "")) : this.denialReason;
       } else if (name === "obsidian_append") {
         const ok = await this.gate({ kind: "obsidian", detail: `append: ${args.note}`, elevated: false });
-        result = ok ? await api.obsidianAppend(String(args.note ?? ""), String(args.text ?? "")) : "denied by user";
+        result = ok ? await api.obsidianAppend(String(args.note ?? ""), String(args.text ?? "")) : this.denialReason;
       } else if (name === "obsidian_update") {
         // Full rewrite: the user sees a Cursor-style diff before approving,
         // exactly like write_file.
@@ -2428,7 +2479,7 @@ export class Agent {
           /* preview failure must not block the flow */
         }
         const ok = await this.gate(req);
-        result = ok ? (await api.obsidianWrite(note, content), `updated ${note}`) : "denied by user";
+        result = ok ? (await api.obsidianWrite(note, content), `updated ${note}`) : this.denialReason;
         if (ok && preview) {
           result += "\n\n" + plainDiff(preview.before, content, preview.existed);
         }
@@ -2445,7 +2496,7 @@ export class Agent {
         });
         result = ok
           ? untrusted(`the ${server} connector`, await api.mcpCall(server, tool, args))
-          : "denied by user";
+          : this.denialReason;
       } else {
         result = `error: unknown tool ${name}`;
       }

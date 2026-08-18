@@ -2207,6 +2207,14 @@ function searchDeps(): SearchPanelDeps {
  */
 async function runReplace(s: SearchPanelState): Promise<void> {
   if (!root || !s.hits.length) return;
+  // A truncated search cannot drive a complete replacement. The backend stops
+  // at 5000 matches or 30 seconds and says so in the report; replacing on that
+  // list rewrote the first five thousand occurrences and left the rest, which
+  // reads as a finished job and leaves a half-renamed repository.
+  if (s.capped || s.timedOut || s.clientCapped) {
+    deps?.toast(t("code.replace.partialSearch"));
+    return;
+  }
   const files = new Set(s.hits.map((h) => h.path)).size;
   if (files > REPLACE_FILE_CAP) {
     deps?.toast(

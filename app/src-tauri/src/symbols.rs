@@ -92,7 +92,12 @@ fn fnv1a(s: &str) -> u64 {
 }
 
 fn index_path(root_key: &str) -> PathBuf {
-    app_support().join(format!("code-symbols-{:016x}.json", fnv1a(root_key)))
+    // In a folder of their own. These used to sit at the root of Application
+    // Support, one per folder ever opened in the Code view, next to
+    // settings.json: this machine had 146 of them, 144 empty.
+    let dir = app_support().join("symbols");
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join(format!("code-symbols-{:016x}.json", fnv1a(root_key)))
 }
 
 #[derive(Serialize, Deserialize)]

@@ -792,6 +792,10 @@ const dict: Record<string, { en: string; fr: string }> = {
   },
   "srvfail.retry": { en: "Try again", fr: "Réessayer" },
   "srvfail.retrying": { en: "Starting...", fr: "Démarrage..." },
+  "code.replace.partialSearch": {
+    en: "This search hit its limit, so it does not list every occurrence. Narrow it with a filter before replacing.",
+    fr: "Cette recherche a atteint sa limite : elle ne liste pas toutes les occurrences. Restreignez-la avec un filtre avant de remplacer.",
+  },
   "code.splitReview": {
     en: "This file is under review. Answer the proposal first, then move it.",
     fr: "Ce fichier est en cours de revue. Répondez d'abord à la proposition, puis déplacez-le.",

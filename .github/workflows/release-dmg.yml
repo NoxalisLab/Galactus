@@ -176,13 +176,16 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # SEAM, not yet wired. A parallel workstream is adding an in-app updater,
-      # which needs two more assets on the release: the Galactus.app.tar.gz that
-      # the bundler now produces next to the dmg, and the latest.json that
-      # scripts/release-manifest.sh builds and verifies. When that script has
-      # settled, add a step here that runs it and a `gh release upload` for both
-      # files. The dmg attachment below is deliberately independent of it, so a
-      # failure in the updater path cannot cost the release its installer.
+      # The updater assets. A release without latest.json is not a release that
+      # is missing a nicety: the app reads
+      # releases/latest/download/latest.json, gets a 404, catches it, and goes
+      # back to idle with no message. Every installation stops seeing updates
+      # and nobody, on either side, finds out. So it is built and verified here
+      # rather than left to a command somebody was supposed to copy by hand.
+      #
+      # It stays AFTER the dmg attachment below in importance and BEFORE it in
+      # nothing: the dmg step is deliberately independent, so a failure in the
+      # updater path cannot cost the release its installer.
 
       - name: Attach the dmg to the release
         # A tag push releases under that tag. A manual run releases only if the
@@ -205,3 +208,35 @@ jobs:
           fi
           gh release upload "$TAG" "$DMG" --clobber
           echo "attached $(basename "$DMG") to release $TAG"
+
+      - name: Build and attach the updater manifest
+        if: startsWith(github.ref, 'refs/tags/app-v') || inputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag != '' && inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          BUNDLE=app/src-tauri/target/release/bundle/macos
+          # release-manifest.sh refuses when the version files disagree, when
+          # the release notes are missing, or when the tag does not exist. All
+          # three would otherwise produce a manifest that validates locally and
+          # 404s for every user.
+          scripts/release-manifest.sh
+          gh release upload "$TAG" \
+            "$BUNDLE/Galactus.app.tar.gz" \
+            "$BUNDLE/Galactus.app.tar.gz.sig" \
+            "$BUNDLE/latest.json" \
+            --clobber
+          echo "attached the updater assets to release $TAG"
+
+      - name: Verify the published manifest
+        if: startsWith(github.ref, 'refs/tags/app-v') || inputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Fetches what the world can actually see and checks the asset
+          # responds. A draft release has no public assets, so this is expected
+          # to fail there and is not fatal.
+          scripts/release-manifest.sh --verify-remote || \
+            echo "note: the published manifest could not be verified (a draft release has no public assets)"

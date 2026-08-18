@@ -151,8 +151,18 @@ function rewrite(
       if (start < 0 || start < cursor) continue; // overlaps what was just done
       if (end > text.length) continue;
       const slice = text.slice(start, end);
-      const same = opts.caseSensitive ? slice === find : slice.toLowerCase() === find.toLowerCase();
-      if (!same) continue; // stale hit: the line moved under the search
+      // In pattern mode there is nothing to compare the slice AGAINST: `find`
+      // is the pattern, not the text it matched, so this test failed on every
+      // hit and the whole replacement silently did nothing. The user saw two
+      // thousand matches and then "no occurrences". The freshness check that
+      // this comparison exists for is done by length instead, which is what
+      // the backend reports per hit.
+      if (opts.regex) {
+        if (end - start <= 0) continue;
+      } else {
+        const same = opts.caseSensitive ? slice === find : slice.toLowerCase() === find.toLowerCase();
+        if (!same) continue; // stale hit: the line moved under the search
+      }
       if (opts.wholeWord && !wordBounded(text, start, end)) continue;
       built += text.slice(cursor, start) + replacement;
       cursor = end;

@@ -433,7 +433,43 @@ fn persist_index(index: &Index) -> Result<(), String> {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     let json = serde_json::to_string(&out).map_err(|e| e.to_string())?;
-    std::fs::write(&p, json).map_err(|e| e.to_string())
+    // Write-then-rename, like every other persistent file here. This was the
+    // one exception: an interrupted write left a truncated JSON that
+    // read_persisted silently rejects, so the whole corpus was re-indexed on
+    // the next search with nothing explaining the two minute wait.
+    //
+    // 0600 as well: this file holds the full text of everything the user
+    // indexed, which is the point of the next paragraph too.
+    let tmp = p.with_extension(format!("tmp.{}", std::process::id()));
+    {
+        use std::io::Write as _;
+        #[cfg(unix)]
+        let mut file = {
+            use std::os::unix::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .mode(0o600)
+                .open(&tmp)
+                .map_err(|e| e.to_string())?
+        };
+        #[cfg(not(unix))]
+        let mut file = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+        file.write_all(json.as_bytes()).map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())?;
+    }
+    std::fs::rename(&tmp, &p).map_err(|e| e.to_string())
+}
+
+/// Delete the persisted index outright.
+///
+/// Not "invalidate": the file holds a verbatim copy of every document that was
+/// indexed, in the clear. Removing a folder from the knowledge base has to
+/// remove its contents too, or the setting is a display preference over a copy
+/// that stays on the disk forever.
+fn drop_persisted() {
+    let _ = std::fs::remove_file(index_file_path());
 }
 
 fn read_persisted() -> Option<StoredIndexIn> {
@@ -679,6 +715,8 @@ pub async fn kb_set_folders(folders: Vec<String>) -> Result<(), String> {
     // so the folder list is correct even if this drop is a moment late.
     let _ = tauri::async_runtime::spawn_blocking(|| {
         *kb_state().lock().unwrap_or_else(|e| e.into_inner()) = None;
+        // And the copy on disk, which is the user's documents in the clear.
+        drop_persisted();
     })
     .await;
     Ok(())

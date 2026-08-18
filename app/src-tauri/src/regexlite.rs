@@ -131,6 +131,10 @@ struct Parser<'a> {
     chars: Vec<char>,
     at: usize,
     prog: &'a mut Vec<Inst>,
+    /// Open groups. A stack overflow in Rust is an abort, not an error: a
+    /// pattern of a few thousand '(' would take the whole app down, and with it
+    /// every unsaved buffer. MAX_PROG does not help, since '(' emits nothing.
+    depth: usize,
 }
 
 /// The ceiling on a compiled pattern. Reached only by a quantifier repeat count
@@ -139,6 +143,10 @@ struct Parser<'a> {
 const MAX_PROG: usize = 4096;
 /// The largest repetition a `{n,m}` may ask for.
 const MAX_REPEAT: u32 = 512;
+/// How deeply groups may nest.
+const MAX_DEPTH: usize = 64;
+/// The longest pattern accepted, in characters.
+const MAX_PATTERN: usize = 4096;
 
 impl<'a> Parser<'a> {
     fn peek(&self) -> Option<char> {
@@ -270,6 +278,14 @@ impl<'a> Parser<'a> {
         if total > MAX_REPEAT {
             return Err(format!("a repetition of more than {MAX_REPEAT} is not supported"));
         }
+        if let Some(m) = max {
+            if m < min {
+                // `a{5,2}` compiled as `a{5}` because `for _ in min..m` is an
+                // empty range. Silently meaning something else is the one thing
+                // this engine's header promises not to do.
+                return Err(format!("the repetition {{{min},{m}}} runs backwards"));
+            }
+        }
         for _ in 0..min {
             let at = self.prog.len();
             append_shifted(self.prog, &body, at as isize - start as isize)?;
@@ -307,7 +323,13 @@ impl<'a> Parser<'a> {
         if min.is_empty() {
             return None;
         }
-        let min_n: u32 = min.parse().ok()?;
+        // A count too large to parse used to fall back to "a literal brace", so
+        // a{99999999999999} searched for that text while a{100000} produced a
+        // clear error. Two neighbouring inputs, opposite meanings.
+        let min_n: u32 = match min.parse() {
+            Ok(n) => n,
+            Err(_) => return Some((u32::MAX, Some(u32::MAX), i + 1)),
+        };
         match self.chars.get(i) {
             Some('}') => Some((min_n, Some(min_n), i + 1)),
             Some(',') => {
@@ -335,6 +357,10 @@ impl<'a> Parser<'a> {
         let Some(c) = self.next() else { return Ok(()) };
         match c {
             '(' => {
+                self.depth += 1;
+                if self.depth > MAX_DEPTH {
+                    return Err("that pattern nests too deeply".into());
+                }
                 // Groups are not captured: the search reports where a match is,
                 // not what its parts were. `(?:...)` is accepted and means the
                 // same thing, so a pattern pasted from elsewhere still works.
@@ -349,6 +375,7 @@ impl<'a> Parser<'a> {
                 if !self.eat(')') {
                     return Err("a '(' is never closed".into());
                 }
+                self.depth -= 1;
                 Ok(())
             }
             ')' => Err("a ')' has nothing to close".into()),
@@ -413,6 +440,14 @@ impl<'a> Parser<'a> {
                 // pattern that means something else than it says is worse than
                 // one that is turned down.
                 return Err("\\b is not supported: use the whole word option".into());
+            }
+            // Punctuation after a backslash is that character: \. \* \+ \( and
+            // friends. A LETTER or a DIGIT is a construct this engine does not
+            // have, and turning it into a literal is the silent misreading the
+            // header of this file promises never to do: `\1` searched for the
+            // text "1", `\x41` for "x41", `\p{L}` for "p{L}".
+            other if other.is_alphanumeric() => {
+                return Err(format!("\\{other} is not supported"));
             }
             other => k.ranges.push((other, other)),
         }
@@ -548,7 +583,11 @@ impl Regex {
         }
         let mut prog = Vec::new();
         {
-            let mut p = Parser { chars: pattern.chars().collect(), at: 0, prog: &mut prog };
+            let chars: Vec<char> = pattern.chars().collect();
+            if chars.len() > MAX_PATTERN {
+                return Err("that pattern is too long".into());
+            }
+            let mut p = Parser { chars, at: 0, prog: &mut prog, depth: 0 };
             p.alt()?;
             if p.at < p.chars.len() {
                 return Err(if p.chars[p.at] == ')' {
@@ -572,17 +611,26 @@ impl Regex {
         // Longest match starting at each character index, in char units.
         let best = self.scan(&chars);
         let mut out = Vec::new();
-        let mut i = 0usize;
-        while i <= chars.len() {
-            match best[i] {
-                Some(end) if end > i => {
-                    out.push((byte_at(&chars, line, i), byte_at(&chars, line, end)));
-                    i = end;
-                }
-                _ => i += 1,
+    let mut i = 0usize;
+    while i <= chars.len() {
+        match best[i] {
+            Some(end) if end > i => {
+                out.push((byte_at(&chars, line, i), byte_at(&chars, line, end)));
+                i = end;
             }
+            // A zero-width match is still a match, and dropping it made `^$`
+            // and `^\s*$` find no blank lines at all, silently: a perfectly
+            // ordinary editing search that answered nothing. Emitted, then the
+            // scan moves on by one character, which is what stops it spinning.
+            Some(_) => {
+                let at = byte_at(&chars, line, i);
+                out.push((at, at));
+                i += 1;
+            }
+            None => i += 1,
         }
-        out
+    }
+    out
     }
 
     /// One pass over the line, carrying every live thread at once.
@@ -747,9 +795,16 @@ mod tests {
     #[test]
     fn matches_do_not_overlap_and_an_empty_match_cannot_spin() {
         assert_eq!(all("aa", "aaaa"), ["aa", "aa"]);
-        // x* matches nothing everywhere: it must terminate, not loop.
+        // x* matches nothing at every position, including after the last
+        // character: four positions in a three character line. What matters is
+        // that it terminates and that each one is zero width.
         let hits = Regex::new("x*", true).unwrap().find_line("abc");
-        assert!(hits.is_empty() || hits.len() <= 3);
+        assert_eq!(hits.len(), 4);
+        assert!(hits.iter().all(|(s, e)| s == e));
+        // And the case those empty matches exist for: finding blank lines.
+        assert_eq!(Regex::new("^$", true).unwrap().find_line(""), vec![(0, 0)]);
+        assert_eq!(Regex::new(r"^\s*$", true).unwrap().find_line("   ").len(), 1);
+        assert!(Regex::new("^$", true).unwrap().find_line("text").is_empty());
     }
 
     #[test]
@@ -767,6 +822,40 @@ mod tests {
             let err = Regex::new(pattern, true).expect_err(pattern).to_lowercase();
             assert!(err.contains(needle), "{pattern}: {err}");
         }
+    }
+
+    #[test]
+    fn a_construct_this_engine_does_not_have_is_named_rather_than_misread() {
+        // The header promises no silent misreading. These used to become
+        // literals: \1 searched for "1", \x41 for "x41", \p{L} for "p{L}".
+        for (pattern, needle) in [
+            (r"(foo)\1", "not supported"),
+            (r"\x41", "not supported"),
+            (r"\p{L}", "not supported"),
+            (r"\A", "not supported"),
+        ] {
+            let err = Regex::new(pattern, true).expect_err(pattern).to_lowercase();
+            assert!(err.contains(needle), "{pattern}: {err}");
+        }
+        // Escaped punctuation is still the character itself.
+        assert_eq!(all(r"\.\+", "a.+b"), [".+"]);
+    }
+
+    #[test]
+    fn a_pattern_that_could_take_the_app_down_is_refused() {
+        // A deep nest is a stack overflow, which in Rust is an abort: the
+        // whole app, and every unsaved buffer with it. MAX_PROG does not help
+        // because '(' emits no instruction.
+        let deep = "(".repeat(5000);
+        assert!(Regex::new(&deep, true).is_err());
+        assert!(Regex::new(&"a".repeat(9000), true).is_err(), "and a pattern nobody typed");
+    }
+
+    #[test]
+    fn a_backwards_repetition_is_an_error_not_a_different_pattern() {
+        // a{5,2} compiled as a{5}, because min..m is an empty range.
+        assert!(Regex::new("a{5,2}", true).is_err());
+        assert!(Regex::new("a{99999999999999}", true).is_err());
     }
 
     #[test]

@@ -11,6 +11,7 @@ mod hardware;
 mod knowledge;
 mod lsp;
 mod pty;
+mod housekeeping;
 mod image;
 mod regexlite;
 mod ssh;
@@ -8386,6 +8387,19 @@ pub fn run() {
             // schedule that only ticked while the Runs screen was open would
             // be a schedule that stops when someone switches to Settings.
             scheduler::start(app.handle().clone());
+            // Take back what earlier sessions left behind. Off the main thread
+            // and silent: a machine that cannot delete a temporary file must
+            // still start, and this is not news the user asked for.
+            std::thread::spawn(|| {
+                let swept = housekeeping::sweep_all(&app_support());
+                if swept.files > 0 {
+                    eprintln!(
+                        "galactus: housekeeping removed {} files ({:.1} MB)",
+                        swept.files,
+                        swept.bytes as f64 / 1e6
+                    );
+                }
+            });
             if settings_load().get("app_mode").map(|m| m == "server").unwrap_or(false) {
                 if let Err(e) = tray_show(app.handle()) {
                     eprintln!("Galactus tray failed: {e}");

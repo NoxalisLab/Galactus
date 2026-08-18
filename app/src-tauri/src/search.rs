@@ -768,7 +768,7 @@ impl Matcher {
     }
 
     /// Byte ranges of the matches in a whole file.
-    fn find(&self, text: &str) -> Vec<(usize, usize)> {
+    fn find(&self, text: &str, stop: Option<&AtomicBool>) -> Vec<(usize, usize)> {
         match self {
             Matcher::Literal { needle, case_sensitive, whole_word } => {
                 find_matches(text, needle, *case_sensitive, *whole_word)
@@ -779,7 +779,19 @@ impl Matcher {
             Matcher::Pattern(re) => {
                 let mut out = Vec::new();
                 let mut base = 0usize;
+                // Checked every few thousand lines. The stop flag and the
+                // deadline were only read BETWEEN files, so Cancel did nothing
+                // while a minified bundle of a million characters on one line
+                // was being scanned, and a core stayed busy with it.
+                let mut since_check = 0usize;
                 for line in text.split_inclusive('\n') {
+                    since_check += 1;
+                    if since_check >= 4096 {
+                        since_check = 0;
+                        if stop.map(|s| s.load(Ordering::Relaxed)).unwrap_or(false) {
+                            return out;
+                        }
+                    }
                     let bare = line.strip_suffix('\n').unwrap_or(line);
                     let bare = bare.strip_suffix('\r').unwrap_or(bare);
                     for (s, e) in re.find_line(bare) {
@@ -795,7 +807,13 @@ impl Matcher {
 
 /// Read and scan one file. Returns false when the file was skipped, so the
 /// caller can report how much of the workspace was really looked at.
-fn scan_file(root: &Path, rel: &str, matcher: &Matcher, out: &mut Vec<Hit>) -> bool {
+fn scan_file(
+    root: &Path,
+    rel: &str,
+    matcher: &Matcher,
+    stop: Option<&AtomicBool>,
+    out: &mut Vec<Hit>,
+) -> bool {
     if Path::new(rel).components().any(|c| matches!(c, Component::ParentDir)) {
         return false;
     }
@@ -822,7 +840,7 @@ fn scan_file(root: &Path, rel: &str, matcher: &Matcher, out: &mut Vec<Hit>) -> b
     let Ok(text) = std::str::from_utf8(&bytes) else {
         return false;
     };
-    let ranges = matcher.find(text);
+    let ranges = matcher.find(text, stop);
     if ranges.is_empty() {
         return true;
     }
@@ -896,7 +914,7 @@ pub fn run_search(
                         break;
                     }
                     let mut hits: Vec<Hit> = Vec::new();
-                    if scan_file(&real, &files[i], &matcher, &mut hits) {
+                    if scan_file(&real, &files[i], &matcher, Some(&stop), &mut hits) {
                         scanned.fetch_add(1, Ordering::Relaxed);
                     }
                     if hits.is_empty() {
@@ -1123,6 +1141,7 @@ mod tests {
             &std::fs::canonicalize(&root).unwrap(),
             "secret.txt",
             &Matcher::build("TOPSECRET", &opts()).unwrap(),
+            None,
             &mut direct
         ));
         assert!(direct.is_empty());

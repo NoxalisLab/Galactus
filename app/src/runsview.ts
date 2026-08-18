@@ -360,7 +360,12 @@ async function forget(run: LiveRun): Promise<void> {
  * into the next one would file work under a turn that did not do it.
  */
 async function ensureAgent(run: LiveRun): Promise<Agent> {
-  if (run.agent) return run.agent;
+  if (run.agent) {
+    // The engine may have been replaced while this run was blocked: a start
+    // picks a free port, so the cached agent would be talking to a dead one.
+    run.agent.setPort(host.port());
+    return run.agent;
+  }
   const agent = new Agent(
     {
       onAssistantDelta: (text) => run.hooks?.onDelta(text),
