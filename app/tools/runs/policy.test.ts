@@ -95,6 +95,10 @@ const EXPECTED_GRANTS: Record<RunPolicy, readonly RunPermissionKind[]> = {
   autonomous: [
     "fs_read", "fs_list", "conversations", "web", "code",
     "fs_write", "shell", "obsidian", "memory", "mcp", "agent", "git",
+    // Drawing writes a file and holds the machine for a minute. That is an
+    // autonomous run's business and nobody else's: under propose it would
+    // produce an artefact the user never agreed to.
+    "image",
   ],
 };
 

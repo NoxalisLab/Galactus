@@ -13,6 +13,7 @@ export type PixelMode =
   | "connector"
   | "web"       // appel satellite
   | "memory"    // range une etoile dans le coffre a souvenirs
+  | "drawing"   // dessine : la meme scene que writing, le temps d'une image
   | "fleet"     // lance la flotte de sous-agents
   | "done";
 

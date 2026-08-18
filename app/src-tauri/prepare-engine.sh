@@ -134,3 +134,26 @@ if command -v swiftc >/dev/null 2>&1; then
 else
   echo "AVERTISSEMENT: swiftc absent, helpers non precompiles"
 fi
+
+# ---------------------------------------------------------------- moteur image
+# sd-cli (stable-diffusion.cpp) : un binaire statique, Metal compris, qui n'est
+# lance que le temps d'une image. Absent du checkout -> l'app le dit et la vue
+# Images reste fermee, plutot que d'echouer au lancement pour une fonction que
+# tout le monde n'utilise pas.
+SD_SRC="$ROOT/third_party/stable-diffusion.cpp/build/bin/sd-cli"
+SD_DEST="$HERE/image-engine"
+rm -rf "$SD_DEST"
+if [ -x "$SD_SRC" ]; then
+  mkdir -p "$SD_DEST"
+  cp "$SD_SRC" "$SD_DEST/sd-cli"
+  # Sans les symboles de debug : 57 Mo deviennent 53, et rien dans l'app ne les
+  # lit jamais.
+  strip -S -x "$SD_DEST/sd-cli" 2>/dev/null || true
+  chmod 755 "$SD_DEST/sd-cli"
+  codesign -f -s - "$SD_DEST/sd-cli" >/dev/null 2>&1 || true
+  echo "Moteur image embarque ($(du -sh "$SD_DEST" | cut -f1))"
+else
+  echo "AVERTISSEMENT: sd-cli absent, la generation d'images sera indisponible"
+  echo "  construis-le : cmake -B build -DSD_METAL=ON -DSD_WEBP=OFF -DSD_WEBM=OFF && cmake --build build -j"
+  echo "  dans third_party/stable-diffusion.cpp"
+fi

@@ -51,6 +51,15 @@ https://github.com/ggml-org/llama.cpp
 
   Shipped as the patched Galactus engine. The patch set lives in patches/.
 
+stable-diffusion.cpp
+Copyright (c) 2023-2026 leejet and contributors.
+Licensed under the MIT License.
+https://github.com/leejet/stable-diffusion.cpp
+
+  Shipped unpatched, as sd-cli, for image generation. Unlike the text engine it
+  carries no Galactus patch and makes no bit-exactness claim: it is the upstream
+  build, run once per image and gone when the image is written.
+
 CPython
 Copyright (c) 2001-2026 Python Software Foundation.
 Licensed under the Python Software Foundation License Version 2.

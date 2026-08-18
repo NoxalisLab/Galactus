@@ -86,6 +86,12 @@ export type PermissionKind =
   /** Read the stored conversation history (search_conversations, read_conversation). */
   | "conversations"
   /**
+   * Draw a picture. Its own kind because what it costs is unusual: a minute
+   * of the machine and a file on the disk, from a sentence the model wrote.
+   * The user reads that sentence before it happens.
+   */
+  | "image"
+  /**
    * Propose a change to a file of the open code workspace. It is its own kind
    * because it is NOT a write: the edit lands in the editor as a pending diff
    * the user accepts or rejects hunk by hunk, and only an accept touches the
@@ -757,6 +763,27 @@ function builtinTools(
     {
       type: "function",
       function: {
+        name: "generate_image",
+        description:
+          "Draw a picture from a description, on this machine, with the image model the user has " +
+          "installed. Returns the file path. Use it when someone asks for an illustration, a mockup " +
+          "or a visual; diagrams and charts belong in code. It takes tens of seconds, so describe " +
+          "the picture fully in one call rather than iterating.",
+        parameters: {
+          type: "object",
+          properties: {
+            prompt: { type: "string", description: "What the picture shows, in plain words" },
+            negative: { type: "string", description: "What to keep out of it. Optional" },
+            width: { type: "number", description: "Optional, defaults to the model's own size" },
+            height: { type: "number", description: "Optional" },
+          },
+          required: ["prompt"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
         name: "read_document",
         description:
           "Read the text of a document: PDF (including scanned ones, via OCR), image (png/jpg/heic/tiff, text is extracted with OCR), Word/PowerPoint/Excel, RTF, HTML, or any plain-text file. Use this instead of read_file for anything that is not source code or plain text.",
@@ -903,6 +930,8 @@ function activityModeFor(tool: string): import("./pixel").PixelMode {
       return "writing";
     case "remember":
       return "memory";
+    case "generate_image":
+      return "drawing";
     case "run_command":
       return "running";
     default:
@@ -1778,6 +1807,53 @@ export class Agent {
    * the conversation's, and teammates recruiting teammates is how a bounded
    * team turns into an unbounded crowd.
    */
+  /**
+   * One image, with a model the user has actually installed.
+   *
+   * The model is chosen here rather than named by the caller: the registry
+   * knows what is installed and the model does not, so a tool call naming a
+   * missing one would come back as an error the user has to translate.
+   */
+  private async makeImage(args: Record<string, unknown>): Promise<string> {
+    let root = "";
+    try {
+      root = (await api.settingsGet())["root"] ?? "";
+    } catch {
+      root = "";
+    }
+    if (!root) return "no Galactus folder is configured, so there is no image model list";
+    let models: Awaited<ReturnType<typeof api.imageModels>>;
+    try {
+      models = await api.imageModels(root);
+    } catch (e: any) {
+      return `the image model list could not be read: ${String(e?.message ?? e)}`;
+    }
+    const installed = models.filter((m) => m.installed);
+    if (!installed.length) {
+      const names = models.map((m) => m.name).join(", ");
+      return `no image model is installed yet. Open the Images view and download one${names ? ` (${names})` : ""}.`;
+    }
+    // The largest installed one: on this short list size is quality, and the
+    // user spent the disk on it deliberately.
+    const m = installed.reduce((a, b) => (b.bytes > a.bytes ? b : a));
+    const d = m.defaults ?? {};
+    try {
+      const path = await api.imageGenerate(root, {
+        model: m.id,
+        prompt: String(args.prompt ?? ""),
+        negative: String(args.negative ?? ""),
+        steps: Number(d.steps ?? 20),
+        cfg: Number(d.cfg ?? 7),
+        width: Number(args.width ?? d.width ?? 512),
+        height: Number(args.height ?? d.height ?? 512),
+        seed: -1,
+      });
+      return `image written to ${path}, made with ${m.name} on this machine. Give the user that path; it is also in the Images view.`;
+    } catch (e: any) {
+      return `the image could not be made: ${String(e?.message ?? e)}`;
+    }
+  }
+
   private async spawnAgent(name: string, role: string, brief: string): Promise<string> {
     if (!directory) return "error: no team available in this conversation";
     if (this.role !== "main") {
@@ -2108,7 +2184,14 @@ export class Agent {
           this.memory = await api.memoryRead();
           if (this.messages[0]?.role === "system") this.messages[0].content = this.systemPrompt();
         }
-      } else if (name === "read_document") {
+      } else if (name === "generate_image") {
+          // Gated like any other side effect that writes a file and occupies
+          // the machine for a minute: the user sees what is about to be drawn
+          // before it is drawn.
+          const wanted = String(args.prompt ?? "");
+          const ok = await this.gate({ kind: "image", detail: wanted.slice(0, 300), elevated: false });
+          result = ok ? await this.makeImage(args) : "denied by user";
+        } else if (name === "read_document") {
         const p = String(args.path ?? "");
         const ok = await this.gate({ kind: "fs_read", detail: p, elevated: isElevatedRead(p) });
         result = ok ? await api.docRead(p, args.mode ? String(args.mode) : undefined) : "denied by user";

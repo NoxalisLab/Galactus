@@ -46,6 +46,7 @@
       "helpers/galactus-pick.swift",
       "helpers/galactus-voice.swift",
       "engine",
+      "image-engine",
       "packaged",
       "python",
       "rust-tooling"

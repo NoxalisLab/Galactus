@@ -5,6 +5,7 @@ src-tauri/gen/
 *.log
 .DS_Store
 engine/
+image-engine/
 packaged/
 python/
 tools/**/out/

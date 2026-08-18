@@ -35,6 +35,7 @@ import { isFollowing } from "./follow";
 import { engineAdvice, isEngineDecodeFailure, modeLabelKey } from "./engine-error";
 import { layoutBriefKey, machineBrief, machineSummary } from "./machine-brief";
 import * as runsview from "./runsview";
+import * as imageview from "./imageview";
 import { learnedView } from "./learnedview";
 import { configurePanePreferences, wirePaneResizer } from "./layout/pane-resize";
 import {
@@ -59,7 +60,7 @@ import {
 const app = document.getElementById("app")!;
 const LOGO = "/galactus-mark.svg";
 
-type View = "chat" | "code" | "models" | "connectors" | "runs" | "memory" | "agent" | "learned" | "settings";
+type View = "chat" | "code" | "images" | "models" | "connectors" | "runs" | "memory" | "agent" | "learned" | "settings";
 type Autonomy = "manual" | "assisted" | "autonomous";
 
 let view: View = "chat";
@@ -573,6 +574,7 @@ const I = {
   agent: `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v3"/><rect x="5" y="6" width="14" height="11" rx="3"/><path d="M9 11h.01M15 11h.01"/><path d="M9 14h6"/><path d="M5 12H3M21 12h-2"/></svg>`,
   runs: `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h9M4 12h9M4 19h6"/><path d="M17 15v6l5-3z"/></svg>`,
   set: `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 7.5 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 1.1-2.7H1.7a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 4.6 7.5a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 2.7-1.1V1.7a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 2.7 1.1 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-1.1 2.7h.1a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1.1z"/></svg>`,
+  image: `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>`,
   plus: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>`,
   up: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>`,
   file: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>`,
@@ -1259,6 +1261,7 @@ function permissionDialogEl(entry: PendingPermission): HTMLElement {
     : req.kind === "conversations" ? t("perm.conversations")
     : req.kind === "code" ? t("perm.code")
     : req.kind === "git" ? t("perm.git")
+    : req.kind === "image" ? t("perm.image")
     : t("perm.mcpTool");
   // "perm" lifts it above every other full-screen layer (the constellation
   // overlay, the install dialogs): a permission dialog nobody can see is a
@@ -4463,6 +4466,7 @@ function render() {
         ${nav("models", I.models, t("nav.models"))}
         ${nav("connectors", I.conn, t("nav.connectors"))}
         ${nav("runs", I.runs, t("nav.runs"))}
+        ${appMode === "server" ? "" : nav("images", I.image, t("nav.images"))}
         ${appMode === "server" ? "" : nav("memory", I.mem, t("nav.memory"))}
         ${appMode === "server" ? "" : nav("agent", I.agent, t("nav.agent"))}
         ${nav("learned", I.mem, t("learned.title"))}
@@ -4486,6 +4490,7 @@ function render() {
     : view === "models" ? modelsView()
     : view === "connectors" ? connectorsView()
     : view === "runs" ? runsview.runsView()
+    : view === "images" ? imageview.imageView()
     : view === "memory" ? memoryView()
     : view === "agent" ? agentView()
     : view === "learned" ? learnedView()
@@ -4839,6 +4844,10 @@ async function boot() {
   runsview.configureRuns({
     port: () => server.port,
     ready: () => server.running && server.phase === "ready" && !toolsBlocked(),
+    toast: (message, kind) => toast(message, kind),
+  });
+  imageview.setImageDeps({
+    root: () => root,
     toast: (message, kind) => toast(message, kind),
   });
   await loadStandingPermissions().catch(() => {});

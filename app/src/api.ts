@@ -266,6 +266,31 @@ export interface GitChange {
 // about git, and it learns that from `GitInfo.available` below. A typed client
 // for a command nobody calls is dead weight that looks live.
 
+export interface ImageModelInfo {
+  id: string;
+  name: string;
+  bytes: number;
+  roles: Record<string, string>;
+  download: unknown;
+  defaults: { steps?: number; cfg?: number; width?: number; height?: number };
+  min_ram_gb: number;
+  measured: Array<{ mac_gb?: number; width?: number; height?: number; steps?: number; seconds?: number }>;
+  note: string;
+  installed: boolean;
+}
+
+export interface ImageRequest {
+  model: string;
+  prompt: string;
+  negative: string;
+  steps: number;
+  cfg: number;
+  width: number;
+  height: number;
+  /** Negative asks the engine for a random one. */
+  seed: number;
+}
+
 /** Wire shape of `SearchOpts` in search.rs: snake_case, not the UI's camel. */
 export interface SearchOptsWire {
   case_sensitive: boolean;
@@ -509,6 +534,15 @@ export const api = {
   codeRead: (root: string, path: string) => invoke<string>("code_read", { root, path }),
   codeWrite: (root: string, path: string, content: string) =>
     invoke<void>("code_write", { root, path, content }),
+  /** Image generation. Nothing here reaches the network at generation time. */
+  imageModels: (root: string) => invoke<ImageModelInfo[]>("image_models", { root }),
+  imageInstall: (root: string, id: string) => invoke<void>("image_install", { root, id }),
+  imageGenerate: (root: string, req: ImageRequest) => invoke<string>("image_generate", { root, req }),
+  imageCancel: () => invoke<void>("image_cancel"),
+  imageGallery: () => invoke<string[]>("image_gallery"),
+  /** A generated image as a data URL: the page's policy allows data:, not files. */
+  imageRead: (path: string) => invoke<string>("image_read", { path }),
+  imageForget: (path: string) => invoke<void>("image_forget", { path }),
   codeCreate: (root: string, path: string, dir: boolean) =>
     invoke<string>("code_create", { root, path, dir }),
   codeRename: (root: string, from: string, to: string) =>

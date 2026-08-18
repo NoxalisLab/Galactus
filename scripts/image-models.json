@@ -1,0 +1,90 @@
+{
+  "_note": [
+    "Image models, kept apart from models-registry.json because they are a different kind of thing:",
+    "several files with named roles rather than one GGUF plus expert packs, and no bit-exactness claim",
+    "to make. The engine is stable-diffusion.cpp as published, unpatched, so nothing here is certified",
+    "the way a text model is. What IS here is measured: every `measured` entry below is a run on real",
+    "hardware, timed, with the image checked by eye. Nothing is listed that has not produced a picture.",
+    "",
+    "Each download entry carries a url and the name it lands under, because the files of one model come",
+    "from different repositories and one of them has to be renamed: there are two files called",
+    "sdxl_vae.safetensors in the world and only one of them works in half precision.",
+    "",
+    "Flux.1-schnell is deliberately absent. Its published GGUF weights denoise to noise on the current",
+    "engine and its VAE fails to allocate on Metal, so it would ship as a grey square. It goes in when",
+    "it works, not before."
+  ],
+  "models": [
+    {
+      "id": "sdxl-base",
+      "name": "Stable Diffusion XL",
+      "bytes": 7270000000,
+      "roles": {
+        "model": "sd_xl_base_1.0.safetensors",
+        "vae": "sdxl_vae-fp16-fix.safetensors"
+      },
+      "download": {
+        "files": [
+          {
+            "url": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0.safetensors",
+            "as": "sd_xl_base_1.0.safetensors"
+          },
+          {
+            "url": "https://huggingface.co/madebyollin/sdxl-vae-fp16-fix/resolve/main/sdxl_vae.safetensors",
+            "as": "sdxl_vae-fp16-fix.safetensors"
+          }
+        ]
+      },
+      "defaults": {
+        "steps": 20,
+        "cfg": 7.0,
+        "width": 1024,
+        "height": 1024
+      },
+      "min_ram_gb": 16,
+      "note": "1024 square, the quality option. The separate VAE is the fp16-fix one: the original produces black images in half precision.",
+      "measured": [
+        {
+          "mac_gb": 128,
+          "width": 1024,
+          "height": 1024,
+          "steps": 20,
+          "seconds": 33.2
+        }
+      ]
+    },
+    {
+      "id": "sd15",
+      "name": "Stable Diffusion 1.5",
+      "bytes": 1770000000,
+      "roles": {
+        "model": "stable-diffusion-v1-5-pruned-emaonly-Q8_0.gguf"
+      },
+      "download": {
+        "files": [
+          {
+            "url": "https://huggingface.co/second-state/stable-diffusion-v1-5-GGUF/resolve/main/stable-diffusion-v1-5-pruned-emaonly-Q8_0.gguf",
+            "as": "stable-diffusion-v1-5-pruned-emaonly-Q8_0.gguf"
+          }
+        ]
+      },
+      "defaults": {
+        "steps": 20,
+        "cfg": 7.0,
+        "width": 512,
+        "height": 512
+      },
+      "min_ram_gb": 8,
+      "note": "512 square, under two gigabytes, and quick. The one to start with on a smaller Mac.",
+      "measured": [
+        {
+          "mac_gb": 128,
+          "width": 512,
+          "height": 512,
+          "steps": 20,
+          "seconds": 18.6
+        }
+      ]
+    }
+  ]
+}

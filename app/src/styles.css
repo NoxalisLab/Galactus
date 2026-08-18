@@ -1835,3 +1835,36 @@ html.pane-dragging .pvw-frame { pointer-events: none; }
   font-size: 10px;
   white-space: nowrap;
 }
+
+/* Images view. The model cards reuse .mcard from the model list on purpose:
+   it is the same idea and it should look like it. */
+.imgmodels { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; }
+.imgmodels .mcard { cursor: pointer; }
+.imgmodels .mcard.on { border-color: var(--acc); }
+.imgmake { display: flex; flex-direction: column; gap: 10px; padding: 14px; }
+.imgmake textarea {
+  width: 100%;
+  resize: vertical;
+  padding: 10px 12px;
+  border: 1px solid var(--bd2);
+  border-radius: 9px;
+  background: var(--inset);
+  color: var(--tx);
+  font: inherit;
+}
+.imgrow { display: flex; flex-wrap: wrap; gap: 10px; }
+.imgrow label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--dim2); flex: 1 1 120px; }
+.imgrow input, .imgrow select {
+  padding: 7px 9px;
+  border: 1px solid var(--bd2);
+  border-radius: 8px;
+  background: var(--inset);
+  color: var(--tx);
+  font: inherit;
+  font-size: 12.5px;
+}
+.imgacts { display: flex; align-items: center; gap: 10px; }
+.imggrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
+.imgcell { margin: 0; border-radius: 10px; overflow: hidden; background: var(--inset); aspect-ratio: 1; }
+.imgcell img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.imgcell .ph { width: 100%; height: 100%; }

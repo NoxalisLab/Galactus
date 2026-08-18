@@ -103,7 +103,9 @@ export type RunPermissionKind =
   | "agent"
   | "conversations"
   | "code"
-  | "git";
+  | "git"
+  /** Draw a picture: a file on the disk and a minute of the machine. */
+  | "image";
 
 export const RUN_PERMISSION_KINDS: readonly RunPermissionKind[] = [
   "fs_read",
@@ -118,6 +120,7 @@ export const RUN_PERMISSION_KINDS: readonly RunPermissionKind[] = [
   "conversations",
   "code",
   "git",
+  "image",
 ];
 
 /**

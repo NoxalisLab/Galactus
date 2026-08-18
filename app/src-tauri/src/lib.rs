@@ -11,6 +11,7 @@ mod hardware;
 mod knowledge;
 mod lsp;
 mod pty;
+mod image;
 mod regexlite;
 mod ssh;
 mod relay;
@@ -188,7 +189,7 @@ fn galactus_root() -> Result<PathBuf, String> {
 }
 
 /// Bundle Resources dir (packaged app) or src-tauri (dev run).
-fn resource_dir() -> Option<PathBuf> {
+pub(crate) fn resource_dir() -> Option<PathBuf> {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(res) = exe
             .parent()
@@ -8032,6 +8033,13 @@ pub fn run() {
             code::git_stage,
             code::git_commit,
             code::git_clone,
+            image::image_models,
+            image::image_install,
+            image::image_generate,
+            image::image_cancel,
+            image::image_gallery,
+            image::image_read,
+            image::image_forget,
             code::code_create,
             code::code_rename,
             code::code_delete,
