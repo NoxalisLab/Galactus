@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 use tauri::Emitter;
 
 /// The role a file plays in a model. Flux needs four; SD needs one.
@@ -78,10 +78,20 @@ pub(crate) fn model_root() -> PathBuf {
 
 /// The bundled sd-cli, or the checkout build when working on the engine itself.
 pub(crate) fn image_engine(root: &Path) -> Option<PathBuf> {
-    let checkout = root.join("third_party/stable-diffusion.cpp/build/bin/sd-cli");
-    if checkout.is_file() {
-        return Some(checkout);
+    // A checkout build wins while developing the engine, and only then. In a
+    // release build the bundled binary is the only one considered: the root is
+    // a folder the user (or a clone) can point anywhere, and "a path from the
+    // settings decides which executable runs" is not a sentence that belongs in
+    // a shipped app.
+    #[cfg(debug_assertions)]
+    {
+        let checkout = root.join("third_party/stable-diffusion.cpp/build/bin/sd-cli");
+        if checkout.is_file() {
+            return Some(checkout);
+        }
     }
+    #[cfg(not(debug_assertions))]
+    let _ = root;
     let bundled = crate::resource_dir()?.join("image-engine/sd-cli");
     if !bundled.is_file() {
         return None;
@@ -125,6 +135,9 @@ pub fn load_registry(root: &Path) -> Result<Vec<ImageModel>, String> {
 /// model reported as installed that fails to load reads as a broken app rather
 /// than as an interrupted download.
 pub fn model_installed(dir: &Path, m: &ImageModel) -> bool {
+    if !m.roles.values().all(|f| is_plain_name(f)) {
+        return false;
+    }
     m.roles.values().all(|f| {
         std::fs::metadata(dir.join(f))
             .map(|meta| meta.is_file() && meta.len() > 0)
@@ -144,7 +157,7 @@ pub fn generate_argv(
 ) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
     for (role, flag) in ROLE_FLAGS {
-        if let Some(file) = m.roles.get(*role) {
+        if let Some(file) = m.roles.get(*role).filter(|f| is_plain_name(f)) {
             args.push((*flag).to_string());
             args.push(dir.join(file).to_string_lossy().to_string());
         }
@@ -204,6 +217,12 @@ pub fn clamp_request(mut r: GenerateRequest) -> GenerateRequest {
     // seven hundred" and 640 is further from it than 704.
     r.width = round64(r.width);
     r.height = round64(r.height);
+    // The engine parses this with stoll and dies on anything outside i64. A
+    // negative value means "pick one", which it understands, so everything out
+    // of range becomes that rather than an error nobody can read.
+    if r.seed < -1 || r.seed > 4_294_967_295 {
+        r.seed = -1;
+    }
     r
 }
 
@@ -273,6 +292,20 @@ pub fn looks_blank(bytes: &[u8]) -> bool {
 /// The local name is checked here, not trusted: it is written to disk, and a
 /// registry is a text file. A name with a slash or a parent component in it
 /// would write outside the model folder.
+/// A file name this app will write or read inside its own model folder.
+///
+/// Applied to BOTH halves of a registry entry. The download names were checked
+/// and the roles were not, which is the asymmetry that matters: roles reach
+/// `dir.join(file)` and become an argument to the engine, so "/etc/passwd" or
+/// "../../elsewhere" there was a path out of the folder by way of a text file.
+pub fn is_plain_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.contains('/')
+        && !name.contains('\\')
+        && !name.starts_with('.')
+        && !name.contains('\0')
+}
+
 pub fn download_files(download: &Value) -> Result<Vec<(String, String)>, String> {
     let list = download["files"].as_array().ok_or("that model has no verified download")?;
     let mut out = Vec::new();
@@ -282,7 +315,7 @@ pub fn download_files(download: &Value) -> Result<Vec<(String, String)>, String>
         if !url.starts_with("https://") {
             return Err("that model has a download that is not https".into());
         }
-        if name.is_empty() || name.contains('/') || name.contains('\\') || name.starts_with('.') {
+        if !is_plain_name(name) {
             return Err(format!("that model asks to write a file called {name:?}"));
         }
         out.push((url.to_string(), name.to_string()));
@@ -299,9 +332,9 @@ fn cancel_flag() -> &'static AtomicBool {
 }
 
 #[tauri::command]
-pub async fn image_models(root: String) -> Result<Vec<ImageModel>, String> {
+pub async fn image_models() -> Result<Vec<ImageModel>, String> {
     let dir = model_root();
-    let mut list = load_registry(Path::new(&root))?;
+    let mut list = load_registry(&crate::galactus_root()?)?;
     for m in list.iter_mut() {
         m.installed = model_installed(&dir, m);
     }
@@ -309,38 +342,122 @@ pub async fn image_models(root: String) -> Result<Vec<ImageModel>, String> {
 }
 
 /// Download every file of a model, reporting progress as it goes.
+/// Download every file of a model, reporting progress as it goes.
+///
+/// Rewritten after an audit found three ways it hurt someone: it skipped any
+/// file that already had bytes in it, so an interrupted download of seven
+/// gigabytes came back as an installed and unusable model; it emitted a
+/// progress event nothing consumed, so the user watched a frozen "Downloading"
+/// for twenty minutes; and it ran curl on the async runtime, holding a worker
+/// for the whole download.
 #[tauri::command]
-pub async fn image_install(app: tauri::AppHandle, root: String, id: String) -> Result<(), String> {
-    let list = load_registry(Path::new(&root))?;
+pub async fn image_install(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let list = load_registry(&crate::galactus_root()?)?;
     let m = list.into_iter().find(|m| m.id == id).ok_or("no such image model")?;
     let dir = model_root();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let files = download_files(&m.download)?;
+    // Before a single byte: a download that fills the disk takes the machine
+    // down with it, and the size is known in advance.
+    let have: u64 = files
+        .iter()
+        .map(|(_, name)| std::fs::metadata(dir.join(name)).map(|f| f.len()).unwrap_or(0))
+        .sum();
+    crate::require_free_space(&dir, m.bytes.saturating_sub(have))?;
+    tauri::async_runtime::spawn_blocking(move || install_blocking(app, m, files, dir))
+        .await
+        .map_err(|e| format!("the download thread died: {e}"))?
+}
+
+fn install_blocking(
+    app: tauri::AppHandle,
+    m: ImageModel,
+    files: Vec<(String, String)>,
+    dir: PathBuf,
+) -> Result<(), String> {
     let total = files.len();
-    for (i, (url, f)) in files.iter().enumerate() {
-        let dest = dir.join(f);
-        // Already there: an install interrupted after three of four files must
-        // not start again from the first one.
-        if std::fs::metadata(&dest).map(|m| m.len() > 0).unwrap_or(false) {
-            continue;
-        }
+    cancel_flag().store(false, Ordering::SeqCst);
+    for (i, (url, name)) in files.iter().enumerate() {
+        let dest = dir.join(name);
         let _ = app.emit(
             "galactus://image",
-            json!({"kind": "install", "id": id, "file": f, "index": i + 1, "total": total}),
+            json!({"kind": "install", "id": m.id, "file": name, "index": i + 1, "total": total}),
         );
-        let status = std::process::Command::new("curl")
+        let mut child = std::process::Command::new("curl")
+            // -C - resumes where an interrupted download stopped. The old code
+            // skipped any non-empty file outright, which turned "resume" into
+            // "pretend it is finished".
             .args(["-L", "-C", "-", "--fail", "--retry", "6", "--retry-delay", "4", "-s", "-o"])
             .arg(&dest)
             .arg(url)
-            .status()
+            .spawn()
             .map_err(|e| format!("curl: {e}"))?;
-        if !status.success() {
-            let _ = std::fs::remove_file(&dest);
-            return Err(format!("download failed for {f}"));
+        remember_child(child.id());
+        loop {
+            if cancel_flag().load(Ordering::SeqCst) {
+                let _ = child.kill();
+                let _ = child.wait();
+                forget_child();
+                return Err("cancelled".into());
+            }
+            match child.try_wait().map_err(|e| e.to_string())? {
+                Some(status) => {
+                    forget_child();
+                    if !status.success() {
+                        // 33 is curl's "this server cannot resume": the partial
+                        // file is unusable and every later attempt would fail
+                        // the same way, so it goes rather than staying forever.
+                        if status.code() == Some(33) {
+                            let _ = std::fs::remove_file(&dest);
+                            return Err(format!(
+                                "{name} could not be resumed: press download again to start it over"
+                            ));
+                        }
+                        return Err(format!("download failed for {name}"));
+                    }
+                    break;
+                }
+                None => {
+                    // Bytes on disk against bytes expected: the only honest
+                    // progress available, since curl is silent in -s mode.
+                    let done: u64 = files
+                        .iter()
+                        .map(|(_, n)| std::fs::metadata(dir.join(n)).map(|f| f.len()).unwrap_or(0))
+                        .sum();
+                    let pct = if m.bytes > 0 {
+                        ((done as f64 / m.bytes as f64) * 100.0).min(99.0)
+                    } else {
+                        0.0
+                    };
+                    let _ = app.emit(
+                        "galactus://image",
+                        json!({"kind": "install", "id": m.id, "file": name, "index": i + 1,
+                               "total": total, "pct": pct, "done": done, "bytes": m.bytes}),
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(700));
+                }
+            }
         }
     }
-    let _ = app.emit("galactus://image", json!({"kind": "installed", "id": id}));
+    let _ = app.emit("galactus://image", json!({"kind": "installed", "id": m.id}));
     Ok(())
+}
+
+/// Cancel a download in progress. Same flag as a generation: only one of the
+/// two can be running at a time.
+#[tauri::command]
+pub fn image_install_cancel() {
+    cancel_flag().store(true, Ordering::SeqCst);
+    kill_child();
+}
+
+/// Whether this build carries the image engine at all.
+///
+/// The view is offered on the strength of this: without it, someone downloads
+/// seven gigabytes and only then learns that nothing can use them.
+#[tauri::command]
+pub fn image_engine_present() -> bool {
+    crate::galactus_root().ok().and_then(|r| image_engine(&r)).is_some()
 }
 
 #[tauri::command]
@@ -352,20 +469,20 @@ pub fn image_cancel() {
 #[tauri::command]
 pub async fn image_generate(
     app: tauri::AppHandle,
-    root: String,
     req: GenerateRequest,
 ) -> Result<String, String> {
     let req = clamp_request(req);
     if req.prompt.trim().is_empty() {
         return Err("write what you want to see first".into());
     }
-    let list = load_registry(Path::new(&root))?;
+    let root = crate::galactus_root()?;
+    let list = load_registry(&root)?;
     let m = list.into_iter().find(|m| m.id == req.model).ok_or("no such image model")?;
     let dir = model_root();
     if !model_installed(&dir, &m) {
         return Err(format!("{} is not installed yet", m.name));
     }
-    let bin = image_engine(Path::new(&root)).ok_or(
+    let bin = image_engine(&root).ok_or(
         "the image engine is missing from this build",
     )?;
     let out_dir = image_root();
@@ -376,11 +493,22 @@ pub async fn image_generate(
         .unwrap_or(0);
     let out = out_dir.join(format!("galactus-{stamp}.png"));
     let args = generate_argv(&dir, &m, &req, &out);
+    // One at a time, decided in Rust. The view has a `busy` flag, but the model
+    // calls the same command through generate_image and cannot see it: two SDXL
+    // runs at ten gigabytes each is a machine that stops responding.
+    if busy_flag().swap(true, Ordering::SeqCst) {
+        return Err("an image is already being made: wait for it, or stop it first".into());
+    }
     cancel_flag().store(false, Ordering::SeqCst);
     let path = out.clone();
-    tauri::async_runtime::spawn_blocking(move || run_generation(app, bin, args, path))
-        .await
-        .map_err(|e| format!("the image thread died: {e}"))?
+    let done = tauri::async_runtime::spawn_blocking(move || run_generation(app, bin, args, path)).await;
+    busy_flag().store(false, Ordering::SeqCst);
+    done.map_err(|e| format!("the image thread died: {e}"))?
+}
+
+fn busy_flag() -> &'static AtomicBool {
+    static FLAG: OnceLock<AtomicBool> = OnceLock::new();
+    FLAG.get_or_init(|| AtomicBool::new(false))
 }
 
 fn run_generation(
@@ -398,47 +526,50 @@ fn run_generation(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("image engine: {e}"))?;
-    // Progress rides on stderr, in one line rewritten with carriage returns, so
-    // the reader splits on \r as well as \n or it would see nothing until the
-    // end.
+    remember_child(child.id());
+
+    // BOTH pipes are read by threads, and the wait loop waits for nothing else.
+    //
+    // Reading stdout inline was two bugs in one line. It blocks until the pipe
+    // closes, which is when the engine exits, so the cancel check below only ran
+    // after the work was done: Stop did nothing for thirty seconds and then
+    // deleted the image that had just been written. And it collected the wrong
+    // stream: the engine prints its INFO lines to stdout and its errors to
+    // stderr, so a failure was reported to the user as the tail of the chatter
+    // while the actual reason was thrown away.
+    let lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     if let Some(err) = child.stderr.take() {
         let app2 = app.clone();
+        let sink = lines.clone();
         std::thread::spawn(move || {
-            let mut reader = BufReader::new(err);
-            let mut buf = Vec::new();
-            let mut byte = [0u8; 1];
-            while reader.read(&mut byte).map(|n| n == 1).unwrap_or(false) {
-                if byte[0] == b'\r' || byte[0] == b'\n' {
-                    let line = String::from_utf8_lossy(&buf).to_string();
-                    buf.clear();
-                    if let Some((done, total)) = parse_progress(&line) {
-                        let _ = app2.emit(
-                            "galactus://image",
-                            json!({"kind": "step", "done": done, "total": total}),
-                        );
-                    }
-                } else {
-                    buf.push(byte[0]);
-                }
-            }
+            read_engine_stream(err, sink, Some(app2));
         });
     }
-    let mut log = String::new();
-    if let Some(mut outp) = child.stdout.take() {
-        let _ = outp.read_to_string(&mut log);
+    if let Some(outp) = child.stdout.take() {
+        let sink = lines.clone();
+        std::thread::spawn(move || {
+            read_engine_stream(outp, sink, None);
+        });
     }
+
+    let mut cancelled_first = false;
     loop {
-        if cancel_flag().load(Ordering::SeqCst) {
+        if !cancelled_first && cancel_flag().load(Ordering::SeqCst) {
+            cancelled_first = true;
             let _ = child.kill();
-            let _ = child.wait();
-            let _ = std::fs::remove_file(&out);
-            let _ = app.emit("galactus://image", json!({"kind": "cancelled"}));
-            return Err("cancelled".into());
         }
         match child.try_wait().map_err(|e| e.to_string())? {
             Some(status) => {
+                forget_child();
+                if cancelled_first {
+                    // Only when the user asked BEFORE it finished: an image that
+                    // completed on its own is theirs, whatever was pressed after.
+                    let _ = std::fs::remove_file(&out);
+                    let _ = app.emit("galactus://image", json!({"kind": "cancelled"}));
+                    return Err("cancelled".into());
+                }
                 if !status.success() {
-                    let tail: String = log.lines().rev().take(8).collect::<Vec<_>>().join("\n");
+                    let tail = tail_of(&lines);
                     let _ = app.emit("galactus://image", json!({"kind": "failed", "log": tail}));
                     return Err(if tail.trim().is_empty() {
                         "the image engine stopped without saying why".to_string()
@@ -455,22 +586,130 @@ fn run_generation(
     // file is the proof, not the exit code.
     let written = std::fs::read(&out).unwrap_or_default();
     if written.is_empty() {
-        return Err("the engine finished but wrote no image".into());
+        return Err(format!(
+            "the engine finished but wrote no image{}",
+            with_reason(&lines)
+        ));
     }
     if looks_blank(&written) {
         // A flat square, which is what a decode that failed on this backend
-        // leaves behind. Handing it over as a result would read as the app
-        // being broken, so it is deleted and the failure is named.
+        // leaves behind. Handing it over as a result would read as the app being
+        // broken, so it is deleted and the failure is named.
         let _ = std::fs::remove_file(&out);
         let _ = app.emit("galactus://image", json!({"kind": "failed", "log": "blank"}));
-        return Err(
-            "the engine produced an empty image: this model did not run correctly on this Mac"
-                .into(),
-        );
+        return Err(format!(
+            "the engine produced an empty image: this model did not run correctly here{}",
+            with_reason(&lines)
+        ));
     }
     let path = out.to_string_lossy().to_string();
     let _ = app.emit("galactus://image", json!({"kind": "done", "path": path}));
     Ok(path)
+}
+
+/// How many engine lines are kept for a failure message.
+const LOG_TAIL: usize = 40;
+
+/// Read one engine pipe, emitting progress and keeping the rest.
+///
+/// Split on carriage returns as well as newlines: the progress bar is one line
+/// rewritten in place, so a reader that waited for '\n' would see nothing until
+/// the end.
+fn read_engine_stream(
+    pipe: impl std::io::Read,
+    sink: Arc<Mutex<Vec<String>>>,
+    progress_to: Option<tauri::AppHandle>,
+) {
+    use std::io::{BufReader, Read};
+    let mut reader = BufReader::new(pipe);
+    let mut buf = Vec::new();
+    let mut byte = [0u8; 1];
+    while reader.read(&mut byte).map(|n| n == 1).unwrap_or(false) {
+        if byte[0] == b'\r' || byte[0] == b'\n' {
+            let line = String::from_utf8_lossy(&buf).trim().to_string();
+            buf.clear();
+            if line.is_empty() {
+                continue;
+            }
+            match (parse_progress(&line), &progress_to) {
+                (Some((done, total)), Some(app)) => {
+                    let _ = app.emit(
+                        "galactus://image",
+                        json!({"kind": "step", "done": done, "total": total}),
+                    );
+                }
+                _ => {
+                    // Everything that is not the bar is kept, both streams
+                    // together, because the useful sentence can be on either.
+                    if let Ok(mut v) = sink.lock() {
+                        if v.len() >= LOG_TAIL {
+                            v.remove(0);
+                        }
+                        v.push(line);
+                    }
+                }
+            }
+        } else {
+            buf.push(byte[0]);
+        }
+    }
+}
+
+/// The last engine lines, for a failure message.
+fn tail_of(lines: &Arc<Mutex<Vec<String>>>) -> String {
+    lines
+        .lock()
+        .map(|v| v.iter().rev().take(8).rev().cloned().collect::<Vec<_>>().join("\n"))
+        .unwrap_or_default()
+}
+
+/// An engine error appended to our own sentence, when there is one worth having.
+fn with_reason(lines: &Arc<Mutex<Vec<String>>>) -> String {
+    let said = lines
+        .lock()
+        .map(|v| {
+            v.iter()
+                .rev()
+                .find(|l| l.contains("ERROR") || l.contains("error"))
+                .cloned()
+                .unwrap_or_default()
+        })
+        .unwrap_or_default();
+    if said.is_empty() { String::new() } else { format!(": {said}") }
+}
+
+/// The pid of the child working right now, so shutdown can end it.
+///
+/// The app already kills llama-server, the PTYs and the connectors on exit, for
+/// the reason stated there: an abandoned engine keeps gigabytes pinned. An image
+/// process is the same thing for ten of them, and a curl left running writes
+/// seven more to the disk after the window has gone.
+static IMAGE_CHILD: OnceLock<Mutex<Option<u32>>> = OnceLock::new();
+
+fn child_slot() -> &'static Mutex<Option<u32>> {
+    IMAGE_CHILD.get_or_init(|| Mutex::new(None))
+}
+
+pub(crate) fn remember_child(pid: u32) {
+    if let Ok(mut slot) = child_slot().lock() {
+        *slot = Some(pid);
+    }
+}
+
+pub(crate) fn forget_child() {
+    if let Ok(mut slot) = child_slot().lock() {
+        *slot = None;
+    }
+}
+
+/// Kill whatever image work is running. Called from the app's exit handler.
+pub(crate) fn kill_child() {
+    let pid = child_slot().lock().ok().and_then(|s| *s);
+    if let Some(pid) = pid {
+        // SAFETY: a plain kill(2) on a pid this process spawned; ESRCH on an
+        // already-dead child is not an error here.
+        unsafe { crate::kill(pid as i32, 9) };
+    }
 }
 
 /// A generated image, as a data URL the webview can show.
@@ -482,18 +721,30 @@ fn run_generation(
 ///
 /// The path is checked against that folder rather than trusted. It comes from
 /// the webview, and "../../../.ssh/id_ed25519" is a path too.
-#[tauri::command]
+///
+/// `async` on purpose: a 3 MB png read and base64'd is tens of milliseconds,
+/// and a synchronous Tauri command runs on the main thread. Twelve of them in a
+/// row is a visibly stuttering gallery.
+#[tauri::command(async)]
 pub fn image_read(path: String) -> Result<String, String> {
+    let full = ours(&path)?;
+    let bytes = std::fs::read(&full).map_err(|e| e.to_string())?;
+    Ok(format!("data:image/png;base64,{}", b64(&bytes)))
+}
+
+/// A path inside the images folder, canonicalised, or an error.
+fn ours(path: &str) -> Result<PathBuf, String> {
     let root = std::fs::canonicalize(image_root()).map_err(|e| e.to_string())?;
-    let full = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+    let full = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
+    // starts_with on a Path compares components, so a sibling folder called
+    // "imagesEvil" cannot pass by sharing a prefix.
     if !full.starts_with(&root) {
         return Err("that image is not one of ours".into());
     }
     if full.extension().map(|e| e != "png").unwrap_or(true) {
         return Err("that is not a png".into());
     }
-    let bytes = std::fs::read(&full).map_err(|e| e.to_string())?;
-    Ok(format!("data:image/png;base64,{}", b64(&bytes)))
+    Ok(full)
 }
 
 /// Base64, by hand: one small function against one more dependency.
@@ -512,18 +763,13 @@ fn b64(bytes: &[u8]) -> String {
 }
 
 /// Delete one generated image.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn image_forget(path: String) -> Result<(), String> {
-    let root = std::fs::canonicalize(image_root()).map_err(|e| e.to_string())?;
-    let full = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
-    if !full.starts_with(&root) || full.extension().map(|e| e != "png").unwrap_or(true) {
-        return Err("that image is not one of ours".into());
-    }
-    std::fs::remove_file(&full).map_err(|e| e.to_string())
+    std::fs::remove_file(ours(&path)?).map_err(|e| e.to_string())
 }
 
 /// Everything generated so far, newest first.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn image_gallery() -> Vec<String> {
     let mut files: Vec<(std::time::SystemTime, String)> = std::fs::read_dir(image_root())
         .map(|rd| {

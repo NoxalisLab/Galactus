@@ -318,6 +318,10 @@ fn refresh_policy_files(root: &Path) -> Result<(), String> {
     std::fs::create_dir_all(&scripts).map_err(|e| e.to_string())?;
     for f in [
         "models-registry.json",
+        // Without this the Images view is dead on every machine but a
+        // checkout: load_registry reads it from the root, and a provisioned
+        // root only ever holds what this list puts there.
+        "image-models.json",
         "moe-profile.py",
         "galactus-pack-plan.py",
         "galactus-pack-write.py",
@@ -328,6 +332,51 @@ fn refresh_policy_files(root: &Path) -> Result<(), String> {
         std::fs::rename(&temporary, &destination).map_err(|e| format!("activate {f}: {e}"))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod packaged_files_tests {
+    /// Every file the app installs into a provisioned root must actually be in
+    /// the bundle.
+    ///
+    /// This is the test that would have caught image-models.json: the Rust list
+    /// said to install it, the build script never copied it, and the Images view
+    /// was therefore dead on every machine except a git checkout, where the file
+    /// happens to be there already. Two lists in two languages, and nothing
+    /// compared them.
+    #[test]
+    fn the_build_script_bundles_every_policy_file_the_app_installs() {
+        let here = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let rust = std::fs::read_to_string(here.join("src/lib.rs")).expect("lib.rs");
+        let shell = std::fs::read_to_string(here.join("prepare-engine.sh")).expect("prepare-engine.sh");
+
+        // The list inside refresh_policy_files.
+        let start = rust.find("fn refresh_policy_files").expect("refresh_policy_files");
+        let block = &rust[start..start + 1200];
+        let wanted: Vec<&str> = block
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix('"'))
+            .filter_map(|l| l.split('"').next())
+            .filter(|f| f.contains('.'))
+            .collect();
+        assert!(wanted.contains(&"models-registry.json"), "the list was not found: {wanted:?}");
+        assert!(
+            wanted.contains(&"image-models.json"),
+            "the image registry must be installed into a provisioned root"
+        );
+
+        // The copy loop in the build script.
+        let line = shell
+            .lines()
+            .find(|l| l.trim_start().starts_with("for f in models-registry.json"))
+            .expect("the copy loop");
+        for f in &wanted {
+            assert!(
+                line.contains(f),
+                "{f} is installed by the app but never copied into the bundle by prepare-engine.sh"
+            );
+        }
+    }
 }
 
 /// Whether this root is one the app may overwrite policy files inside.
@@ -879,6 +928,25 @@ fn required_download_gib(total_bytes: u64, already_downloaded: u64) -> u64 {
         .saturating_sub(already_downloaded)
         .div_ceil(GIB)
         .saturating_add(INSTALL_DOWNLOAD_RESERVE_GIB)
+}
+
+/// Free space for a download of `need` bytes into `dir`, or an error saying so.
+///
+/// The model registry's own version of this checks a model folder under the
+/// Galactus root; this one takes any folder, so the image models can use the
+/// same arithmetic and the same reserve.
+pub(crate) fn require_free_space(dir: &Path, need: u64) -> Result<(), String> {
+    const GIB: u64 = 1024 * 1024 * 1024;
+    let required = need.div_ceil(GIB).saturating_add(INSTALL_DOWNLOAD_RESERVE_GIB);
+    let probe = dir.to_string_lossy();
+    let (_, _, free, mount) = df_line(&probe)
+        .ok_or_else(|| format!("cannot measure free space for {}", dir.display()))?;
+    if free < required {
+        return Err(format!(
+            "not enough space on {mount}: {required} GiB needed, {free} GiB free"
+        ));
+    }
+    Ok(())
 }
 
 /// Refuse before curl starts. The GGUF is always downloaded under the
@@ -8034,9 +8102,11 @@ pub fn run() {
             code::git_commit,
             code::git_clone,
             image::image_models,
+            image::image_engine_present,
             image::image_install,
             image::image_generate,
             image::image_cancel,
+            image::image_install_cancel,
             image::image_gallery,
             image::image_read,
             image::image_forget,
@@ -8144,6 +8214,9 @@ pub fn run() {
                 // window must close now. The process group is left to the system
                 // to reap, which it does as soon as this process exits.
                 mcp_kill_children();
+                // Same reason: a generation holds ten gigabytes and a download
+                // keeps writing seven more after the window has gone.
+                image::kill_child();
                 // Voice capture and speech must not outlive the app either.
                 if let Ok(mut v) = voice_state().lock() {
                     if let Some(mut c) = v.child.take() {

@@ -741,6 +741,12 @@ const dict: Record<string, { en: string; fr: string }> = {
     fr: "Alt-clic sur une image pour la supprimer.",
   },
   "img.galleryEmpty": { en: "Nothing yet.", fr: "Rien pour l'instant." },
+  "img.installingPct": { en: "Downloading %p% (%a of %b GB)", fr: "Téléchargement %p % (%a sur %b Go)" },
+  "img.noEngine": { en: "The image engine is not in this build", fr: "Le moteur d'image n'est pas dans cette version" },
+  "img.noEngineHint": {
+    en: "Nothing to download here: this copy of Galactus was built without it.",
+    fr: "Rien à télécharger ici : cette version de Galactus a été construite sans lui.",
+  },
   "img.noRoot": { en: "Choose the Galactus folder first", fr: "Choisissez d'abord le dossier Galactus" },
   "img.noRegistry": { en: "The image model list could not be read", fr: "La liste des modèles d'image n'a pas pu être lue" },
   "models.notInstalled": { en: "Not installed yet", fr: "Pas encore installé" },

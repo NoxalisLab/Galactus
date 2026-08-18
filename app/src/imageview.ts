@@ -34,6 +34,12 @@ export interface ImageDeps {
 }
 
 let models: ImageModelInfo[] = [];
+/** Set once per session: whether this build carries the engine at all. */
+let enginePresent: boolean | null = null;
+/** The live element, so a repaint after an await never targets a detached one. */
+let liveWrap: HTMLElement | null = null;
+/** Download progress, straight from the backend. */
+let installPct: { pct: number; done: number; bytes: number } | null = null;
 let gallery: string[] = [];
 let chosen = "";
 let busy = false;
@@ -57,6 +63,7 @@ export function imageView(): HTMLElement {
       <div id="imgbody"></div>
     </div></div>
   </div>`);
+  liveWrap = wrap;
   void refresh(wrap);
   listen(wrap);
   return wrap;
@@ -71,10 +78,17 @@ function listen(wrap: HTMLElement): void {
     if (dead) return;
     if (p?.kind === "step") {
       progress = { done: Number(p.done) || 0, total: Number(p.total) || 0 };
-      paintProgress(wrap);
+      paintProgress();
+    } else if (p?.kind === "install") {
+      installPct = {
+        pct: Number(p.pct) || 0,
+        done: Number(p.done) || 0,
+        bytes: Number(p.bytes) || 0,
+      };
+      paintInstall();
     } else if (p?.kind === "installed" || p?.kind === "done" || p?.kind === "failed" || p?.kind === "cancelled") {
       progress = null;
-      void refresh(wrap);
+      void refresh();
     }
   }).then((off) => {
     if (dead) off();
@@ -82,14 +96,24 @@ function listen(wrap: HTMLElement): void {
   });
 }
 
-async function refresh(wrap: HTMLElement): Promise<void> {
-  const root = deps?.root();
-  if (!root) {
-    paint(wrap, `<div class="empty-block"><span class="big">◇</span><b>${esc(t("img.noRoot"))}</b></div>`);
+async function refresh(_wrap?: HTMLElement): Promise<void> {
+  // The live element, never the one captured when the click happened: leaving
+  // the view during a download and coming back used to repaint a detached node,
+  // leaving the visible button stuck on "Downloading" forever.
+  const wrap = liveWrap;
+  if (!wrap) return;
+  if (enginePresent === null) {
+    enginePresent = await api.imageEnginePresent().catch(() => false);
+  }
+  if (!enginePresent) {
+    paint(
+      wrap,
+      `<div class="empty-block"><span class="big">◇</span><b>${esc(t("img.noEngine"))}</b><span>${esc(t("img.noEngineHint"))}</span></div>`,
+    );
     return;
   }
   try {
-    models = await api.imageModels(root);
+    models = await api.imageModels();
   } catch (e: any) {
     models = [];
     paint(wrap, `<div class="cerror"><b>${esc(t("img.noRegistry"))}</b><span class="mono">${esc(String(e?.message ?? e))}</span></div>`);
@@ -144,6 +168,7 @@ function bodyHtml(): string {
     m && !m.installed
       ? `<div class="card"><div class="hd"><div class="grow"><b>${esc(t("img.installTitle").replace("%s", m.name))}</b>
            <span class="d">${esc(t("img.installHint").replace("%g", (m.bytes / 1e9).toFixed(1)))}</span></div>
+           ${installing === m.id ? `<button class="bs" id="imginstallstop">${esc(t("img.stop"))}</button>` : ""}
            <button class="bp" id="imginstall" ${installing ? "disabled" : ""}>${esc(installing === m.id ? t("img.installing") : t("img.install"))}</button></div></div>`
       : ""
   }
@@ -175,8 +200,18 @@ function bodyHtml(): string {
   }</div>`;
 }
 
-function paintProgress(wrap: HTMLElement): void {
-  const box = wrap.querySelector<HTMLElement>("#imgstatus");
+function paintInstall(): void {
+  const box = liveWrap?.querySelector<HTMLElement>("#imginstall");
+  if (!box || !installPct) return;
+  const gb = (n: number) => (n / 1e9).toFixed(1);
+  box.textContent = t("img.installingPct")
+    .replace("%p", String(Math.round(installPct.pct)))
+    .replace("%a", gb(installPct.done))
+    .replace("%b", gb(installPct.bytes));
+}
+
+function paintProgress(): void {
+  const box = liveWrap?.querySelector<HTMLElement>("#imgstatus");
   if (!box || !progress) return;
   const pct = progress.total ? Math.round((progress.done / progress.total) * 100) : 0;
   box.textContent = t("img.progress")
@@ -198,12 +233,16 @@ function wire(wrap: HTMLElement): void {
       void decodeVisible(wrap);
       return;
     }
+    if (target.closest("#imginstallstop")) {
+      void api.imageInstallCancel();
+      return;
+    }
     if (target.closest("#imginstall")) {
-      void install(wrap);
+      void install();
       return;
     }
     if (target.closest("#imggo")) {
-      void generate(wrap);
+      void generate();
       return;
     }
     if (target.closest("#imgstop")) {
@@ -242,27 +281,35 @@ async function decodeVisible(wrap: HTMLElement): Promise<void> {
   }
 }
 
-async function install(wrap: HTMLElement): Promise<void> {
-  const root = deps?.root();
+async function install(): Promise<void> {
   const m = current();
-  if (!root || !m || installing) return;
+  if (!m || installing) return;
   installing = m.id;
-  paint(wrap, bodyHtml());
-  wire(wrap);
+  installPct = null;
+  repaint();
   try {
-    await api.imageInstall(root, m.id);
+    await api.imageInstall(m.id);
     deps?.toast(t("img.installed").replace("%s", m.name), "ok");
   } catch (e: any) {
-    deps?.toast(String(e?.message ?? e));
+    const msg = String(e?.message ?? e);
+    if (msg !== "cancelled") deps?.toast(msg);
   }
   installing = null;
-  await refresh(wrap);
+  installPct = null;
+  await refresh();
 }
 
-async function generate(wrap: HTMLElement): Promise<void> {
-  const root = deps?.root();
+/** Repaint the live view from current state. */
+function repaint(): void {
+  if (!liveWrap) return;
+  paint(liveWrap, bodyHtml());
+  wire(liveWrap);
+}
+
+async function generate(): Promise<void> {
+  const wrap = liveWrap;
   const m = current();
-  if (!root || !m || busy) return;
+  if (!wrap || !m || busy) return;
   const num = (id: string, fallback: number): number => {
     const raw = wrap.querySelector<HTMLInputElement>(id)?.value ?? "";
     const v = Number(raw);
@@ -287,10 +334,9 @@ async function generate(wrap: HTMLElement): Promise<void> {
   }
   busy = true;
   progress = null;
-  paint(wrap, bodyHtml());
-  wire(wrap);
+  repaint();
   try {
-    await api.imageGenerate(root, req);
+    await api.imageGenerate(req);
   } catch (e: any) {
     const msg = String(e?.message ?? e);
     // Cancelling is not a failure, and saying so would be noise.
@@ -298,5 +344,5 @@ async function generate(wrap: HTMLElement): Promise<void> {
   }
   busy = false;
   progress = null;
-  await refresh(wrap);
+  await refresh();
 }

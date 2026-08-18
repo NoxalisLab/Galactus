@@ -535,9 +535,11 @@ export const api = {
   codeWrite: (root: string, path: string, content: string) =>
     invoke<void>("code_write", { root, path, content }),
   /** Image generation. Nothing here reaches the network at generation time. */
-  imageModels: (root: string) => invoke<ImageModelInfo[]>("image_models", { root }),
-  imageInstall: (root: string, id: string) => invoke<void>("image_install", { root, id }),
-  imageGenerate: (root: string, req: ImageRequest) => invoke<string>("image_generate", { root, req }),
+  imageModels: () => invoke<ImageModelInfo[]>("image_models"),
+  imageInstall: (id: string) => invoke<void>("image_install", { id }),
+  imageInstallCancel: () => invoke<void>("image_install_cancel"),
+  imageEnginePresent: () => invoke<boolean>("image_engine_present"),
+  imageGenerate: (req: ImageRequest) => invoke<string>("image_generate", { req }),
   imageCancel: () => invoke<void>("image_cancel"),
   imageGallery: () => invoke<string[]>("image_gallery"),
   /** A generated image as a data URL: the page's policy allows data:, not files. */

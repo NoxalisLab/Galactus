@@ -1824,7 +1824,7 @@ export class Agent {
     if (!root) return "no Galactus folder is configured, so there is no image model list";
     let models: Awaited<ReturnType<typeof api.imageModels>>;
     try {
-      models = await api.imageModels(root);
+      models = await api.imageModels();
     } catch (e: any) {
       return `the image model list could not be read: ${String(e?.message ?? e)}`;
     }
@@ -1838,7 +1838,7 @@ export class Agent {
     const m = installed.reduce((a, b) => (b.bytes > a.bytes ? b : a));
     const d = m.defaults ?? {};
     try {
-      const path = await api.imageGenerate(root, {
+      const path = await api.imageGenerate({
         model: m.id,
         prompt: String(args.prompt ?? ""),
         negative: String(args.negative ?? ""),

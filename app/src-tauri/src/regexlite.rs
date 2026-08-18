@@ -478,23 +478,36 @@ impl<'a> Parser<'a> {
     }
 }
 
-/// Shift every jump target at or after `from` by `by`, after an insert.
+/// Move the jump targets after a `Split` was spliced in at `from`.
+///
+/// The rule is not "shift everything at or after from", and the difference is
+/// the whole bug this once had.
+///
+/// An instruction that was already emitted BEFORE `from` and targets exactly
+/// `from` means "carry on with what comes next". What comes next is now the
+/// spliced Split itself, so that target must stay where it is. Shifting it made
+/// it jump over the Split and into the body it guards: `\w+\s*` compiled into
+/// something that required the trailing space, so it matched "hello " and never
+/// matched a final "world". Only strictly-later targets move.
+///
+/// Inside the spliced region, from `from` onwards, every target at or after
+/// `from` is part of the construct being wrapped and moves with it.
 fn shift_targets(prog: &mut [Inst], from: usize, by: usize) {
-    for i in prog.iter_mut() {
-        match i {
+    for (at, inst) in prog.iter_mut().enumerate() {
+        // Before the splice: only what pointed PAST the insertion point moves.
+        // At or after it: what pointed AT it moves too.
+        let threshold = if at < from { from + 1 } else { from };
+        let mut bump = |target: &mut usize| {
+            if *target >= threshold {
+                *target += by;
+            }
+        };
+        match inst {
             Inst::Split(a, b) => {
-                if *a >= from {
-                    *a += by;
-                }
-                if *b >= from {
-                    *b += by;
-                }
+                bump(a);
+                bump(b);
             }
-            Inst::Jump(a) => {
-                if *a >= from {
-                    *a += by;
-                }
-            }
+            Inst::Jump(a) => bump(a),
             _ => {}
         }
     }
@@ -761,5 +774,24 @@ mod tests {
         assert!(Regex::new("a{1,100000}", true).is_err());
         // And a lone brace is a literal, which is what someone reading JSON typed.
         assert_eq!(all("{x", "a{xb"), ["{x"]);
+    }
+}
+
+#[cfg(test)]
+mod audit_tests {
+    use super::Regex;
+
+    fn all(pattern: &str, text: &str) -> Vec<String> {
+        let re = Regex::new(pattern, true).expect("compiles");
+        re.find_line(text).into_iter().map(|(s, e)| text[s..e].to_string()).collect()
+    }
+
+    #[test]
+    fn a_quantifier_after_a_quantifier_still_matches() {
+        assert_eq!(all(r"\w+\s*", "hello world"), ["hello ", "world"]);
+        assert_eq!(all("a+b*", "a"), ["a"]);
+        assert_eq!(all("a?b*c", "c"), ["c"]);
+        assert_eq!(all("x*(a|b)", "b"), ["b"]);
+        assert_eq!(all("(a|b)(c|d)", "ad"), ["ad"]);
     }
 }

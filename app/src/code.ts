@@ -791,7 +791,12 @@ async function chooseRemote(): Promise<void> {
     }
     return chooseRemote();
   }
-  if (!termOpen) return;
+  // The pane may be closed: opening a remote session is a request to see
+  // it, not a no-op that leaves the user wondering what the button did.
+  if (!termOpen) {
+    const live = document.querySelector<HTMLElement>("[data-codeview]");
+    if (live) toggleTerminal(live);
+  }
   await terminal?.openRemote(chosen);
 }
 
@@ -3101,6 +3106,9 @@ function mountTerminal(wrap: HTMLElement): void {
       root: () => root,
       repaint: () => undefined, // the panel drives its own frame-scheduled paint
       toast: (m) => deps?.toast(m),
+      // Without this the terminal's remote button is inert, and the whole SSH
+      // module is reachable from nowhere.
+      chooseRemote: () => void chooseRemote(),
       // Closing the last tab closes the pane. The panel object survives, so the
       // Terminal button reopens instantly with a fresh shell; what goes is the
       // third of the editor that was being spent on a sentence saying there was
@@ -3128,7 +3136,7 @@ function mountTerminal(wrap: HTMLElement): void {
 // ---------------------------------------------------------------- view
 
 export function codeView(): HTMLElement {
-  const wrap = el(`<div class="main">
+  const wrap = el(`<div class="main" data-codeview>
     <div class="topbar" data-tauri-drag-region>
       <span class="ttl">${esc(t("nav.code"))}</span>
       <div class="right" id="codehead"></div>
@@ -3152,10 +3160,16 @@ export function codeView(): HTMLElement {
         <span class="big">⌘</span>
         <b>${esc(t("code.openTitle"))}</b>
         <span>${esc(t("code.openBody"))}</span>
-        <button class="bp" id="copen" style="margin-top:12px">${esc(t("code.openFolder"))}</button>
+        <div style="display:flex;gap:8px;margin-top:12px">
+          <button class="bp" id="copen">${esc(t("code.openFolder"))}</button>
+          <button class="bs" id="cclone">${esc(t("clone.button"))}</button>
+        </div>
       </div>
     </div></div>`);
     onb.querySelector("#copen")!.addEventListener("click", () => void chooseWorkspace());
+    // The other way a project arrives on a machine. It was written, translated,
+    // tested, and left with no button: nothing in the app could reach it.
+    onb.querySelector("#cclone")!.addEventListener("click", () => void cloneRepo());
     wrap.appendChild(onb);
     return wrap;
   }
