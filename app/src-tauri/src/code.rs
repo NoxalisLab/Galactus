@@ -670,3 +670,143 @@ fn git_checkout_blocking(root: String, branch: String, create: bool) -> Result<S
     invalidate_status(&root);
     out
 }
+
+// ---------------------------------------------------------------- clone
+
+/// Whether a string is a remote this app will clone from.
+///
+/// THE POINT OF REFUSING ANYTHING. `git clone` takes more than a URL: a local
+/// path clones a directory, and `ext::` or a `--upload-pack` smuggled into the
+/// argument runs a command. This is user-typed text heading for a process, so
+/// the set of accepted shapes is written down rather than assumed.
+///
+/// https and ssh only, and no argument may begin with a dash, which is what
+/// keeps a "URL" from becoming an option.
+pub fn is_clonable_remote(url: &str) -> bool {
+    let u = url.trim();
+    if u.is_empty() || u.starts_with('-') || u.contains(char::is_whitespace) {
+        return false;
+    }
+    if u.starts_with("https://") || u.starts_with("http://") {
+        return true;
+    }
+    // scp-like: git@host:owner/repo.git, the form every forge prints.
+    if u.starts_with("ssh://") {
+        return true;
+    }
+    if let Some((before, after)) = u.split_once(':') {
+        return before.contains('@') && !before.contains('/') && !after.is_empty();
+    }
+    false
+}
+
+/// The folder name a clone would create, as git itself would choose it.
+pub fn clone_dir_name(url: &str) -> Option<String> {
+    let u = url.trim().trim_end_matches('/');
+    let last = u.rsplit(['/', ':']).next()?;
+    let name = last.strip_suffix(".git").unwrap_or(last);
+    // No traversal, no hidden folder, no empty name: this becomes a directory.
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') {
+        return None;
+    }
+    Some(name.to_string())
+}
+
+/// Clone a repository into `parent`, returning the path of the new folder.
+///
+/// Shallow by default: someone opening a project to read and edit it does not
+/// need ten years of history, and a full clone of a large repository is minutes
+/// of waiting with nothing on screen. The full history is one `git fetch
+/// --unshallow` away in the terminal, and the UI says so.
+#[tauri::command]
+pub async fn git_clone(url: String, parent: String, depth: Option<u32>) -> Result<String, String> {
+    blocking(move || git_clone_blocking(url, parent, depth)).await
+}
+
+fn git_clone_blocking(url: String, parent: String, depth: Option<u32>) -> Result<String, String> {
+    if !is_clonable_remote(&url) {
+        return Err("that does not look like a repository address: use an https:// URL or git@host:owner/repo".into());
+    }
+    let name = clone_dir_name(&url).ok_or("could not work out a folder name from that address")?;
+    let parent_dir = std::fs::canonicalize(&parent).map_err(|e| format!("{parent}: {e}"))?;
+    let dest = parent_dir.join(&name);
+    if dest.exists() {
+        return Err(format!("{} already exists", dest.display()));
+    }
+    let program = crate::toolchain::git_program().ok_or(GIT_MISSING)?;
+    let mut cmd = Command::new(program);
+    cmd.current_dir(&parent_dir)
+        .arg("clone")
+        // Never prompt. A packaged app has no terminal to answer on, so a
+        // private repository without a working key would otherwise hang
+        // forever on a password prompt nobody can see.
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "")
+        .env("SSH_ASKPASS", "");
+    let d = depth.unwrap_or(1);
+    if d > 0 {
+        cmd.arg("--depth").arg(d.to_string());
+    }
+    let out = cmd
+        .arg("--")
+        .arg(&url)
+        .arg(&name)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("git: {e}"))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        // git says a great deal on stderr even when it succeeds; on failure the
+        // last line is the one that names the cause.
+        let last = err.lines().last().unwrap_or("").trim();
+        return Err(if last.is_empty() { "clone failed".into() } else { last.to_string() });
+    }
+    Ok(dest.display().to_string())
+}
+
+#[cfg(test)]
+mod clone_tests {
+    use super::{clone_dir_name, is_clonable_remote};
+
+    #[test]
+    fn the_two_forms_every_forge_prints_are_accepted() {
+        assert!(is_clonable_remote("https://github.com/NoxalisLab/Galactus.git"));
+        assert!(is_clonable_remote("git@github.com:NoxalisLab/Galactus.git"));
+        assert!(is_clonable_remote("ssh://git@example.com/x/y.git"));
+    }
+
+    #[test]
+    fn nothing_that_could_become_an_option_or_a_command() {
+        // git clone takes more than URLs: a leading dash is an option, and the
+        // ext:: transport runs a command. This is user-typed text on its way to
+        // a process, so the accepted shapes are a list, not an assumption.
+        for bad in [
+            "--upload-pack=touch /tmp/pwned",
+            "-u/tmp/x",
+            "ext::sh -c whoami",
+            "/tmp/local/repo",
+            "file:///tmp/repo",
+            "https://x.invalid/a b",
+            "",
+            "   ",
+        ] {
+            assert!(!is_clonable_remote(bad), "{bad} must be refused");
+        }
+    }
+
+    #[test]
+    fn the_folder_name_is_the_one_git_would_choose() {
+        assert_eq!(clone_dir_name("https://github.com/a/b.git").as_deref(), Some("b"));
+        assert_eq!(clone_dir_name("https://github.com/a/b/").as_deref(), Some("b"));
+        assert_eq!(clone_dir_name("git@host:owner/repo.git").as_deref(), Some("repo"));
+    }
+
+    #[test]
+    fn a_name_that_would_escape_its_parent_is_refused() {
+        // The name becomes a directory next to the others. "..' would put the
+        // clone somewhere the user did not choose.
+        assert_eq!(clone_dir_name("https://x.invalid/a/.."), None);
+        assert_eq!(clone_dir_name("https://x.invalid/a/."), None);
+        assert_eq!(clone_dir_name("https://x.invalid/a/"), Some("a".to_string()));
+    }
+}

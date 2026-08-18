@@ -44,6 +44,7 @@ import { cmPhrases } from "./code/phrases";
 import { classifyRootError, resolveRestoredRoot } from "./code/restored-root";
 import { affectsPreview, chooseEntry, DEVICE_PRESETS, frameScale } from "./code/preview-pane";
 import { simpleLanguageFor } from "./code/simple-modes";
+import type { SshHost } from "./api";
 import { ReviewGate, reviewInstruction } from "./code/review-gate";
 import { autoTabExtension } from "./code/auto-tab";
 import { inlineEditExtension } from "./code/inline-edit";
@@ -521,6 +522,133 @@ async function restoreOpenTabs(saved: string | undefined): Promise<void> {
     paintEditorChrome();
   }
   paintTree();
+}
+
+
+/**
+ * Clone a repository, then open it.
+ *
+ * Two questions and no more: the address, and where to put it. The folder name
+ * is git's own, because inventing a different one is how a clone ends up
+ * somewhere its owner cannot find it again.
+ *
+ * Shallow by default. Someone opening a project to read and edit it does not
+ * need ten years of history, and a full clone of a large repository is minutes
+ * of nothing on screen; the dialog says so, and says how to get the rest.
+ */
+async function cloneRepo(): Promise<void> {
+  const url = (await promptModal(t("clone.title"), t("clone.urlHint"), "https://github.com/owner/repo.git"))?.trim();
+  if (!url) return;
+  let parent: string | null;
+  try {
+    parent = await api.pickFolder();
+  } catch (e: any) {
+    deps?.toast(String(e?.message ?? e));
+    return;
+  }
+  if (!parent) return;
+  deps?.toast(t("clone.working"));
+  let dest: string;
+  try {
+    dest = await api.gitClone(url, parent, 1);
+  } catch (e: any) {
+    // Verbatim. git's last line names the cause, and a repository that needs a
+    // key the user has not set up says exactly that.
+    deps?.toast(String(e?.message ?? e));
+    return;
+  }
+  deps?.toast(t("clone.done").replace("%s", dest), "ok");
+  await setWorkspace(dest);
+}
+
+
+/**
+ * The saved machines, and a session on one of them.
+ *
+ * The list lives in the backend settings, never here: an address the user typed
+ * is validated once, on the way in, by the module that will hand it to ssh.
+ *
+ * NO PASSWORD IS ASKED FOR, EVER. Authentication is whatever the user's own ssh
+ * already does, keys and ~/.ssh/config included. An app that typed a password
+ * would have to hold it in cleartext, and a password in a settings file is a
+ * password in a settings file.
+ */
+async function chooseRemote(): Promise<void> {
+  let hosts: SshHost[];
+  try {
+    hosts = await api.sshHosts();
+  } catch (e: any) {
+    deps?.toast(String(e?.message ?? e));
+    return;
+  }
+  const rows = hosts.length
+    ? hosts
+        .map(
+          (h) =>
+            `<div class="cf" style="display:flex;align-items:center;gap:8px">
+               <button class="bs" data-ssh="${esc(h.id)}">${esc(t("ssh.connect"))}</button>
+               <span class="mono">${esc(h.label)}</span>
+               <span class="mono" style="color:var(--dim)">${esc(h.target)}${h.port ? ":" + h.port : ""}</span>
+               <span style="margin-left:auto"><button class="bs" data-sshrm="${esc(h.id)}">${esc(t("ssh.remove"))}</button></span>
+             </div>`,
+        )
+        .join("")
+    : `<div class="cempty">${esc(t("ssh.none"))}</div>`;
+  const chosen = await remoteModal(rows);
+  if (chosen === null) return;
+  if (chosen === "add") {
+    const target = (await promptModal(t("ssh.add"), t("ssh.addHint"), "deploy@example.com"))?.trim();
+    if (!target) return;
+    try {
+      await api.sshHostSave(target, target);
+    } catch (e: any) {
+      // Verbatim: the backend refused the address and says which shape it wants.
+      deps?.toast(String(e?.message ?? e));
+      return;
+    }
+    return chooseRemote();
+  }
+  if (chosen.startsWith("rm:")) {
+    try {
+      await api.sshHostRemove(chosen.slice(3));
+    } catch (e: any) {
+      deps?.toast(String(e?.message ?? e));
+    }
+    return chooseRemote();
+  }
+  if (!termOpen) return;
+  await terminal?.openRemote(chosen);
+}
+
+/** The machine picker. Resolves an id, "add", "rm:<id>", or null for cancel. */
+function remoteModal(rowsHtml: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    const m = el(`<div class="modal-bd"><div class="modal wide">
+      <h3>${esc(t("ssh.title"))}</h3>
+      <div class="ps">${esc(t("ssh.addHint"))}</div>
+      ${rowsHtml}
+      <div class="acts">
+        <button class="bs" data-x="cancel">${esc(t("conn.cancel"))}</button>
+        <button class="bp" data-x="add">${esc(t("ssh.add"))}</button>
+      </div></div></div>`);
+    m.addEventListener("click", (e) => {
+      const el2 = e.target as HTMLElement;
+      const conn = el2.closest("[data-ssh]") as HTMLElement | null;
+      const rm = el2.closest("[data-sshrm]") as HTMLElement | null;
+      const act = el2.closest("[data-x]") as HTMLElement | null;
+      if (conn) {
+        m.remove();
+        resolve(conn.dataset.ssh!);
+      } else if (rm) {
+        m.remove();
+        resolve("rm:" + rm.dataset.sshrm!);
+      } else if (act) {
+        m.remove();
+        resolve(act.dataset.x === "add" ? "add" : null);
+      }
+    });
+    document.body.appendChild(m);
+  });
 }
 
 // ---------------------------------------------------------------- preview
@@ -2488,6 +2616,7 @@ function measureCell(): { width: number; height: number } {
 
 const terminalHost: TerminalHost = {
   spawn: (r) => api.ptySpawn(r.cwd, r.cols, r.rows, r.owner),
+  sshSpawn: (r) => api.sshSpawn(r.id, r.cwd, r.cols, r.rows),
   write: (r) => api.ptyWrite(r.id, r.data, r.origin, r.gated),
   resize: (id, cols, rows) => api.ptyResize(id, cols, rows),
   kill: (id) => api.ptyKill(id),

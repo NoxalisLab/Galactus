@@ -98,6 +98,15 @@ export interface ModelEntry {
   };
 }
 
+/** One machine saved for a remote terminal. */
+export interface SshHost {
+  id: string;
+  label: string;
+  /** user@host, or an alias from the user's own ~/.ssh/config. */
+  target: string;
+  port?: number | null;
+}
+
 export interface VolumeInfo {
   name: string;
   mount: string;
@@ -321,6 +330,18 @@ export const api = {
    * A site is a folder: index.html asks for styles.css, and only a root can
    * resolve that.
    */
+  /** Clone a repository into a folder, returning the path it created. */
+  gitClone: (url: string, parent: string, depth?: number) =>
+    invoke<string>("git_clone", { url, parent, depth }),
+  /** Machines saved for a remote terminal. Never a password, only an address. */
+  sshHosts: () => invoke<SshHost[]>("ssh_hosts"),
+  sshHostSave: (label: string, target: string, port?: number, id?: string) =>
+    invoke<SshHost[]>("ssh_host_save", { id, label, target, port }),
+  sshHostRemove: (id: string) => invoke<SshHost[]>("ssh_host_remove", { id }),
+  sshSpawn: (id: string, cwd: string, cols: number, rows: number) =>
+    invoke<{ id: string; cols: number; rows: number; shell: string; cwd: string }>("ssh_spawn", {
+      id, cwd, cols, rows,
+    }),
   previewSetRoot: (root: string | null) => invoke<void>("preview_set_root", { root }),
   previewPublish: (html: string) => invoke<string>("preview_publish", { html }),
   hwInfo: () => invoke<HwInfo>("hw_info"),

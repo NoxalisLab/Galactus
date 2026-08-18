@@ -1701,6 +1701,15 @@ export interface PtyOutputEvent {
  */
 export interface TerminalHost {
   spawn(req: { cwd: string; cols: number; rows: number; owner: WriteOrigin }): Promise<SpawnResult>;
+  /**
+   * Open a session on a saved remote machine.
+   *
+   * Optional so a test harness need not provide it, and so a build without the
+   * feature degrades to a local terminal rather than to a crash. The id names a
+   * machine the BACKEND holds: no address, no command and no credential crosses
+   * this boundary.
+   */
+  sshSpawn?(req: { id: string; cwd: string; cols: number; rows: number }): Promise<SpawnResult>;
   write(req: { id: string; data: string; origin: WriteOrigin; gated: boolean }): Promise<void>;
   resize(id: string, cols: number, rows: number): Promise<[number, number]>;
   kill(id: string): Promise<void>;
@@ -1780,6 +1789,30 @@ export class TerminalController {
   }
 
   async open(owner: WriteOrigin, cols: number, rows: number): Promise<TerminalSession | null> {
+    return this.openWith(owner, cols, rows, null);
+  }
+
+  /**
+   * A session on a saved remote machine.
+   *
+   * Always owned by "user": a remote shell is never handed to the model. The
+   * gate that asks before a model writes into a terminal stays exactly as it
+   * was, and this adds no way around it.
+   */
+  async openRemote(id: string, cols: number, rows: number): Promise<TerminalSession | null> {
+    if (!this.deps.host.sshSpawn) {
+      this.deps.toast?.(t("ssh.unavailable"));
+      return null;
+    }
+    return this.openWith("user", cols, rows, id);
+  }
+
+  private async openWith(
+    owner: WriteOrigin,
+    cols: number,
+    rows: number,
+    remoteId: string | null,
+  ): Promise<TerminalSession | null> {
     const root = this.deps.root();
     if (!root) {
       this.deps.toast?.(t("term.noWorkspace"));
@@ -1788,7 +1821,10 @@ export class TerminalController {
     const size = clampTerminalSize(cols, rows);
     let res: SpawnResult;
     try {
-      res = await this.deps.host.spawn({ cwd: root, cols: size.cols, rows: size.rows, owner });
+      res =
+        remoteId !== null && this.deps.host.sshSpawn
+          ? await this.deps.host.sshSpawn({ id: remoteId, cwd: root, cols: size.cols, rows: size.rows })
+          : await this.deps.host.spawn({ cwd: root, cols: size.cols, rows: size.rows, owner });
     } catch (e) {
       this.deps.toast?.(String(e));
       return null;
@@ -1952,6 +1988,14 @@ export function sessionLabel(s: TerminalSession): string {
 export interface TerminalViewDeps extends TerminalControllerDeps {
   /** Measured cell box in CSS pixels. The app measures it once per font load. */
   cell(): { width: number; height: number };
+  /**
+   * Ask the app to show the saved machines and start a session on one.
+   *
+   * Owned by the view above rather than here: the list lives in settings and
+   * the dialog belongs to the app's own modal shell, and a terminal that grew
+   * its own settings UI would be a second place to maintain them.
+   */
+  chooseRemote?(): void;
 }
 
 function elt(html: string): HTMLElement {
@@ -2015,6 +2059,7 @@ export class TerminalPanel {
         return;
       }
       if (target.closest("[data-tnew]")) void this.openSession();
+      else if (target.closest("[data-tssh]")) void this.deps.chooseRemote?.();
       else if (target.closest("[data-tclear]")) {
         const s = this.active();
         if (s) {
@@ -2046,6 +2091,13 @@ export class TerminalPanel {
   async openSession(): Promise<void> {
     const size = this.measure();
     await this.controller.open("user", size.cols, size.rows);
+    this.root.focus();
+  }
+
+  /** Open a session on a saved machine, as another tab in this same pane. */
+  async openRemote(id: string): Promise<void> {
+    const size = this.measure();
+    await this.controller.openRemote(id, size.cols, size.rows);
     this.root.focus();
   }
 
@@ -2159,6 +2211,7 @@ export class TerminalPanel {
       })
       .join("");
     return `${tabs}<button class="term-act" data-tnew title="${esc(t("term.new"))}">+</button>
+      <button class="term-act" data-tssh title="${esc(t("ssh.title"))}">⇄</button>
       <button class="term-act" data-tclear title="${esc(t("term.clear"))}">⊘</button>`;
   }
 

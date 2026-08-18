@@ -631,6 +631,24 @@ pub async fn pty_spawn(
     rows: u16,
     owner: String,
 ) -> Result<SpawnedSession, String> {
+    spawn_program(app, cwd, cols, rows, owner, None).await
+}
+
+/// Spawn a session running something other than the login shell.
+///
+/// `program` is NEVER supplied by the webview. The only caller that passes it
+/// is the SSH module, which builds the argv itself from a host the user saved
+/// and this file validated: an arbitrary command coming across the IPC boundary
+/// would turn the terminal into a way to run anything without a permission
+/// dialog, which is the one thing the gate on model writes exists to prevent.
+pub(crate) async fn spawn_program(
+    app: tauri::AppHandle,
+    cwd: String,
+    cols: u16,
+    rows: u16,
+    owner: String,
+    program: Option<(String, Vec<String>)>,
+) -> Result<SpawnedSession, String> {
     use tauri::Emitter;
     let owner = Owner::parse(&owner).ok_or_else(|| "unknown session owner".to_string())?;
     if session_count() >= MAX_SESSIONS {
@@ -653,7 +671,12 @@ pub async fn pty_spawn(
     // A login shell so the user's PATH, aliases and version managers are the
     // ones they see in their own terminal. Anything else produces the classic
     // "it works in my terminal but not in the app" report.
-    let pty = open_pty(&shell, &["-l"], &dir, cols, rows, &env)?;
+    let (exe, args): (String, Vec<String>) = match program {
+        Some((p, a)) => (p, a),
+        None => (shell.clone(), vec!["-l".to_string()]),
+    };
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let pty = open_pty(&exe, &arg_refs, &dir, cols, rows, &env)?;
     let (cols, rows) = clamp_dims(cols, rows);
 
     let id = mint_id();

@@ -11,6 +11,7 @@ mod hardware;
 mod knowledge;
 mod lsp;
 mod pty;
+mod ssh;
 mod relay;
 mod pylang;
 mod scheduler;
@@ -7895,6 +7896,11 @@ pub fn run() {
             code::git_show_file,
             code::git_stage,
             code::git_commit,
+            code::git_clone,
+            ssh::ssh_hosts,
+            ssh::ssh_host_save,
+            ssh::ssh_host_remove,
+            ssh::ssh_spawn,
             code::git_push,
             code::git_pull,
             code::git_branches,

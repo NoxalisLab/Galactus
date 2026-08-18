@@ -692,6 +692,14 @@ const dict: Record<string, { en: string; fr: string }> = {
     en: "Your workspace is still there but macOS is not letting Galactus read it. Open System Settings, Privacy and Security, Files and Folders, and allow Galactus. The folder is remembered and will reopen on its own.",
     fr: "Votre dossier de travail existe toujours mais macOS empêche Galactus de le lire. Ouvrez Réglages Système, Confidentialité et sécurité, Fichiers et dossiers, et autorisez Galactus. Le dossier est mémorisé et se rouvrira tout seul.",
   },
+  "clone.button": { en: "Clone a repository", fr: "Cloner un dépôt" },
+  "clone.title": { en: "Clone a repository", fr: "Cloner un dépôt" },
+  "clone.urlHint": {
+    en: "Paste the address. Galactus clones the latest state only; run `git fetch --unshallow` in the terminal if you need the full history.",
+    fr: "Collez l'adresse. Galactus ne clone que l'état actuel ; lancez `git fetch --unshallow` dans le terminal si vous voulez tout l'historique.",
+  },
+  "clone.working": { en: "Cloning...", fr: "Clonage en cours..." },
+  "clone.done": { en: "Cloned into %s", fr: "Cloné dans %s" },
   "code.openTitle": { en: "Open a folder", fr: "Ouvrir un dossier" },
   "code.openBody": {
     en: "Pick the folder you want to work on. Galactus reads its files, follows its git history, and proposes its edits there instead of writing them.",
@@ -1167,6 +1175,19 @@ const dict: Record<string, { en: string; fr: string }> = {
     fr: "Rien ne se charge depuis internet ici. Une page qui utilise un CDN s'affiche sans lui.",
   },
   "prev.reload": { en: "Reload", fr: "Recharger" },
+  "ssh.unavailable": {
+    en: "Remote sessions are not available in this build.",
+    fr: "Les sessions distantes ne sont pas disponibles dans cette version.",
+  },
+  "ssh.title": { en: "Remote machines", fr: "Machines distantes" },
+  "ssh.add": { en: "Add a machine", fr: "Ajouter une machine" },
+  "ssh.addHint": {
+    en: "Write user@host, or a name from your ~/.ssh/config. Galactus never stores a password: it connects with the keys your ssh already uses.",
+    fr: "Écrivez utilisateur@hôte, ou un nom de votre ~/.ssh/config. Galactus ne conserve aucun mot de passe : la connexion utilise les clés que votre ssh emploie déjà.",
+  },
+  "ssh.connect": { en: "Connect", fr: "Se connecter" },
+  "ssh.remove": { en: "Forget", fr: "Oublier" },
+  "ssh.none": { en: "No machine saved yet.", fr: "Aucune machine enregistrée." },
   "term.toggle": { en: "Terminal", fr: "Terminal" },
   "term.empty": {
     en: "No terminal open. Press + to start one in the workspace folder.",
