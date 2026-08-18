@@ -249,6 +249,57 @@ fn root_set(path: String) -> Result<(), String> {
 }
 
 #[cfg(test)]
+mod cache_ceiling_tests {
+    use super::*;
+
+    /// If perf can start, eco must be able to start.
+    ///
+    /// That is what the three modes mean: eco is the smallest footprint, perf
+    /// the largest. The registry entry that broke it has ONE measured point, a
+    /// 92 GB cache taken on a machine far bigger than the one being planned
+    /// for, and eco returned that number unclamped. So eco asked for MORE than
+    /// perf, the step-down from perf walked toward a heavier footprint, and
+    /// every mode came back impossible, on a card the app had shown as
+    /// installable after a 202 GB download.
+    ///
+    /// Stated as an invariant between modes rather than as a number, because
+    /// the numbers depend on the machine and the invariant does not.
+    #[test]
+    fn eco_is_never_heavier_than_perf() {
+        let entry = json!({
+            "id": "single-point",
+            "gguf_bytes": 60_000_000_000u64,
+            "expert_bytes_total": 50_000_000_000u64,
+            "non_expert_bytes": 4_000_000_000u64,
+            "record_bytes": 13_000_000u64,
+            "experts": 128,
+            "experts_used": 8,
+            "layers_moe": 40,
+            "min_cache_bytes": 5_000_000_000u64,
+            "status": "certified_bit_transparent",
+            // The only measurement comes from a much larger machine.
+            "measured": [{"cache_gb": 92.0, "gen_tps": 6.0, "mac_gb": 512}],
+        });
+        for ram in [32u64, 64, 128] {
+            let machine = MachineLimits { ram_gb: ram, available: None, gpu_working_set: None };
+            let perf = plan_cache(&entry, machine, None, "perf", false, 1, CTX_PER_SLOT);
+            let eco = plan_cache(&entry, machine, None, "eco", false, 1, CTX_PER_SLOT);
+            if let Ok(p) = perf {
+                let e = eco.unwrap_or_else(|err| {
+                    panic!("{ram} GB: perf planned {} but eco refused: {err}", p.cache_bytes)
+                });
+                assert!(
+                    e.cache_bytes <= p.cache_bytes,
+                    "{ram} GB: eco planned {} against perf's {}",
+                    e.cache_bytes,
+                    p.cache_bytes
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod settings_read_tests {
     use super::*;
 
@@ -1681,10 +1732,18 @@ struct ServerState {
     generation: u64,
     /// Port actually bound by the running server (0 when stopped).
     port: u16,
-    /// Engine regime: resident-metal | streamed-metal | cpu-bit-exact.
+    /// Engine regime: resident-bit-exact | streamed-bit-exact | cpu-bit-exact
+    /// | stock-llamacpp (a dense model, which streams nothing).
     mode: String,
     /// Decode slots the running server was started with (--parallel).
     slots: u32,
+    /// Context window per slot the running server was started with.
+    ///
+    /// The setting offers 8K to 128K, and ctx_per_slot_for clamps it to what
+    /// the model declares (or to a cautious 32K when it declares nothing). The
+    /// UI painted the STORED value, so someone who chose 128K saw 128K on a
+    /// server running 32K, with nothing saying the request had been reduced.
+    ctx_per_slot: u32,
     /// Measured tool-calling verdict for the running model (see ServerStatus).
     tools_ok: Option<bool>,
     /// The footprint mode this server was actually started in, and why. None
@@ -1705,6 +1764,7 @@ fn server_state() -> &'static Mutex<ServerState> {
             port: 0,
             mode: String::new(),
             slots: 1,
+            ctx_per_slot: 0,
             tools_ok: None,
             footprint: None,
         })
@@ -1859,6 +1919,9 @@ struct ServerStatus {
     /// have been cheaper and would have been wrong: it depends on the build,
     /// the chat template and the quantization, not on the model name.
     tools_ok: Option<bool>,
+    /// The context window per slot the engine is actually serving, which is
+    /// not always the one that was asked for.
+    ctx_per_slot: u32,
     /// The memory-footprint decision this engine was started with: the mode
     /// asked for, the mode actually used, and the two numbers that separate
     /// them. The UI says so out loud when they differ, because a user who
@@ -1878,6 +1941,7 @@ fn server_status() -> ServerStatus {
         // Stopped: report what the NEXT start would give, so the UI never
         // promises a concurrency the engine will not have.
         slots: if s.child.is_some() { s.slots } else { engine_slots() },
+        ctx_per_slot: s.ctx_per_slot,
         tools_ok: s.tools_ok,
         footprint: s.footprint.clone(),
     }
@@ -3118,7 +3182,14 @@ fn plan_cache(
             return if mode == "perf" || floor == 0 { ceiling } else { floor.min(ceiling) };
         }
         match mode {
-            "eco" => (measured[0].0 * 1e9) as u64,
+            // Clamped, like the no-curve branch above already was. A measured
+            // point is a number from a bigger machine, not a promise this one
+            // can keep: a model whose only measurement is a 92 GB cache made eco
+            // ask for MORE than perf, so the step-down walked toward a heavier
+            // footprint and never reached anything that fitted. The user saw an
+            // installable card, downloaded 202 GB, and then could not start it
+            // on any Mac.
+            "eco" => ((measured[0].0 * 1e9) as u64).min(ceiling),
             "perf" => ceiling,
             _ => {
                 // Full residency first, when the ceiling already reaches every
@@ -3144,7 +3215,7 @@ fn plan_cache(
                     .fold(measured[0].1, f64::max);
                 for (c, t) in &measured {
                     if *t >= 0.9 * reachable {
-                        return (*c * 1e9) as u64;
+                        return ((*c * 1e9) as u64).min(ceiling);
                     }
                 }
                 ceiling
@@ -4596,6 +4667,7 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
         s.generation = generation;
         s.port = port;
         s.slots = slots;
+        s.ctx_per_slot = ctx_per_slot;
         s.footprint = Some(plan.decision.clone());
     }
     let _ = app.emit(

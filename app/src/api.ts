@@ -137,12 +137,19 @@ export interface ServerStatus {
   model_id?: string;
   port: number;
   phase: string; // stopped | starting | ready
-  mode?: string; // resident-metal | streamed-metal | cpu-bit-exact
+  mode?: string; // resident-bit-exact | streamed-bit-exact | cpu-bit-exact | stock-llamacpp
   /**
    * Concurrent decode streams the engine serves (llama-server --parallel).
    * The hard bound on how many conversations may generate at the same time.
    */
   slots?: number;
+  /**
+   * The context window per slot the engine is actually serving.
+   *
+   * Not always the one that was asked for: each model is capped by the window
+   * it was trained on, and by a cautious ceiling when it declares none.
+   */
+  ctx_per_slot?: number;
   /**
    * Whether the running model actually emits tool calls, MEASURED at warmup.
    * Undefined while unknown. False disables every agent surface, because

@@ -37,7 +37,7 @@ import type { PermissionRequest } from "./agent";
 import { isElevatedCommand } from "./agent";
 import { t, getLang } from "./i18n";
 
-import { Docs, type Doc } from "./code/docs";
+import { Docs, type Doc, docRel } from "./code/docs";
 import { editorExtensions, intelComp } from "./code/extensions";
 import { tabsHtml, onTabsClick } from "./code/tabs";
 import { cmPhrases } from "./code/phrases";
@@ -425,7 +425,11 @@ function newRegistry(): Docs {
         onSave: () => void saveOpenFile(),
         phrases: cmPhrases(getLang()),
         language: langFor(rel),
-        diagnostics: [diagnosticsExtension(() => docs.activeRel())],
+        // The document this state belongs to, read from the state itself. It
+        // used to be the FOCUSED pane's file: a .rs on the right was linted as
+        // if it were the .md on the left, so the sources went silent or, worse,
+        // put another file's positions on this one.
+        diagnostics: [diagnosticsExtension((state) => state.facet(docRel))],
       }),
       oneDark,
       syntaxHighlighting(galactusHighlight),
@@ -1437,6 +1441,10 @@ async function newEntry(anchor: string | null, isDir: boolean, folder: boolean):
     deps?.toast(String(e?.message ?? e));
     return;
   }
+  // The palette and the project search read a cached file list. Creating,
+  // renaming or deleting from the tree left it stale for the whole session:
+  // a new file was not offered by Cmd+P and a renamed one kept its old path.
+  indexStale = true;
   await refreshDirOf(rel);
   // A new file opens; a new folder opens in the tree, where the next click is.
   if (folder) {
@@ -1464,6 +1472,10 @@ async function renameEntry(rel: string): Promise<void> {
   // the next save cannot recreate the file under the name that just went away.
   const wasOpen = docs.list().some((d) => d.rel === rel);
   if (wasOpen) closeTab(rel);
+  // The palette and the project search read a cached file list. Creating,
+  // renaming or deleting from the tree left it stale for the whole session:
+  // a new file was not offered by Cmd+P and a renamed one kept its old path.
+  indexStale = true;
   await refreshDirOf(dest);
   if (wasOpen) await openFile(dest);
 }
@@ -1488,6 +1500,10 @@ async function deleteEntry(rel: string): Promise<void> {
   if (docs.list().some((d) => d.rel === rel)) closeTab(rel);
   expanded.delete(rel);
   treeCache.delete(rel);
+  // The palette and the project search read a cached file list. Creating,
+  // renaming or deleting from the tree left it stale for the whole session:
+  // a new file was not offered by Cmd+P and a renamed one kept its old path.
+  indexStale = true;
   await refreshDirOf(rel);
   // Says where it went, because "moved to Trash" and "moved to .galactus/trash"
   // are two different places to go looking for it.
@@ -1558,6 +1574,9 @@ function onEditorUpdate(u: ViewUpdate): void {
   d.state = u.state;
   if (u.docChanged) {
     scheduleOutline();
+    // The marks were computed once at open and then frozen: twenty lines typed
+    // and the bar still described the file as it was before.
+    scheduleChangeBar();
     if (tsActive()) tsintel!.updateBuffer(d.rel, u.state.doc.toString());
     if (isRust(d.rel)) syncRustBuffer(d.rel, u.state.doc.toString());
   }
@@ -2032,6 +2051,9 @@ function scheduleOutline(): void {
 }
 
 async function computeOutline(): Promise<void> {
+  // Nobody is looking: this forces a syntax tree with a 50 ms budget on the
+  // main thread at every pause in typing, for a panel that is not on screen.
+  if (leftTab !== "outline") return;
   const d = docs.active();
   if (!d || d.error !== null) {
     outlineItems = [];

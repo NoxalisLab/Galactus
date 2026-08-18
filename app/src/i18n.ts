@@ -763,6 +763,10 @@ const dict: Record<string, { en: string; fr: string }> = {
     en: "Family, size on disk, and how many of its experts run per token: a Mixture-of-Experts model uses a few of them at a time, which is why it can be larger than your memory.",
     fr: "Famille, taille sur le disque, et combien de ses experts tournent par jeton : un modèle Mixture-of-Experts n'en utilise que quelques-uns à la fois, et c'est pour cela qu'il peut dépasser votre mémoire.",
   },
+  "settings.ctxCapped": {
+    en: "Running at %s tokens: this model was not trained for more.",
+    fr: "En cours à %s jetons : ce modèle n'a pas été entraîné pour plus.",
+  },
   "news.title": { en: "What changed in %s", fr: "Ce qui a changé dans la %s" },
   "news.sub": {
     en: "Since the version you were running.",

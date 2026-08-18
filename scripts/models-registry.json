@@ -108,7 +108,8 @@
         "regime": "cross-check path (CPU experts and biases)",
         "date": "2026-08-11",
         "recorded_by": "scripts/certify.py"
-      }
+      },
+      "context_length": 131072
     },
     {
       "id": "glm-5.2-744b",
@@ -149,7 +150,8 @@
           "GLM-5.2-UD-IQ1_S-00005-of-00006.gguf",
           "GLM-5.2-UD-IQ1_S-00006-of-00006.gguf"
         ]
-      }
+      },
+      "context_length": 202752
     },
     {
       "id": "qwen3-30b-a3b",
@@ -232,7 +234,8 @@
         "writing",
         "scripting"
       ],
-      "min_ram_gb": 16
+      "min_ram_gb": 16,
+      "context_length": 40960
     },
     {
       "id": "llama4-scout",
@@ -398,7 +401,8 @@
         "max",
         "reasoning",
         "writing"
-      ]
+      ],
+      "context_length": 40960
     },
     {
       "id": "glm-4.5-air",
@@ -491,7 +495,8 @@
       "tasks": [
         "writing",
         "reasoning"
-      ]
+      ],
+      "context_length": 131072
     },
     {
       "id": "qwen3-next-80b",
@@ -591,7 +596,8 @@
       "tasks": [
         "general",
         "writing"
-      ]
+      ],
+      "context_length": 262144
     },
     {
       "id": "qwen3-coder-30b",
@@ -676,7 +682,8 @@
         "regime": "cross-check path (CPU experts and biases)",
         "date": "2026-08-11",
         "recorded_by": "scripts/certify.py"
-      }
+      },
+      "context_length": 262144
     },
     {
       "id": "olmoe-1b-7b",
@@ -751,7 +758,8 @@
           "prompt_spread_pct": 5.0
         }
       ],
-      "measured_note": "MacBook Pro M5 Max, 128 GB, internal SSD, shipped path (Metal bit-exact experts), batch 512, planner ubatch, 192 predicted tokens on a 24-paragraph prompt, bench 2026-08-10 by scripts/bench-curve.py; cache = app planning ceiling per Mac tier, curve stops at full residency (3.90 GB)"
+      "measured_note": "MacBook Pro M5 Max, 128 GB, internal SSD, shipped path (Metal bit-exact experts), batch 512, planner ubatch, 192 predicted tokens on a 24-paragraph prompt, bench 2026-08-10 by scripts/bench-curve.py; cache = app planning ceiling per Mac tier, curve stops at full residency (3.90 GB)",
+      "context_length": 4096
     },
     {
       "id": "phi35-moe",
@@ -830,7 +838,8 @@
           "prompt_spread_pct": 0.0
         }
       ],
-      "measured_note": "MacBook Pro M5 Max, 128 GB, internal SSD, shipped path (Metal bit-exact experts), batch 512, planner ubatch, 192 predicted tokens on a 24-paragraph prompt, bench 2026-08-10 by scripts/bench-curve.py; cache = app planning ceiling per Mac tier, curve stops at full residency (24.38 GB)"
+      "measured_note": "MacBook Pro M5 Max, 128 GB, internal SSD, shipped path (Metal bit-exact experts), batch 512, planner ubatch, 192 predicted tokens on a 24-paragraph prompt, bench 2026-08-10 by scripts/bench-curve.py; cache = app planning ceiling per Mac tier, curve stops at full residency (24.38 GB)",
+      "context_length": 131072
     },
     {
       "id": "mellum2-12b",

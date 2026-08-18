@@ -3952,7 +3952,7 @@ function settingsView(): HTMLElement {
           <button data-sl="4">4</button>
         </div>
       </div>
-      <div class="set-row"><div class="grow"><b>${esc(t("settings.ctx"))}</b><span>${esc(t("settings.ctxHint"))}</span></div>
+      <div class="set-row"><div class="grow"><b>${esc(t("settings.ctx"))}</b><span>${esc(t("settings.ctxHint"))}</span><span class="d ctxnote"></span></div>
         <div class="seg" id="ctxseg">
           <button data-ctx="8192">8K</button>
           <button data-ctx="16384">16K</button>
@@ -4113,7 +4113,23 @@ function settingsView(): HTMLElement {
       const paintCtx = (v: string) =>
         ctxseg.querySelectorAll("button").forEach((b) =>
           (b as HTMLElement).classList.toggle("on", (b as HTMLElement).dataset.ctx === v));
-      api.settingsGet().then((s) => paintCtx(s["engine_ctx"] || "8192"));
+      api.settingsGet().then((s) => {
+        paintCtx(s["engine_ctx"] || "8192");
+        // What the engine is ACTUALLY serving, when it differs from what was
+        // asked for. Each model is capped by the window it was trained on (or
+        // by a cautious ceiling when it declares none), and the segment painted
+        // the stored value regardless: choosing 128K left the button on 128K
+        // over a server running 32K, with nothing saying so.
+        const live = server.ctx_per_slot ?? 0;
+        const want = Number(s["engine_ctx"] || "8192");
+        const note = ctxseg.parentElement?.querySelector<HTMLElement>(".ctxnote");
+        if (note) {
+          note.textContent =
+            server.running && live > 0 && live !== want
+              ? t("settings.ctxCapped").replace("%s", String(live))
+              : "";
+        }
+      });
       ctxseg.addEventListener("click", async (e) => {
         const b = (e.target as HTMLElement).closest("[data-ctx]") as HTMLElement | null;
         if (!b) return;
