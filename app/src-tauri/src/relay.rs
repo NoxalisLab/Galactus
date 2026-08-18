@@ -172,7 +172,7 @@ pub fn is_preflight(head: &str) -> bool {
 
 const UNAUTHORIZED: &[u8] = b"HTTP/1.1 401 Unauthorized\r\n\
 Content-Type: application/json\r\n\
-Content-Length: 58\r\n\
+Content-Length: 52\r\n\
 Connection: close\r\n\
 \r\n\
 {\"error\":{\"message\":\"missing or invalid API key\"}}\r\n";

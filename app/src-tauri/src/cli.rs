@@ -93,7 +93,8 @@ fn serve(root: &Path, model_id: &str, args: &[String]) -> Result<(), String> {
     // celle marquee sur la boite. Un `serve` qui planifierait sur la RAM
     // installee pendant que l'app se rabat sur eco mesurerait autre chose que
     // ce que l'utilisateur execute.
-    let plan = plan_cache(&entry, machine, None, &ram_mode, cpu_moe, slots)?;
+    let ctx_slot = ctx_per_slot_for(&entry);
+    let plan = plan_cache(&entry, machine, None, &ram_mode, cpu_moe, slots, ctx_slot)?;
     let (cache_bytes, fraction, ubatch) = (plan.cache_bytes, plan.protected, plan.ubatch);
     let port: u16 = args
         .windows(2)
@@ -108,7 +109,6 @@ fn serve(root: &Path, model_id: &str, args: &[String]) -> Result<(), String> {
     // cablage avant de lancer quoi que ce soit.
     engine_is_wired(&bin)?;
 
-    let ctx_slot = ctx_per_slot_for(&entry);
     let ctx_total = ctx_slot * slots;
     let expert_total = entry["expert_bytes_total"].as_u64().unwrap_or(u64::MAX);
     // Les trois autres noms sont des affirmations sur la numerique des experts.

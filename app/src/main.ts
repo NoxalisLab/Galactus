@@ -31,6 +31,7 @@ import * as store from "./store";
 import type { ChatItem, Conversation, ConvMeta, SubAgent, ThreadData } from "./store";
 import { hasVerifiedDownload, modelAvailability, modelCertification } from "./model-policy";
 import { clampSampling, readSampling, SAMPLING_DEFAULT, type Sampling } from "./sampling";
+import { isFollowing } from "./follow";
 import { engineAdvice, isEngineDecodeFailure, modeLabelKey } from "./engine-error";
 import { layoutBriefKey, machineBrief, machineSummary } from "./machine-brief";
 import * as runsview from "./runsview";
@@ -237,6 +238,15 @@ let loadStartMs: number | null = null;
 //    released from memory past MAX_LIVE_CONVS.
 
 interface Thread {
+  /**
+   * Set by Stop on a turn that has not reached the model yet.
+   *
+   * A turn waiting for an engine slot has no agent: `stopThread` called
+   * `sess.agent?.stop()` on null, changed nothing, and reported nothing, so the
+   * stop looked accepted and the turn started generating the moment a slot
+   * freed. Cleared when a turn begins, so it can never cancel a later one.
+   */
+  cancelPending?: boolean;
   /** conv.id for a conversation's own thread, "convId#subId" for a teammate. */
   key: string;
   conv: Conversation;
@@ -789,6 +799,10 @@ function stopAllThreads(): void {
  * the abort flag alone never reaches it.
  */
 function stopThread(sess: Thread): void {
+  // Before the agent exists there is nothing to stop, and that used to mean the
+  // press did nothing at all: the mark is what the queued turn reads when its
+  // slot arrives.
+  if (!sess.agent && sess.generating) sess.cancelPending = true;
   sess.agent?.stop();
   cancelPermissions((k) => k === sess.key);
 }
@@ -1645,6 +1659,24 @@ function scrollChatDown() {
 }
 
 /**
+ * Follow a streaming answer, unless the reader has gone somewhere else.
+ *
+ * The unconditional version above fires on every token. A reader who scrolls up
+ * to re-read an earlier message, or who is halfway through selecting text to
+ * copy, was dragged back to the bottom within one frame, for as long as the
+ * answer kept coming. A background teammate's tokens did it too, to a thread
+ * the reader had not asked about.
+ *
+ * "Within 40px of the end" is the question actually being asked: were they
+ * following? If they were, keep following. If they were not, leave them alone.
+ * The same rule the reasoning block already uses.
+ */
+function scrollChatDownIfFollowing() {
+  const s = chatScroller();
+  if (s && isFollowing(s)) s.scrollTop = s.scrollHeight;
+}
+
+/**
  * `from` is set when another conversation's agent sent this message: it is
  * labelled and styled apart, so nothing ever arrives in a thread without the
  * user seeing who put it there.
@@ -1726,9 +1758,7 @@ function renderReasoning(stored: string): string {
 
 function followReasoning(card: HTMLElement): void {
   const stream = card.querySelector<HTMLElement>(".think-t");
-  if (!stream) return;
-  const atEnd = stream.scrollHeight - stream.scrollTop - stream.clientHeight < 24;
-  if (!atEnd && stream.scrollTop > 0) return;
+  if (!stream || !isFollowing(stream)) return;
   requestAnimationFrame(() => {
     stream.scrollTop = stream.scrollHeight;
   });
@@ -1906,7 +1936,14 @@ function paintChat(): void {
         // Global toggle: closures die on repaint, the flag must not.
         if (ttsPlaying) { api.ttsStop().catch(() => {}); ttsPlaying = false; return; }
         ttsPlaying = true;
-        api.ttsSpeak(text).catch(() => { ttsPlaying = false; });
+        // The backend spawns `say` and returns at once, so this resolves when
+        // speech STARTS, not when it ends. Clearing the flag on success as well
+        // as on failure is what stops the next click being swallowed as a
+        // "stop" of something that finished minutes ago.
+        api.ttsSpeak(text).then(
+          () => { ttsPlaying = false; },
+          () => { ttsPlaying = false; },
+        );
       });
       b.appendChild(say);
     }
@@ -1980,7 +2017,7 @@ let paintPending = false;
 function schedulePaint(): void {
   if (paintPending) return;
   paintPending = true;
-  requestAnimationFrame(() => { paintPending = false; paintChat(); scrollChatDown(); paintLive(); paintTeamStrip(); });
+  requestAnimationFrame(() => { paintPending = false; paintChat(); scrollChatDownIfFollowing(); paintLive(); paintTeamStrip(); });
 }
 
 function setSendState(busy: boolean): void {
@@ -2367,6 +2404,8 @@ interface TurnOptions {
 async function dispatchTurn(sess: Thread, text: string, opts: TurnOptions = {}): Promise<void> {
   const visible = () => sess.key === active().key;
   const shown = () => visible() || (!!sess.sub && active().key === threadKey(sess.conv.id));
+  // A stop from a PREVIOUS turn must not cancel this one.
+  sess.cancelPending = false;
   sess.generating = true;
   sess.touched = Date.now();
   if (visible()) setSendState(true);
@@ -2382,6 +2421,20 @@ async function dispatchTurn(sess: Thread, text: string, opts: TurnOptions = {}):
     if (slotsInUse >= engineSlots()) onThreadActivity(sess, "thinking", t("px.queued"));
     await acquireSlot();
     sess.holdsSlot = true;
+    // Stop may have been pressed while this turn sat in the queue. It had no
+    // agent to receive it, so the press left a mark here instead.
+    if (sess.cancelPending) {
+      sess.cancelPending = false;
+      sess.holdsSlot = false;
+      sess.generating = false;
+      sess.activity = null;
+      releaseSlot();
+      if (visible()) { hideActivity(); setSendState(false); }
+      if (shown()) paintChat();
+      renderSidebarOnly();
+      for (const w of sess.waiters.splice(0)) w("(stopped before it started)");
+      return;
+    }
     onThreadActivity(sess, "thinking");
   }
   try {
@@ -4921,6 +4974,12 @@ async function boot() {
 
   // Keyboard shortcuts: ⌘N new chat, ⌘1..8 navigation, and inside the Code
   // view ⌘P (file palette), ⇧⌘O (symbol palette), ⇧⌘F (project search).
+  /**
+   * The views server mode keeps. It removes the assistant surfaces: the chat,
+   * the workspace, the memory and the agent. Written once here so the keyboard
+   * and the navigation buttons cannot disagree about it, which they did.
+   */
+  const SERVER_VIEWS: View[] = ["models", "connectors", "runs", "learned", "settings"];
   const NAV_ORDER: View[] = ["chat", "code", "models", "connectors", "runs", "memory", "agent", "learned", "settings"];
   window.addEventListener("keydown", (e) => {
     if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
@@ -4945,7 +5004,15 @@ async function boot() {
       newChat();
     } else if (k >= "1" && k <= "8" && k.length === 1) {
       e.preventDefault();
-      view = NAV_ORDER[Number(k) - 1];
+      const target = NAV_ORDER[Number(k) - 1];
+      // The same two gates the navigation buttons apply. They were absent here,
+      // so a shortcut reached views the app had deliberately removed: server
+      // mode exists to take the chat away, and Code and Runs are disabled on a
+      // model measured unable to emit tool calls. A keyboard path around a
+      // guard is the guard not existing.
+      if (appMode === "server" && !SERVER_VIEWS.includes(target)) return;
+      if ((target === "code" || target === "runs") && toolsBlocked()) return;
+      view = target;
       render();
     }
   });

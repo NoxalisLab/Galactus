@@ -10,53 +10,53 @@ const dict: Record<string, { en: string; fr: string }> = {
   "brand.by": { en: "by Noxalis Lab", fr: "par Noxalis Lab" },
   "tools.blocked": {
     en: "This model does not emit tool calls, so the agent cannot read files or run commands. Start a model that does.",
-    fr: "Ce modele n'emet pas d'appels d'outils : l'agent ne peut ni lire de fichier ni lancer de commande. Demarre un modele qui le fait.",
+    fr: "Ce modèle n'emet pas d'appels d'outils : l'agent ne peut ni lire de fichier ni lancer de commande. Demarre un modèle qui le fait.",
   },
   "tools.blockedShort": { en: "no tool calls", fr: "pas d'appels d'outils" },
   "tools.forcedManual": {
     en: "Manual only: this model does not emit tool calls.",
-    fr: "Manuel uniquement : ce modele n'emet pas d'appels d'outils.",
+    fr: "Manuel uniquement : ce modèle n'emet pas d'appels d'outils.",
   },
   "net.copy": { en: "Copy", fr: "Copier" },
   "net.forClient": { en: "Ready to paste", fr: "Prêt à coller" },
   "net.needOpen": {
     en: "Open the relay to get the settings for your tools.",
-    fr: "Ouvre le relais pour obtenir les reglages de tes outils.",
+    fr: "Ouvre le relais pour obtenir les réglages de tes outils.",
   },
   "nav.server": { en: "Server", fr: "Serveur" },
-  "sect.network": { en: "Network", fr: "Reseau" },
+  "sect.network": { en: "Network", fr: "Réseau" },
   "sect.networkHint": {
     en: "Serve the running model to other apps and other machines",
-    fr: "Servir le modele en cours a d'autres apps et d'autres machines",
+    fr: "Servir le modèle en cours à d'autres apps et d'autres machines",
   },
   "common.on": { en: "On", fr: "Oui" },
   "common.off": { en: "Off", fr: "Non" },
-  "mode.title": { en: "How should Galactus start?", fr: "Comment demarrer Galactus ?" },
+  "mode.title": { en: "How should Galactus start?", fr: "Comment démarrer Galactus ?" },
   "mode.body": {
     en: "This decides which half of the app exists. You can change it later in Settings.",
-    fr: "Ce choix decide quelle moitie de l'app existe. Il se change ensuite dans les Reglages.",
+    fr: "Ce choix décide quelle moitié de l'app existe. Il se change ensuite dans les Réglages.",
   },
   "mode.appBody": {
     en: "The full assistant, on this Mac.",
     fr: "L'assistant complet, sur ce Mac.",
   },
-  "mode.appA": { en: "Chat, workspace, memory, teammates", fr: "Chat, atelier, memoire, equipiers" },
-  "mode.appB": { en: "The model stays on 127.0.0.1", fr: "Le modele reste sur 127.0.0.1" },
+  "mode.appA": { en: "Chat, workspace, memory, teammates", fr: "Chat, atelier, mémoire, équipiers" },
+  "mode.appB": { en: "The model stays on 127.0.0.1", fr: "Le modèle reste sur 127.0.0.1" },
   "mode.appC": { en: "Everything below is available too", fr: "Tout ce qui suit reste disponible" },
   "mode.serverBody": {
     en: "Serve the model to your other tools, and to other machines.",
-    fr: "Servir le modele a tes autres outils, et a d'autres machines.",
+    fr: "Servir le modèle à tes autres outils, et à d'autres machines.",
   },
-  "mode.serverA": { en: "Models, connectors, settings, runs", fr: "Modeles, connecteurs, reglages, runs" },
+  "mode.serverA": { en: "Models, connectors, settings, runs", fr: "Modèles, connecteurs, réglages, runs" },
   "mode.serverB": {
     en: "Authenticating relay, reachable from your network",
-    fr: "Relais authentifie, joignable depuis ton reseau",
+    fr: "Relais authentifie, joignable depuis ton réseau",
   },
   "mode.serverC": {
     en: "No surface that reads your files",
     fr: "Aucune surface qui lit tes fichiers",
   },
-  "mode.askAlways": { en: "Ask again every launch", fr: "Redemander a chaque lancement" },
+  "mode.askAlways": { en: "Ask again every launch", fr: "Redemander à chaque lancement" },
   "net.modeAsk": { en: "Ask at launch", fr: "Demander au lancement" },
   "net.modeAskHint": {
     en: "Show the two doors at every start instead of reopening in the last mode.",
@@ -65,17 +65,17 @@ const dict: Record<string, { en: string; fr: string }> = {
   "net.mode": { en: "App mode", fr: "Mode de l'app" },
   "net.modeHint": {
     en: "Server mode keeps the model, the settings and the measurements, and hides the assistant surfaces.",
-    fr: "Le mode serveur garde le modele, les reglages et les mesures, et masque les surfaces d'assistant.",
+    fr: "Le mode serveur garde le modèle, les réglages et les mesures, et masque les surfaces d'assistant.",
   },
   "net.modeApp": { en: "Assistant", fr: "Assistant" },
   "net.modeServer": { en: "Server", fr: "Serveur" },
   "net.expose": { en: "Reachable from", fr: "Joignable depuis" },
   "net.exposeHint": {
     en: "This Mac only, or every machine on your network. The engine itself never leaves 127.0.0.1: an authenticating relay is what listens.",
-    fr: "Ce Mac seulement, ou toute machine de ton reseau. Le moteur lui-meme ne quitte jamais 127.0.0.1 : c'est un relais authentifie qui ecoute.",
+    fr: "Ce Mac seulement, ou toute machine de ton réseau. Le moteur lui-meme ne quitte jamais 127.0.0.1 : c'est un relais authentifie qui ecoute.",
   },
   "net.localOnly": { en: "This Mac", fr: "Ce Mac" },
-  "net.network": { en: "My network", fr: "Mon reseau" },
+  "net.network": { en: "My network", fr: "Mon réseau" },
   "net.key": { en: "API key", fr: "Cle d'API" },
   "net.keyHint": {
     en: "Required. Shown once, right here, and never stored in clear: copy it now.",
@@ -85,14 +85,14 @@ const dict: Record<string, { en: string; fr: string }> = {
   "net.copied": { en: "copied", fr: "copiee" },
   "net.start": { en: "Open", fr: "Ouvrir" },
   "net.stop": { en: "Close", fr: "Fermer" },
-  "net.needModel": { en: "Start a model first.", fr: "Demarre d'abord un modele." },
+  "net.needModel": { en: "Start a model first.", fr: "Demarre d'abord un modèle." },
   "net.needKey": { en: "Generate a key first.", fr: "Genere d'abord une cle." },
   "net.open": { en: "open on", fr: "ouvert sur" },
   "net.closed": { en: "closed", fr: "ferme" },
   "net.snippets": { en: "Connect another tool", fr: "Brancher un autre outil" },
   "net.snippetsHint": {
     en: "Any OpenAI-compatible client. Base URL, model name and key are below.",
-    fr: "N'importe quel client compatible OpenAI. URL de base, nom du modele et cle ci-dessous.",
+    fr: "N'importe quel client compatible OpenAI. URL de base, nom du modèle et cle ci-dessous.",
   },
   "nav.chat": { en: "Chat", fr: "Discussion" },
   "nav.code": { en: "Code", fr: "Code" },
@@ -1004,18 +1004,18 @@ const dict: Record<string, { en: string; fr: string }> = {
   },
   "update.found": { en: "Version %s is available.", fr: "La version %s est disponible." },
   "update.version": { en: "Version %s", fr: "Version %s" },
-  "update.failed": { en: "Update failed: %s", fr: "Echec de la mise a jour : %s" },
-  "update.install": { en: "Download and install", fr: "Telecharger et installer" },
+  "update.failed": { en: "Update failed: %s", fr: "Échec de la mise à jour : %s" },
+  "update.install": { en: "Download and install", fr: "Télécharger et installer" },
   "update.downloading": { en: "Downloading...", fr: "Telechargement..." },
   "update.later": { en: "Not now", fr: "Pas maintenant" },
   "update.declined": {
     en: "Staying on version %s. The offer comes back at the next launch.",
     fr: "On reste en version %s. L'offre revient au prochain lancement.",
   },
-  "update.restart": { en: "Restart now", fr: "Redemarrer" },
+  "update.restart": { en: "Restart now", fr: "Redémarrer" },
   "update.readyHint": {
     en: "Installed. Galactus uses it after a restart.",
-    fr: "Installee. Galactus l'utilisera apres un redemarrage.",
+    fr: "Installee. Galactus l'utilisera après un redemarrage.",
   },
   "update.installedHint": {
     en: "The new version is on disk. Restart when you are ready.",
@@ -1027,12 +1027,12 @@ const dict: Record<string, { en: string; fr: string }> = {
   },
   "update.serverWarn": {
     en: "This machine serves a model and may run scheduled jobs. Restarting stops both until Galactus is back.",
-    fr: "Cette machine sert un modele et peut executer des taches planifiees. Redemarrer arrete les deux jusqu'au retour de Galactus.",
+    fr: "Cette machine sert un modèle et peut exécuter des taches planifiees. Redémarrer arrete les deux jusqu'au retour de Galactus.",
   },
-  "update.autoTitle": { en: "Check at launch", fr: "Verifier au lancement" },
+  "update.autoTitle": { en: "Check at launch", fr: "Vérifier au lancement" },
   "update.autoHint": {
     en: "Look once, a few seconds after start. It never downloads and never restarts on its own.",
-    fr: "Regarder une fois, quelques secondes apres le demarrage. Aucun telechargement ni redemarrage automatique.",
+    fr: "Regarder une fois, quelques secondes après le demarrage. Aucun telechargement ni redemarrage automatique.",
   },
   "update.autoServer": {
     en: "Off in server mode: a machine running unattended is never interrupted by an offer nobody is there to decline.",
@@ -1200,11 +1200,11 @@ const dict: Record<string, { en: string; fr: string }> = {
   },
   "runs.preauth": {
     en: "Answer the every-time requests now",
-    fr: "Repondre maintenant aux demandes systematiques",
+    fr: "Répondre maintenant aux demandes systématiques",
   },
   "runs.preauthHint": {
     en: "git push and git pull are the only two things that still stop an autonomous run, because the attended gate shows them every time. Nobody is watching this one, so decide here or it will stop.",
-    fr: "git push et git pull sont les deux seules choses qui arretent encore une run autonome, parce que la validation surveillee les montre a chaque fois. Personne ne regarde celle-ci : decide ici, sinon elle s'arretera.",
+    fr: "git push et git pull sont les deux seules choses qui arretent encore une run autonome, parce que la validation surveillee les montre a chaque fois. Personne ne regarde celle-ci : décide ici, sinon elle s'arretera.",
   },
   "runs.turns": { en: "Turns", fr: "Tours" },
   "runs.turnsUnit": { en: "turns", fr: "tours" },
@@ -1374,7 +1374,35 @@ const dict: Record<string, { en: string; fr: string }> = {
 // localStorage can throw in restricted webviews, this module runs at import
 // time, so an unguarded access would take the whole app down.
 function readStoredLang(): Lang {
-  try { return (localStorage.getItem("galactus.lang") as Lang) || "fr"; } catch { return "fr"; }
+  try {
+    const stored = localStorage.getItem("galactus.lang") as Lang | null;
+    if (stored === "fr" || stored === "en") return stored;
+  } catch {
+    // localStorage can throw in a restricted webview; fall through to the
+    // system language rather than taking the whole app down.
+  }
+  return systemLang();
+}
+
+/**
+ * The language to start in when nobody has chosen one.
+ *
+ * It was hard-coded to French. The README is in English, the audience is
+ * worldwide, and the language picker lives in a settings page that was itself
+ * in French: an English speaker opened the app, read "Comment demarrer
+ * Galactus ?", and had to guess their way to a menu they could not read. A
+ * first launch should speak the language of the machine it launched on.
+ */
+function systemLang(): Lang {
+  try {
+    const nav = (globalThis as unknown as { navigator?: { language?: string; languages?: readonly string[] } }).navigator;
+    const tags = [nav?.language, ...(nav?.languages ?? [])];
+    for (const tag of tags) {
+      if (typeof tag === "string" && tag.toLowerCase().startsWith("fr")) return "fr";
+      if (typeof tag === "string" && tag.length > 0) return "en";
+    }
+  } catch {}
+  return "en";
 }
 let current: Lang = readStoredLang();
 export function setLang(l: Lang) { current = l; try { localStorage.setItem("galactus.lang", l); } catch {} }

@@ -1278,7 +1278,7 @@ async fn recommend_for_model(
     let chosen = settings.get("engine_slots").and_then(|s| s.trim().parse::<u32>().ok());
     let slots = match chosen {
         Some(n) => n.clamp(1, MAX_SLOTS),
-        None => recommended_slots(&entry, machine, &ram_mode, cpu_moe),
+        None => recommended_slots(&entry, machine, &ram_mode, cpu_moe, ctx_per_slot_for(&entry)),
     };
 
     let layout = volumes.map(|list| {
@@ -1316,7 +1316,7 @@ async fn recommend_for_model(
     // only thing that knows how to say no with a number in the sentence. A
     // refusal is REPORTED, not turned into an error: the card still has to
     // render, and the user still has to be told what would have to change.
-    Ok(match plan_cache(&entry, machine, None, &ram_mode, cpu_moe, slots) {
+    Ok(match plan_cache(&entry, machine, None, &ram_mode, cpu_moe, slots, ctx_per_slot_for(&entry)) {
         Ok(plan) => Recommendation {
             mode: plan.decision.mode,
             requested_mode: plan.decision.requested,
@@ -1573,6 +1573,13 @@ const MAX_SLOTS: u32 = 4;
 /// pay it, or a two-slot default silently spends 0.8 GB it never budgeted.
 const KV_BYTES_PER_EXTRA_SLOT: u64 = 800_000_000;
 
+/// What a dense model pays beyond its own weights.
+///
+/// The graph, the compute buffers and the scratch every engine allocates,
+/// whatever the architecture. It is the same 2.5 GB the MoE branch charges as
+/// its fixed term; a dense model does not escape it for having no experts.
+const DENSE_RUNTIME_OVERHEAD: u64 = 2_500_000_000;
+
 /// Decode slots to start the engine with (setting "engine_slots", default 2).
 ///
 /// Two is the honest default: it makes a second conversation possible for
@@ -1598,7 +1605,7 @@ fn engine_slots() -> u32 {
 fn resolved_slots(entry: &Value, machine: MachineLimits, ram_mode: &str, cpu_moe: bool) -> u32 {
     match settings_load().get("engine_slots").and_then(|s| s.trim().parse::<u32>().ok()) {
         Some(chosen) => chosen.clamp(1, MAX_SLOTS),
-        None => recommended_slots(entry, machine, ram_mode, cpu_moe),
+        None => recommended_slots(entry, machine, ram_mode, cpu_moe, ctx_per_slot_for(entry)),
     }
 }
 
@@ -1832,6 +1839,30 @@ mod context_window_tests {
     }
 
     #[test]
+    fn the_planner_actually_charges_for_the_window() {
+        use super::{plan_cache, MachineLimits, CTX_PER_SLOT};
+        use serde_json::json;
+        // THE TEST THAT WAS MISSING. The three above exercise kv_bytes_for on
+        // its own, and they all passed while the planner never called it: the
+        // helper was written, the call site was lost, and a window setting
+        // shipped for a release with a ceiling that ignored it. A unit test of
+        // a function proves the function, never that anything uses it.
+        let machine = MachineLimits { ram_gb: 64, available: None, gpu_working_set: None };
+        let entry = json!({
+            "id": "m", "context_length": 262144,
+            "non_expert_bytes": 2_000_000_000u64, "expert_bytes_total": 8_000_000_000u64,
+            "layers_moe": 24, "record_bytes": 1_000_000u64, "experts_used": 8, "experts": 64,
+        });
+        let small = plan_cache(&entry, machine, None, "balanced", false, 1, 8192).unwrap();
+        let large =
+            plan_cache(&entry, machine, None, "balanced", false, 1, 131_072).unwrap();
+        assert!(
+            large.decision.resident_bytes > small.decision.resident_bytes,
+            "a sixteen times larger window must cost more memory, not the same",
+        );
+    }
+
+    #[test]
     fn a_very_long_window_is_expensive_enough_to_be_refused() {
         // 128k across two slots is 25.6 GB of cache by this estimate. The point
         // of the test is not the figure, it is that the figure is large enough
@@ -1842,6 +1873,7 @@ mod context_window_tests {
 
 #[cfg(test)]
 mod dense_model_tests {
+    use super::CTX_PER_SLOT;
     use super::is_dense;
     use serde_json::json;
 
@@ -1908,11 +1940,14 @@ mod dense_model_tests {
         // round a loop instead of naming the problem.
         let machine = MachineLimits { ram_gb: 64, available: None, gpu_working_set: None };
         let entry = json!({"id": "qwen38-27b", "dense": true, "gguf_bytes": 17_100_000_000u64});
-        let plan = plan_cache(&entry, machine, None, "balanced", false, 1)
+        let plan = plan_cache(&entry, machine, None, "balanced", false, 1, CTX_PER_SLOT)
             .expect("a dense model needs no expert geometry");
         assert_eq!(plan.cache_bytes, 0, "there are no experts to cache");
         assert!(!plan.decision.impossible, "17 GB of weights fit in 64 GB");
-        assert_eq!(plan.decision.resident_bytes, 17_100_000_000);
+        // The weights PLUS what the engine costs. This asserted the file size
+        // alone, which is the arithmetic that let a 17 GB model onto an 18 GB
+        // budget and killed it mid-load.
+        assert!(plan.decision.resident_bytes > 17_100_000_000);
     }
 
     #[test]
@@ -1920,12 +1955,41 @@ mod dense_model_tests {
         use super::{plan_cache, MachineLimits};
         use serde_json::json;
         // An MoE model that does not fit gets a smaller cache. A dense one has
-        // nothing to trade away: either the weights fit or it cannot run here,
-        // and saying so beats starting an engine that dies mid-graph.
+        // nothing to trade away, so this has to be an Err.
+        //
+        // The first version of this test asserted the `impossible` FLAG and
+        // passed while nothing acted on it: server_start, the CLI and the
+        // recommendation all branch on Err alone, so the model was started
+        // anyway and died mid-graph. A flag nobody reads is not a refusal, and
+        // a test that asserts the flag is not a test of the refusal.
         let machine = MachineLimits { ram_gb: 16, available: None, gpu_working_set: None };
         let entry = json!({"id": "big", "dense": true, "gguf_bytes": 400_000_000_000u64});
-        let plan = plan_cache(&entry, machine, None, "balanced", false, 1).unwrap();
-        assert!(plan.decision.impossible);
+        let err = plan_cache(&entry, machine, None, "balanced", false, 1, CTX_PER_SLOT)
+            .expect_err("a model this size cannot run on 16 GB");
+        assert!(err.contains("short by"), "and the missing figure is named: {err}");
+    }
+
+    #[test]
+    fn a_dense_footprint_counts_more_than_the_file_size() {
+        use super::{plan_cache, MachineLimits, DENSE_RUNTIME_OVERHEAD, CTX_PER_SLOT};
+        use serde_json::json;
+        // The weights are not the footprint. Comparing the file size alone
+        // against the budget let a 17 GB model onto an 18 GB budget, where the
+        // graph and the KV cache then finished it off mid-load.
+        let machine = MachineLimits { ram_gb: 64, available: None, gpu_working_set: None };
+        let entry = json!({"id": "m", "dense": true, "gguf_bytes": 17_000_000_000u64,
+                           "context_length": 262144});
+        let plan = plan_cache(&entry, machine, None, "balanced", false, 1, 8192).unwrap();
+        assert!(
+            plan.decision.resident_bytes >= 17_000_000_000 + DENSE_RUNTIME_OVERHEAD,
+            "the engine costs something even with no experts",
+        );
+        // And the window is priced here too, not only on the MoE side.
+        let wide = plan_cache(&entry, machine, None, "balanced", false, 1, 131_072).unwrap();
+        assert!(
+            wide.decision.resident_bytes > plan.decision.resident_bytes,
+            "a sixteen times larger window costs more on a dense model as well",
+        );
     }
 
     #[test]
@@ -2527,15 +2591,23 @@ struct CachePlan {
     decision: ModeDecision,
 }
 
+/// Plan the cache, with the context window passed in.
+///
+/// The window is a PARAMETER and not a settings read, and that is deliberate.
+/// The first version read `engine_ctx` in here, which made every memory figure
+/// this function produces depend on the settings file of whoever ran it: the
+/// test suite started failing on a machine whose owner had picked 32k in the
+/// UI, having passed on every other machine. A planner is arithmetic; it must
+/// answer the same question the same way everywhere.
+#[allow(clippy::too_many_arguments)]
 fn plan_cache(
     entry: &Value,
     machine: MachineLimits,
     override_gb: Option<u64>,
     ram_mode: &str,
     cpu_moe_regime: bool,
-    // Decode slots the engine will be started with. Each one past the first is
-    // a whole extra KV cache, and the planner used to ignore them.
     slots: u32,
+    ctx_per_slot: u32,
 ) -> Result<CachePlan, String> {
     let ram_gb = machine.ram_gb;
     // Hard gate, mirrored by the UI card: below the registry minimum the
@@ -2568,6 +2640,31 @@ fn plan_cache(
     if is_dense(entry) {
         let weights = entry["gguf_bytes"].as_u64().unwrap_or(0);
         let budget = engine_budget_bytes(ram_gb * 1_000_000_000, machine);
+        // The weights are not the footprint. A dense model pays the same graph,
+        // the same compute buffers and the same KV cache as any other, and the
+        // first version of this branch compared the file size alone against the
+        // budget: a 17 GB model on an 18 GB budget was declared to fit and then
+        // died mid-graph, which is exactly the failure the MoE side of this
+        // planner was rewritten to end.
+        let kv = kv_bytes_for(ctx_per_slot, slots);
+        let resident = weights + DENSE_RUNTIME_OVERHEAD + kv;
+        if resident > budget {
+            // Refused HERE, not reported in a flag. The MoE branch below returns
+            // Err with the missing figure, and every caller acts on Err and on
+            // nothing else: server_start, the CLI and the recommendation all
+            // ignored `impossible`, so a dense model too big for the machine was
+            // started anyway. A flag nobody reads is not a refusal.
+            return Err(format!(
+                "not enough free memory to start this model right now: it needs {:.1} GB \
+                 (weights, engine and a {} token window), this Mac can spare {:.1} GB, short by \
+                 {:.1} GB. Quit an application, or lower the context window in Settings, then \
+                 start it again.",
+                resident as f64 / 1e9,
+                ctx_per_slot,
+                budget as f64 / 1e9,
+                resident.saturating_sub(budget) as f64 / 1e9,
+            ));
+        }
         return Ok(CachePlan {
             cache_bytes: 0,
             protected: 0.0,
@@ -2579,9 +2676,10 @@ fn plan_cache(
                 mode: ram_mode.to_string(),
                 requested: ram_mode.to_string(),
                 // Nothing can be traded away: there is no cache to shrink, so
-                // either the weights fit or this model cannot run here.
-                impossible: weights > budget,
-                resident_bytes: weights,
+                // either it fits or the model cannot run here, and the branch
+                // above has already refused the second case.
+                impossible: false,
+                resident_bytes: resident,
                 budget_bytes: budget,
             },
         });
@@ -2623,9 +2721,18 @@ fn plan_cache(
     // (29.6 GB resident at 1 slot, 30.4 at 2, 32.0 at 4). The default is two
     // slots, so the ceiling was quietly 0.8 GB optimistic on every machine,
     // and 2.4 GB on a user who asked for four.
-    let runtime_overhead = 2_500_000_000
-        + non_expert * 45 / 100
-        + u64::from(slots.saturating_sub(1)) * KV_BYTES_PER_EXTRA_SLOT;
+    // The measured fit already contains ONE slot at the DEFAULT window, so only
+    // what exceeds that is added here. At 8192 this is exactly the flat figure
+    // it always was, 0.8 GB per slot past the first; at a larger window it
+    // grows with the window, because the cache does.
+    //
+    // This wiring was written once and silently lost: the helper stayed, the
+    // call site did not, and the unit tests kept passing because they exercise
+    // the helper in isolation. A window setting shipped for one release with a
+    // ceiling that ignored it, which is how a user picks 128k and the engine
+    // dies mid-graph on a cache nobody counted.
+    let kv_extra = kv_bytes_for(ctx_per_slot, slots).saturating_sub(KV_BYTES_PER_EXTRA_SLOT);
+    let runtime_overhead = 2_500_000_000 + non_expert * 45 / 100 + kv_extra;
     // Everything the engine pays before a single expert byte is cached.
     let fixed = non_expert + runtime_overhead;
 
@@ -2859,9 +2966,21 @@ const RECOMMENDED_SLOT_CAP: u32 = 2;
 /// THE RULE: a second conversation must never cost the user a footprint mode.
 /// The count is the largest n up to the cap for which the mode the user asked
 /// for still starts, and 1 when even that does not hold.
-fn recommended_slots(entry: &Value, machine: MachineLimits, ram_mode: &str, cpu_moe: bool) -> u32 {
+/// How many decode slots to start with.
+///
+/// The window is a parameter for the same reason it is one on `plan_cache`:
+/// this function prices a second KV cache, the price depends on the window, and
+/// reading the setting in here made the answer depend on the settings file of
+/// whoever ran the test suite.
+fn recommended_slots(
+    entry: &Value,
+    machine: MachineLimits,
+    ram_mode: &str,
+    cpu_moe: bool,
+    ctx_per_slot: u32,
+) -> u32 {
     for n in (2..=RECOMMENDED_SLOT_CAP).rev() {
-        match plan_cache(entry, machine, None, ram_mode, cpu_moe, n) {
+        match plan_cache(entry, machine, None, ram_mode, cpu_moe, n, ctx_per_slot) {
             Ok(plan) if plan.decision.mode == plan.decision.requested => return n,
             _ => continue,
         }
@@ -3153,7 +3272,7 @@ mod recommendation_tests {
         // 128 GB, idle. Balanced reaches full residency and a second KV cache
         // is 0.8 GB out of tens of gigabytes of headroom.
         let m = MachineLimits::mac(128, Some(100 * GB));
-        assert_eq!(recommended_slots(&glm_air(), m, "balanced", false), 2);
+        assert_eq!(recommended_slots(&glm_air(), m, "balanced", false, CTX_PER_SLOT), 2);
     }
 
     /// A model sized so the SECOND slot is what tips the mode over, on a
@@ -3190,15 +3309,15 @@ mod recommendation_tests {
         // the user from Balanced to Eco to buy a second conversation nobody
         // had opened yet.
         let m = MachineLimits::mac(32, Some(21_300_000_000));
-        assert_eq!(recommended_slots(&slot_sensitive(), m, "balanced", false), 1);
+        assert_eq!(recommended_slots(&slot_sensitive(), m, "balanced", false, CTX_PER_SLOT), 1);
         // And the step-down is real, not the planner refusing outright: two
         // slots DO start, in a worse mode. Without this the test above would
         // pass on a machine where nothing starts at all, which is how the
         // first version of it passed while checking nothing.
-        let two = plan_cache(&slot_sensitive(), m, None, "balanced", false, 2).unwrap();
+        let two = plan_cache(&slot_sensitive(), m, None, "balanced", false, 2, CTX_PER_SLOT).unwrap();
         assert_eq!(two.decision.mode, "eco");
         assert_eq!(two.decision.requested, "balanced");
-        let one = plan_cache(&slot_sensitive(), m, None, "balanced", false, 1).unwrap();
+        let one = plan_cache(&slot_sensitive(), m, None, "balanced", false, 1, CTX_PER_SLOT).unwrap();
         assert_eq!(one.decision.mode, "balanced");
     }
 
@@ -3209,8 +3328,8 @@ mod recommendation_tests {
         // be started with so the refusal comes from the planner, with its
         // sentence about memory, rather than from here.
         let m = MachineLimits::mac(24, Some(14 * GB));
-        assert_eq!(recommended_slots(&glm_air(), m, "balanced", false), 1);
-        assert!(plan_cache(&glm_air(), m, None, "balanced", false, 1).is_err());
+        assert_eq!(recommended_slots(&glm_air(), m, "balanced", false, CTX_PER_SLOT), 1);
+        assert!(plan_cache(&glm_air(), m, None, "balanced", false, 1, CTX_PER_SLOT).is_err());
     }
 
     #[test]
@@ -3219,12 +3338,13 @@ mod recommendation_tests {
         // llama-server can be started with, so the refusal has to come from
         // the planner with its sentence about memory, not from here.
         let m = MachineLimits::mac(24, Some(GB));
-        assert_eq!(recommended_slots(&glm_air(), m, "balanced", false), 1);
+        assert_eq!(recommended_slots(&glm_air(), m, "balanced", false, CTX_PER_SLOT), 1);
     }
 }
 
 #[cfg(test)]
 mod plan_cache_tests {
+    use super::CTX_PER_SLOT;
     use super::{plan_cache, MachineLimits};
     use serde_json::json;
 
@@ -3259,7 +3379,7 @@ mod plan_cache_tests {
         // percent of the machine, under a bound that reads "70 percent".
         //
         // Against that old shape this assertion is 15_150_000_000 and goes red.
-        let plan = plan_cache(&entry(json!([])), MachineLimits::mac(24, None), None, "perf", false, 1).unwrap();
+        let plan = plan_cache(&entry(json!([])), MachineLimits::mac(24, None), None, "perf", false, 1, CTX_PER_SLOT).unwrap();
         assert_eq!(plan.cache_bytes, 24 * GB * 7 / 10 - FIXED);
         assert_eq!(
             plan.cache_bytes + FIXED,
@@ -3283,7 +3403,7 @@ mod plan_cache_tests {
         // No reading available: the planner falls back to installed RAM, which
         // is exactly the behaviour that existed before, so a broken vm_stat
         // cannot make the app refuse to work.
-        let plan = plan_cache(&entry(curve()), MachineLimits::mac(24, None), None, "perf", false, 1).unwrap();
+        let plan = plan_cache(&entry(curve()), MachineLimits::mac(24, None), None, "perf", false, 1, CTX_PER_SLOT).unwrap();
         assert_eq!(plan.decision.mode, "perf");
         assert_eq!(plan.decision.requested, "perf");
     }
@@ -3293,7 +3413,7 @@ mod plan_cache_tests {
         // DEFECT 2, pinned. 24 GB installed, 16 GB actually free, so 12.8 GB to
         // spare. perf wants 16.8 and balanced 14.85; eco needs 10.85 and fits.
         // This is the case that reached the user as "Compute error.".
-        let plan = plan_cache(&entry(curve()), MachineLimits::mac(24, Some(16 * GB)), None, "perf", false, 1).unwrap();
+        let plan = plan_cache(&entry(curve()), MachineLimits::mac(24, Some(16 * GB)), None, "perf", false, 1, CTX_PER_SLOT).unwrap();
         assert_eq!(plan.decision.mode, "eco");
         assert_eq!(plan.decision.requested, "perf");
         assert_eq!(plan.cache_bytes, 4 * GB);
@@ -3305,14 +3425,14 @@ mod plan_cache_tests {
         // 19 GB free of 24, so 15.2 GB to spare: perf does not fit, balanced
         // does. Falling straight to eco here would cost the user a working
         // mode for nothing.
-        let plan = plan_cache(&entry(curve()), MachineLimits::mac(24, Some(19 * GB)), None, "perf", false, 1).unwrap();
+        let plan = plan_cache(&entry(curve()), MachineLimits::mac(24, Some(19 * GB)), None, "perf", false, 1, CTX_PER_SLOT).unwrap();
         assert_eq!(plan.decision.mode, "balanced");
         assert_eq!(plan.cache_bytes, 8 * GB);
     }
 
     #[test]
     fn a_machine_with_nothing_to_spare_is_told_so_before_anything_is_spawned() {
-        let err = plan_cache(&entry(curve()), MachineLimits::mac(24, Some(2 * GB)), None, "balanced", false, 1)
+        let err = plan_cache(&entry(curve()), MachineLimits::mac(24, Some(2 * GB)), None, "balanced", false, 1, CTX_PER_SLOT)
             .expect_err("2 GB free cannot hold a 3 GB model plus its arena");
         assert!(err.contains("memory"), "the refusal must name memory: {err}");
         assert!(err.contains("eco"), "and name the footprint it tried: {err}");
@@ -3327,9 +3447,9 @@ mod plan_cache_tests {
         // budgeted. Nothing about the resident total changes here, because in
         // perf the total IS the budget; what changes is that the arena stops
         // being handed memory the KV cache has already taken.
-        let one = plan_cache(&entry(json!([])), MachineLimits::mac(24, None), None, "perf", false, 1).unwrap();
-        let two = plan_cache(&entry(json!([])), MachineLimits::mac(24, None), None, "perf", false, 2).unwrap();
-        let four = plan_cache(&entry(json!([])), MachineLimits::mac(24, None), None, "perf", false, 4).unwrap();
+        let one = plan_cache(&entry(json!([])), MachineLimits::mac(24, None), None, "perf", false, 1, CTX_PER_SLOT).unwrap();
+        let two = plan_cache(&entry(json!([])), MachineLimits::mac(24, None), None, "perf", false, 2, CTX_PER_SLOT).unwrap();
+        let four = plan_cache(&entry(json!([])), MachineLimits::mac(24, None), None, "perf", false, 4, CTX_PER_SLOT).unwrap();
         assert_eq!(one.cache_bytes - two.cache_bytes, 800_000_000);
         assert_eq!(one.cache_bytes - four.cache_bytes, 2_400_000_000);
     }
@@ -3338,7 +3458,7 @@ mod plan_cache_tests {
     fn an_explicit_cache_size_still_overrules_the_policy() {
         // The override is the escape hatch for someone who knows their machine.
         // It must not be silently replaced by a step-down decision.
-        let plan = plan_cache(&entry(curve()), MachineLimits::mac(24, Some(19 * GB)), Some(6), "perf", false, 1).unwrap();
+        let plan = plan_cache(&entry(curve()), MachineLimits::mac(24, Some(19 * GB)), Some(6), "perf", false, 1, CTX_PER_SLOT).unwrap();
         assert_eq!(plan.cache_bytes, 6 * GB);
     }
 }
@@ -3355,6 +3475,7 @@ mod plan_cache_tests {
 /// six months sees THIS USER's case go red, not a number that drifted.
 #[cfg(test)]
 mod user_report_24gb_tests {
+    use super::CTX_PER_SLOT;
     use super::{plan_cache, MachineLimits};
     use serde_json::json;
 
@@ -3428,7 +3549,7 @@ mod user_report_24gb_tests {
         // The ceiling fix alone, with no reading of free memory: balanced falls
         // from 20.6 GB resident to 13.9, because the 70 percent cap now bounds
         // the whole footprint and the knee is recomputed under it.
-        let plan = plan_cache(&phi35_moe(), MachineLimits::mac(24, None), None, "balanced", false, 1).unwrap();
+        let plan = plan_cache(&phi35_moe(), MachineLimits::mac(24, None), None, "balanced", false, 1, CTX_PER_SLOT).unwrap();
         assert_eq!(plan.cache_bytes, 10_100_000_000);
         assert_eq!(plan.decision.resident_bytes, 13_905_000_000);
         // And it gets there WITHOUT stepping down: on an idle 24 GB Mac
@@ -3450,7 +3571,7 @@ mod user_report_24gb_tests {
         // had to give: that gap IS the "Compute error." he read. It now holds
         // 13.9, the same footprint he reached by switching to eco himself, and
         // the request never has to change mode to get there.
-        let plan = plan_cache(&phi35_moe(), MachineLimits::mac(24, Some(18 * GB)), None, "balanced", false, 1).unwrap();
+        let plan = plan_cache(&phi35_moe(), MachineLimits::mac(24, Some(18 * GB)), None, "balanced", false, 1, CTX_PER_SLOT).unwrap();
         assert_eq!(plan.decision.requested, "balanced");
         assert_eq!(plan.decision.mode, "balanced");
         assert_eq!(plan.decision.budget_bytes, 14_400_000_000);
@@ -3467,7 +3588,7 @@ mod user_report_24gb_tests {
         // Same Mac, same 18 GB free. Performance would hold the full 16.8 GB
         // ceiling, which does not fit in 14.4, so the ladder takes one rung and
         // says which. The user is told; nothing is decided behind his back.
-        let plan = plan_cache(&phi35_moe(), MachineLimits::mac(24, Some(18 * GB)), None, "perf", false, 1).unwrap();
+        let plan = plan_cache(&phi35_moe(), MachineLimits::mac(24, Some(18 * GB)), None, "perf", false, 1, CTX_PER_SLOT).unwrap();
         assert_eq!(plan.decision.requested, "perf");
         assert_eq!(plan.decision.mode, "balanced");
         assert!(plan.decision.resident_bytes <= plan.decision.budget_bytes);
@@ -3481,7 +3602,7 @@ mod user_report_24gb_tests {
         // "the cap is fixed" would have declared the user's bug closed while
         // one of his two models still planned 14.1 GB resident with nobody
         // asking whether the machine had 14.1 GB to give.
-        let plan = plan_cache(&gpt_oss_120b(), MachineLimits::mac(24, None), None, "balanced", false, 1).unwrap();
+        let plan = plan_cache(&gpt_oss_120b(), MachineLimits::mac(24, None), None, "balanced", false, 1, CTX_PER_SLOT).unwrap();
         assert_eq!(plan.decision.resident_bytes, OLD_GPT_OSS_BALANCED_RESIDENT);
     }
 
@@ -3490,7 +3611,7 @@ mod user_report_24gb_tests {
         // Same 24 GB Mac with a browser open: 12 GB free, so 9.6 GB claimable.
         // Even eco needs 14.1. There is no mode that fits, and the honest
         // answer is a number and a refusal, not an engine that dies mid-graph.
-        let err = plan_cache(&gpt_oss_120b(), MachineLimits::mac(24, Some(12 * GB)), None, "balanced", false, 1)
+        let err = plan_cache(&gpt_oss_120b(), MachineLimits::mac(24, Some(12 * GB)), None, "balanced", false, 1, CTX_PER_SLOT)
             .expect_err("14.1 GB cannot come out of 9.6");
         assert!(err.contains("9.6 GB"), "name what the machine can give: {err}");
         assert!(err.contains("short by 4.5 GB"), "and what is missing: {err}");
@@ -3502,7 +3623,7 @@ mod user_report_24gb_tests {
         // claimable, and eco's 14.085 fits. Nothing here refuses out of
         // caution; the gate is arithmetic, and it opens when the memory is
         // really there.
-        let plan = plan_cache(&gpt_oss_120b(), MachineLimits::mac(24, Some(18 * GB)), None, "balanced", false, 1)
+        let plan = plan_cache(&gpt_oss_120b(), MachineLimits::mac(24, Some(18 * GB)), None, "balanced", false, 1, CTX_PER_SLOT)
             .expect("14.085 GB fits in 14.4");
         assert!(plan.decision.resident_bytes <= plan.decision.budget_bytes);
     }
@@ -3518,7 +3639,7 @@ mod user_report_24gb_tests {
             for mode in ["eco", "balanced", "perf"] {
                 for step in 0..=64u64 {
                     let available = step * 500_000_000;
-                    match plan_cache(&entry, MachineLimits::mac(24, Some(available)), None, mode, false, 2) {
+                    match plan_cache(&entry, MachineLimits::mac(24, Some(available)), None, mode, false, 2, CTX_PER_SLOT) {
                         Ok(plan) => assert!(
                             plan.decision.resident_bytes <= plan.decision.budget_bytes,
                             "{mode} at {available} bytes free planned {} over a budget of {}",
@@ -3931,7 +4052,11 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
     // cache, and the plan has to pay for the slots this start will really ask
     // llama-server for. Per model and per machine, not a flat two.
     let slots = resolved_slots(&entry, machine, &ram_mode, cpu_moe);
-    let plan = plan_cache(&entry, machine, override_gb, &ram_mode, cpu_moe, slots)?;
+    // The window the engine will really be started with, resolved once and used
+    // both to price the plan and to build --ctx-size. They were two separate
+    // reads for one release, and the plan priced a window the engine did not get.
+    let ctx_per_slot = ctx_per_slot_for(&entry);
+    let plan = plan_cache(&entry, machine, override_gb, &ram_mode, cpu_moe, slots, ctx_per_slot)?;
     let (cache_bytes, fraction, ubatch) = (plan.cache_bytes, plan.protected, plan.ubatch);
 
     // Engine resolution: a developer checkout build wins (always freshest);
@@ -4064,7 +4189,7 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
     // The window the planner sized the memory for, not the constant: the two
     // must be the same number or the engine is started with a cache the ceiling
     // never accounted for.
-    let ctx_total = ctx_per_slot_for(&entry) * slots;
+    let ctx_total = ctx_per_slot * slots;
     cmd.arg("--model")
         .arg(&gguf)
         .arg("--host")
