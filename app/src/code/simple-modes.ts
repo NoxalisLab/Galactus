@@ -200,6 +200,12 @@ export function simpleModeFor(pathOrName: string): StreamParser<never> | null {
   if (name === "dockerfile" || name.startsWith("dockerfile.")) {
     return shellMode as StreamParser<never>;
   }
+  // Announced in langFor's comment and never handled: a Makefile opened grey.
+  // The shell mode is an approximation (a recipe line IS shell, a rule line is
+  // not), and an approximation reads far better than no colour at all.
+  if (name === "makefile" || name === "gnumakefile" || name.endsWith(".mk")) {
+    return shellMode as StreamParser<never>;
+  }
   if (name === ".env" || name.startsWith(".env.")) return iniMode as StreamParser<never>;
   switch (ext) {
     case "yml":

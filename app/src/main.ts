@@ -5186,6 +5186,11 @@ async function boot() {
     runsview.runScheduledJob(p);
     if (view === "runs") render();
   });
+  // Only now may the clock run. Started from setup(), its first pass fired
+  // while this page was still booting, and Tauri does not replay events: a job
+  // due at launch was marked as fired and never ran, which is precisely the
+  // case the catch-up rule exists for.
+  void api.jobsReady().catch(() => undefined);
   await onEvent("galactus://install-progress", (p: any) => {
     if (p.done) {
       installProgress.delete(p.model_id);

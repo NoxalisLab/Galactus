@@ -95,12 +95,11 @@ cat <<'BANNER'
 BANNER
 
 # ------------------------------------------------------- volumes residuels
-for d in $(hdiutil info 2>/dev/null | grep -oE '/dev/disk[0-9]+' | sort -u); do
-  if hdiutil info 2>/dev/null | grep -A5 "$d" | grep -qi galactus; then
-    echo "demontage du volume residuel $d"
-    hdiutil detach "$d" -force >/dev/null 2>&1 || true
-  fi
-done
+# Apparie l image et son peripherique exactement (hdiutil info -plist) : la
+# version en grep confondait /dev/disk1 et /dev/disk10 et supposait une mise en
+# forme que hdiutil ne promet pas. Un volume oublie fait echouer bundle_dmg.sh
+# avec un message qui ne parle pas de volumes.
+python3 "$ROOT/scripts/detach-stale-dmg.py" || true
 rm -f "$ROOT/app/src-tauri/target/release/bundle/macos/rw."*.dmg 2>/dev/null || true
 rm -f "$ROOT/app/src-tauri/target/release/bundle/dmg/rw."*.dmg 2>/dev/null || true
 

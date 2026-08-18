@@ -74,11 +74,24 @@ pub fn is_valid_target(target: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
 }
 
+/// The saved machines, or an error when the stored value cannot be read.
+///
+/// Absent is an empty list, which is a first run. Present and unreadable is
+/// NOT an empty list: it used to become one, and the next save wrote that
+/// emptiness over the original, so every machine the user had entered
+/// disappeared with no message. Written by a newer version, or edited by hand,
+/// both end the same way.
+fn read_hosts() -> Result<Vec<SshHost>, String> {
+    match settings_load().get(KEY) {
+        None => Ok(Vec::new()),
+        Some(raw) if raw.trim().is_empty() => Ok(Vec::new()),
+        Some(raw) => serde_json::from_str::<Vec<SshHost>>(raw)
+            .map_err(|e| format!("the saved machines could not be read ({e}); nothing was changed")),
+    }
+}
+
 fn load() -> Vec<SshHost> {
-    settings_load()
-        .get(KEY)
-        .and_then(|raw| serde_json::from_str::<Vec<SshHost>>(raw).ok())
-        .unwrap_or_default()
+    read_hosts().unwrap_or_default()
 }
 
 fn store(hosts: &[SshHost]) -> Result<(), String> {
@@ -114,7 +127,7 @@ pub fn ssh_host_save(
         let l = label.trim();
         if l.is_empty() { target.clone() } else { l.to_string() }
     };
-    let mut hosts = load();
+    let mut hosts = read_hosts()?;
     match id.filter(|s| !s.is_empty()) {
         Some(existing) => {
             let slot = hosts
@@ -144,7 +157,7 @@ pub fn ssh_host_save(
 
 #[tauri::command]
 pub fn ssh_host_remove(id: String) -> Result<Vec<SshHost>, String> {
-    let mut hosts = load();
+    let mut hosts = read_hosts()?;
     hosts.retain(|h| h.id != id);
     store(&hosts)?;
     Ok(hosts)

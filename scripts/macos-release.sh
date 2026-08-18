@@ -141,12 +141,11 @@ echo
 # ------------------------------------------------------- residual dmg volumes
 # A dmg left mounted by an interrupted build makes the next bundling step fail
 # silently. Same cleanup as scripts/build-app.sh.
-for d in $(hdiutil info 2>/dev/null | grep -oE '/dev/disk[0-9]+' | sort -u); do
-  if hdiutil info 2>/dev/null | grep -A5 "$d" | grep -qi galactus; then
-    echo "detaching residual volume $d"
-    hdiutil detach "$d" -force >/dev/null 2>&1 || true
-  fi
-done
+# Pairs each image with its device exactly (hdiutil info -plist): the grep
+# version confused /dev/disk1 with /dev/disk10 and assumed a layout hdiutil does
+# not promise. A forgotten volume makes bundle_dmg.sh fail with a message that
+# says nothing about volumes.
+python3 "$ROOT/scripts/detach-stale-dmg.py" || true
 rm -f "$ROOT/app/src-tauri/target/release/bundle/macos/rw."*.dmg 2>/dev/null || true
 rm -f "$ROOT/app/src-tauri/target/release/bundle/dmg/rw."*.dmg 2>/dev/null || true
 

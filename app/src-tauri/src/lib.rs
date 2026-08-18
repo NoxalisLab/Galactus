@@ -8478,7 +8478,8 @@ pub fn run() {
             // The clock starts with the process and not with the view: a
             // schedule that only ticked while the Runs screen was open would
             // be a schedule that stops when someone switches to Settings.
-            scheduler::start(app.handle().clone());
+            // The clock is started by the frontend, once it is listening. See
+            // scheduler::jobs_ready.
             // Take back what earlier sessions left behind. Off the main thread
             // and silent: a machine that cannot delete a temporary file must
             // still start, and this is not news the user asked for.
@@ -8651,6 +8652,7 @@ pub fn run() {
             // catch-up decision; the frontend owns the agent loop and reports
             // back through jobs_report. See scheduler.rs.
             scheduler::jobs_list,
+            scheduler::jobs_ready,
             scheduler::jobs_save,
             scheduler::jobs_delete,
             scheduler::jobs_enable,

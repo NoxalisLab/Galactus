@@ -36,7 +36,13 @@ export interface PaletteDeps {
   root: string;
   api: WorkspaceApi;
   /** Open a file, relative to the root. */
-  openFile(rel: string): void;
+  /**
+   * Open a file. Awaited before revealing a position: opening reads the file,
+   * so a synchronous call returned while the previous document was still on
+   * screen and the reveal landed in THAT one, scrolling the wrong file to an
+   * arbitrary line while the intended one opened at the top.
+   */
+  openFile(rel: string): Promise<void> | void;
   /** Paths the user opened recently, most recent first. */
   recent(): string[];
   /** Scroll the editor to a symbol. Optional: only the symbol palette uses it. */
@@ -224,7 +230,19 @@ function openPalette(src: PaletteSource): void {
     },
   };
 
-  input.addEventListener("input", () => refresh(input.value));
+  // Debounced, like the search panel has been all along. Every keystroke was
+  // an IPC round trip for the symbol palette, and on the Rust side a query more
+  // than two seconds after the last one re-walks the whole tree to check its
+  // signature; for the file palette it scored the entire list on the main
+  // thread, per character.
+  let typing: ReturnType<typeof setTimeout> | null = null;
+  input.addEventListener("input", () => {
+    if (typing) clearTimeout(typing);
+    typing = setTimeout(() => {
+      typing = null;
+      refresh(input.value);
+    }, 120);
+  });
   input.addEventListener("keydown", onKey);
   host.addEventListener("click", (e) => {
     if (e.target === host) {

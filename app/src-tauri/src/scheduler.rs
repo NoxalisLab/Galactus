@@ -921,6 +921,25 @@ fn pass() -> (Vec<JobDue>, Option<i64>) {
 }
 
 /// Start the clock. One OS thread, parked for the life of the process.
+/// The frontend is listening and the clock may run.
+///
+/// Nothing fired before this. The thread used to start from `setup()` and take
+/// its first pass immediately, while the webview was still booting: it moved
+/// `last_fired_at`, took a flight, and emitted an event to a page that had not
+/// subscribed yet. Tauri does not replay events, so a job due at launch, which
+/// is exactly what the catch-up rule exists to serve, was marked as fired and
+/// never ran. The row then said "running" until the flight expired.
+static ARMED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+#[tauri::command]
+pub fn jobs_ready(app: AppHandle) {
+    // Idempotent: a reload of the webview must not start a second clock.
+    if ARMED.set(()).is_err() {
+        return;
+    }
+    start(app);
+}
+
 pub fn start(app: AppHandle) {
     std::thread::spawn(move || loop {
         let (due, horizon) = pass();

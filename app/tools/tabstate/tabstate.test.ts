@@ -54,3 +54,14 @@ test("junk inside the lists is filtered, not trusted", () => {
   assert.deepEqual(s?.rels, ["a.ts", "b.ts"]);
   assert.deepEqual(s?.right, []);
 });
+
+test("a file listed on both sides is kept once, on the left", () => {
+  // Restoring it twice made openFile move the focus mid-loop, and every
+  // remaining right-hand file opened on the left instead: the split collapsed
+  // on reopening, silently.
+  const s = parseTabs(
+    JSON.stringify({ rels: ["a.ts", "b.ts"], right: ["b.ts", "c.ts"], pane: 1 }),
+  );
+  assert.deepEqual(s?.rels, ["a.ts", "b.ts"]);
+  assert.deepEqual(s?.right, ["c.ts"]);
+});

@@ -63,7 +63,13 @@ export interface SearchPanelState {
 export interface SearchPanelDeps {
   root: string;
   api: WorkspaceApi;
-  openFile(rel: string): void;
+  /**
+   * Open a file. Awaited before revealing a position: opening reads the file,
+   * so a synchronous call returned while the previous document was still on
+   * screen and the reveal landed in THAT one, scrolling the wrong file to an
+   * arbitrary line while the intended one opened at the top.
+   */
+  openFile(rel: string): Promise<void> | void;
   revealLine(line: number, col: number): void;
   /**
    * Repaint the panel. "results" must replace only the `#srchres` region, so

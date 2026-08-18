@@ -43,7 +43,11 @@ export function parseTabs(saved: string | undefined): TabState | null {
   const one = (v: unknown, within: string[]): string | null =>
     typeof v === "string" && within.includes(v) ? v : null;
   const rels = list(o.rels);
-  const right = list(o.right);
+  // Never the same file on both sides. openFile treats a file already open in
+  // the other pane by moving the focus there, which during restoration
+  // reassigned the active pane mid-loop: every remaining right-hand file then
+  // opened on the left and the split collapsed.
+  const right = list(o.right).filter((r) => !rels.includes(r));
   return {
     rels,
     active: one(o.active, rels),

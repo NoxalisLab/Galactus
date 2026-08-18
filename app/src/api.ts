@@ -512,6 +512,8 @@ export const api = {
   // learn that would be a second chance to be out of date.
   //
   // Every value ending in `_at` is unix SECONDS, not milliseconds.
+  /** Arm the scheduler. Called once, after the job-due listener exists. */
+  jobsReady: () => invoke<void>("jobs_ready"),
   jobsList: () => invoke<unknown>("jobs_list"),
   jobsSave: (job: Record<string, unknown>) => invoke<unknown>("jobs_save", { job }),
   jobsDelete: (id: string) => invoke<unknown>("jobs_delete", { id }),

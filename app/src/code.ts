@@ -626,6 +626,9 @@ function cycleTab(delta: number): void {
   mountEditor();
   paintEditorChrome();
   paintTree();
+  // The tab the user is LOOKING at, not just the ones that are open: a
+  // relaunch reopened the last file opened rather than the last one read.
+  rememberOpenTabs();
 }
 
 /** Select a tab by its position, 1-based, as every editor's Cmd-1..9 does. */
@@ -638,6 +641,9 @@ function selectTabAt(n: number): void {
   mountEditor();
   paintEditorChrome();
   paintTree();
+  // The tab the user is LOOKING at, not just the ones that are open: a
+  // relaunch reopened the last file opened rather than the last one read.
+  rememberOpenTabs();
 }
 
 /**
@@ -1039,7 +1045,9 @@ export async function fileProposal(
   path: string,
   rel: string,
   content: string,
-  waitForReview = false
+  waitForReview = false,
+  /** Suppress the per-file toast: a batch says it once at the end. */
+  quiet = false,
 ): Promise<string> {
   if (!root) return "error: no code workspace is open";
   if (proposals.has(rel)) {
@@ -1075,13 +1083,24 @@ export async function fileProposal(
     setReview(rel, existed ? before : "");
     applyTsBindings(rel);
     applyRustBindings(rel);
-    if (docs.activeRel() === rel) paintMid();
+    // The pane that HOLDS it, not the focused one: the merge decorations
+    // appeared on the other side (setReview goes through viewOf) while the
+    // review bar and the Accept and Reject buttons did not, so the user was
+    // shown a diff with no way to answer it.
+    const which: 0 | 1 = registries[1] === holder ? 1 : 0;
+    if (holder.activeRel() === rel) {
+      if (which === pane) paintMid();
+      else {
+        paintTabs(which);
+        paintFileHead(which);
+      }
+    }
   }
   paintPending();
   paintTree();
   paintTabs();
   deps?.paintNav();
-  deps?.toast(t("code.proposalToast").replace("%s", rel), "ok");
+  if (!quiet) deps?.toast(t("code.proposalToast").replace("%s", rel), "ok");
   const filed =
     `proposed: ${rel} is now a PENDING diff in the user's editor. Nothing was written to disk. ` +
     "They will accept or reject it hunk by hunk; do not assume the file changed, and do not " +
@@ -1976,9 +1995,13 @@ function revealLine(line: number, col: number): void {
 function applyReveal(): void {
   if (!pendingReveal || !editor) return;
   const { line, col } = pendingReveal;
-  pendingReveal = null;
   const doc = editor.state.doc;
+  // Cleared only once it is actually used. It used to be consumed before the
+  // bounds test, so a reveal aimed past the end of a document was swallowed:
+  // when the intended file finished loading a moment later, there was nothing
+  // left to apply and it opened at the top.
   if (line < 1 || line > doc.lines) return;
+  pendingReveal = null;
   const l = doc.line(line);
   const pos = Math.min(l.to, l.from + Math.max(0, col - 1));
   editor.dispatch({ selection: { anchor: pos }, effects: EditorView.scrollIntoView(pos, { y: "center" }) });
@@ -2182,7 +2205,7 @@ function searchDeps(): SearchPanelDeps {
   return {
     root: root ?? "",
     api: workspaceApi,
-    openFile: (rel) => void openFile(rel),
+    openFile: (rel) => openFile(rel),
     revealLine,
     repaint: (scope) => {
       if (leftTab !== "search") return;
@@ -2242,7 +2265,12 @@ async function runReplace(s: SearchPanelState): Promise<void> {
     deps?.toast(t("code.replace.none"));
     return;
   }
-  for (const f of plan) await fileProposal(root + "/" + f.rel, f.rel, f.content);
+  // Quiet: forty files produced forty notifications and a hundred and sixty
+  // repaints for one gesture. The count below says it once.
+  for (const f of plan) await fileProposal(root + "/" + f.rel, f.rel, f.content, false, true);
+  if (plan.length) {
+    deps?.toast(t("code.replace.proposed").replace("%n", String(plan.length)), "ok");
+  }
   if (plan.length < files) {
     deps?.toast(
       t("code.replace.partial").replace("%n", String(plan.length)).replace("%m", String(files))
@@ -2258,7 +2286,7 @@ export function openPalette(kind: "files" | "symbols"): void {
   const d = {
     root,
     api: workspaceApi,
-    openFile: (rel: string) => void openFile(rel),
+    openFile: (rel: string) => openFile(rel),
     recent: () => recentPaths,
     revealLine,
   };
@@ -3454,6 +3482,7 @@ export function codeView(): HTMLElement {
         mountEditor();
         paintEditorChrome();
         paintTree();
+        rememberOpenTabs();
       }
       return;
     }
