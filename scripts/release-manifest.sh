@@ -63,9 +63,17 @@ done
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 # ------------------------------------------------------------------ inputs
+# Les trois numeros de version doivent concorder, et les notes exister : le
+# manifeste grave une URL construite sur le tag, et une divergence ne produit
+# aucun symptome avant que quelqu un ne s appuie dessus.
+python3 "$ROOT/scripts/check-versions.py" --release || fail "versions incoherentes"
 VERSION="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"])' "$CONF")"
 [ -n "$VERSION" ] || fail "no version in $CONF"
 TAG="app-v$VERSION"
+# Le tag doit exister avant que son URL n entre dans le manifeste : sinon le
+# document valide tous les controles et son asset repond 404 chez l utilisateur.
+git -C "$ROOT" rev-parse --verify "refs/tags/$TAG" >/dev/null 2>&1 \
+  || fail "le tag $TAG n existe pas encore : cree-le avant de produire le manifeste"
 TARBALL="$BUNDLE/Galactus.app.tar.gz"
 SIGFILE="$TARBALL.sig"
 NOTES="$APP/RELEASE-NOTES-v$VERSION.md"

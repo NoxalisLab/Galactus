@@ -40,7 +40,7 @@ ENTITLEMENTS="$TAURI/Galactus.entitlements"
 # The staged resource trees, in the order tauri.conf.json lists them. helpers/
 # holds Swift sources, not binaries, so it is not here; the compiled helpers
 # land in packaged/.
-TREES=(engine packaged python rust-tooling)
+TREES=(engine image-engine packaged python rust-tooling)
 
 is_macho() {
   file -b "$1" 2>/dev/null | grep -q 'Mach-O'

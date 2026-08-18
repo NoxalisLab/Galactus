@@ -151,6 +151,11 @@ rm -f "$ROOT/app/src-tauri/target/release/bundle/macos/rw."*.dmg 2>/dev/null || 
 rm -f "$ROOT/app/src-tauri/target/release/bundle/dmg/rw."*.dmg 2>/dev/null || true
 
 # ------------------------------------------------------------------- content
+# Un latest.json produit pour une version precedente reste a cote de la
+# nouvelle archive et annonce l ancienne : publie tel quel, il dit aux
+# utilisateurs qu ils sont a jour alors qu ils ne le sont pas. Un manifeste
+# present doit toujours vouloir dire "produit pour CETTE archive".
+rm -f "$ROOT/app/src-tauri/target/release/bundle/macos/latest.json"
 "$ROOT/app/src-tauri/prepare-engine.sh"
 
 # ----------------------------------------------- sign what Tauri will not sign

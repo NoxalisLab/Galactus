@@ -52,6 +52,9 @@ jobs:
         # rather than reporting a clean tree.
         run: python3 scripts/check-dashes.py
 
+      - name: the three version numbers agree
+        run: python3 scripts/check-versions.py
+
       - name: Skills validate against the runtime tool surface
         run: python3 scripts/check-skills.py
 

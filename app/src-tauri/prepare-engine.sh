@@ -79,6 +79,15 @@ for f in models-registry.json image-models.json moe-profile.py galactus-pack-pla
 done
 echo "Scripts embarques dans $HERE/packaged/scripts"
 
+# Les licences voyagent avec la copie redistribuee. MIT (llama.cpp,
+# stable-diffusion.cpp, CodeMirror, Lezer) exige que son texte accompagne le
+# binaire, et Apache-2.0 que le NOTICE suive l oeuvre : un DMG telecharge par
+# un tiers n en contenait aucun. Copies ici plutot que listes dans
+# tauri.conf.json, qui enterre un chemin relatif sous Resources/_up_/_up_/.
+cp "$ROOT/LICENSE" "$HERE/packaged/LICENSE"
+cp "$ROOT/NOTICE" "$HERE/packaged/NOTICE"
+echo "Licences embarquees"
+
 # Skills livrees avec l'app (semees dans Application Support au premier lancement).
 if [ -d "$ROOT/app/skills" ]; then
   rm -rf "$HERE/packaged/skills"
@@ -131,8 +140,20 @@ if command -v swiftc >/dev/null 2>&1; then
   swiftc -O -o "$HERE/packaged/galactus-voice" "$HERE/helpers/galactus-voice.swift"
   codesign -f -s - "$HERE/packaged/galactus-voice" >/dev/null 2>&1 || true
   echo "Helper voix precompile"
+  # Le selecteur de dossier. Sans ce binaire, swift_helper se rabat sur swiftc
+  # (absent d'un Mac vierge) puis sur osascript, qui repond "annule par
+  # l'utilisateur" depuis une app durcie : l'utilisateur ne peut plus choisir
+  # son dossier Galactus et rien ne lui dit pourquoi. Il etait dans le bundle
+  # par un artefact reste d'un ancien build, pas par ce script.
+  swiftc -O -o "$HERE/packaged/galactus-pick" "$HERE/helpers/galactus-pick.swift"
+  codesign -f -s - "$HERE/packaged/galactus-pick" >/dev/null 2>&1 || true
+  echo "Helper selecteur de dossier precompile"
 else
-  echo "AVERTISSEMENT: swiftc absent, helpers non precompiles"
+  echo "ECHEC: swiftc absent, les helpers ne peuvent pas etre precompiles." >&2
+  echo "  Un build livre sans eux perd le selecteur de dossier, la lecture de" >&2
+  echo "  documents et la dictee sur toute machine sans Command Line Tools." >&2
+  echo "  Installe-les : xcode-select --install" >&2
+  exit 1
 fi
 
 # ---------------------------------------------------------------- moteur image
@@ -152,8 +173,13 @@ if [ -x "$SD_SRC" ]; then
   chmod 755 "$SD_DEST/sd-cli"
   codesign -f -s - "$SD_DEST/sd-cli" >/dev/null 2>&1 || true
   echo "Moteur image embarque ($(du -sh "$SD_DEST" | cut -f1))"
+elif [ "${GALACTUS_ALLOW_NO_IMAGE_ENGINE:-0}" = "1" ]; then
+  echo "AVERTISSEMENT: sd-cli absent, generation d'images indisponible (opt-out explicite)"
 else
-  echo "AVERTISSEMENT: sd-cli absent, la generation d'images sera indisponible"
-  echo "  construis-le : cmake -B build -DSD_METAL=ON -DSD_WEBP=OFF -DSD_WEBM=OFF && cmake --build build -j"
-  echo "  dans third_party/stable-diffusion.cpp"
+  echo "ECHEC: sd-cli absent, la generation d'images serait livree morte." >&2
+  echo "  construis-le : cd third_party/stable-diffusion.cpp && \\" >&2
+  echo "    cmake -B build -DCMAKE_BUILD_TYPE=Release -DSD_METAL=ON -DSD_WEBP=OFF -DSD_WEBM=OFF && \\" >&2
+  echo "    cmake --build build -j" >&2
+  echo "  ou, pour un build volontairement sans images : GALACTUS_ALLOW_NO_IMAGE_ENGINE=1" >&2
+  exit 1
 fi

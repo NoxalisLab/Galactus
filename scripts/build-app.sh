@@ -135,6 +135,11 @@ fi
 echo "moteur : a jour vis-a-vis de ses sources"
 
 # ------------------------------------------------------------------ contenu
+# Un latest.json produit pour une version precedente reste a cote de la
+# nouvelle archive et annonce l ancienne : publie tel quel, il dit aux
+# utilisateurs qu ils sont a jour alors qu ils ne le sont pas. Un manifeste
+# present doit toujours vouloir dire "produit pour CETTE archive".
+rm -f "$ROOT/app/src-tauri/target/release/bundle/macos/latest.json"
 "$ROOT/app/src-tauri/prepare-engine.sh"
 
 # -------------------------------------------------------------------- build
@@ -150,6 +155,26 @@ echo "  version : $(defaults read "$APP/Contents/Info.plist" CFBundleShortVersio
 echo "  skills  : $(ls "$APP/Contents/Resources/packaged/skills" | wc -l | tr -d ' ')"
 echo "  notes   : $(find "$APP/Contents/Resources/packaged/vault" -name '*.md' | wc -l | tr -d ' ')"
 echo "  moteur  : $(strings "$APP/Contents/Resources/engine/libllama.0.dylib" | grep -c 'galactus_h4:') marqueurs H4"
+# Chaque ressource qui, absente, livre une fonctionnalite morte sans le dire.
+# Le registre d'images manquait dans les deux listes d'embarquement, et la vue
+# Images repondait "liste illisible" sur toute machine sauf un checkout git.
+for want in \
+  "packaged/scripts/models-registry.json" \
+  "packaged/scripts/image-models.json" \
+  "packaged/galactus-pick" \
+  "packaged/galactus-doc" \
+  "image-engine/sd-cli" \
+  "packaged/LICENSE" \
+  "packaged/NOTICE"; do
+  if [ -e "$APP/Contents/Resources/$want" ]; then
+    echo "  present : $want"
+  elif [ "$want" = "image-engine/sd-cli" ] && [ "${GALACTUS_ALLOW_NO_IMAGE_ENGINE:-0}" = "1" ]; then
+    echo "  absent  : $want (opt-out explicite)"
+  else
+    echo "ECHEC: $want manque dans le bundle" >&2
+    exit 1
+  fi
+done
 codesign --verify --strict "$APP" && echo "  signature valide"
 codesign -d -r- "$APP" 2>&1 | grep designated | sed 's/^/  /'
 
