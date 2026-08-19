@@ -2211,7 +2211,7 @@ export class TerminalPanel {
       })
       .join("");
     return `${tabs}<button class="term-act" data-tnew title="${esc(t("term.new"))}">+</button>
-      <button class="term-act" data-tssh title="${esc(t("ssh.title"))}">⇄</button>
+      <button class="term-act term-ssh" data-tssh title="${esc(t("ssh.title"))}"><span class="tssh-ic">⇄</span><span class="tssh-l">${esc(t("ssh.button"))}</span></button>
       <button class="term-act" data-tclear title="${esc(t("term.clear"))}">⊘</button>`;
   }
 

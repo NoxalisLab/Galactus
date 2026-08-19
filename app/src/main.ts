@@ -36,6 +36,7 @@ import { engineAdvice, isEngineDecodeFailure, modeLabelKey } from "./engine-erro
 import { layoutBriefKey, machineBrief, machineSummary } from "./machine-brief";
 import * as runsview from "./runsview";
 import * as imageview from "./imageview";
+import { securityView, setSecurityDeps } from "./security";
 import { learnedView } from "./learnedview";
 import { configurePanePreferences, wirePaneResizer } from "./layout/pane-resize";
 import {
@@ -61,7 +62,7 @@ import { parseNews, shouldShow } from "./whatsnew";
 const app = document.getElementById("app")!;
 const LOGO = "/galactus-mark.svg";
 
-type View = "chat" | "code" | "images" | "models" | "connectors" | "runs" | "memory" | "agent" | "learned" | "settings";
+type View = "chat" | "code" | "images" | "security" | "models" | "connectors" | "runs" | "memory" | "agent" | "learned" | "settings";
 type Autonomy = "manual" | "assisted" | "autonomous";
 
 let view: View = "chat";
@@ -617,6 +618,7 @@ const I = {
   runs: `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h9M4 12h9M4 19h6"/><path d="M17 15v6l5-3z"/></svg>`,
   set: `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 7.5 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 1.1-2.7H1.7a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 4.6 7.5a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 2.7-1.1V1.7a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 2.7 1.1 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-1.1 2.7h.1a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1.1z"/></svg>`,
   image: `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>`,
+  shield: `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"/><path d="M9.5 12l1.8 1.8 3.5-3.6"/></svg>`,
   plus: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>`,
   up: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>`,
   file: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>`,
@@ -4805,6 +4807,7 @@ function render() {
         ${nav("connectors", I.conn, t("nav.connectors"))}
         ${nav("runs", I.runs, t("nav.runs"))}
         ${appMode === "server" ? "" : nav("images", I.image, t("nav.images"))}
+        ${appMode === "server" ? "" : nav("security", I.shield, t("nav.security"))}
         ${appMode === "server" ? "" : nav("memory", I.mem, t("nav.memory"))}
         ${appMode === "server" ? "" : nav("agent", I.agent, t("nav.agent"))}
         ${nav("learned", I.mem, t("learned.title"))}
@@ -4830,6 +4833,7 @@ function render() {
     : view === "connectors" ? connectorsView()
     : view === "runs" ? runsview.runsView()
     : view === "images" ? imageview.imageView()
+    : view === "security" ? securityView()
     : view === "memory" ? memoryView()
     : view === "agent" ? agentView()
     : view === "learned" ? learnedView()
@@ -5220,6 +5224,7 @@ async function boot() {
     root: () => root,
     toast: (message, kind) => toast(message, kind),
   });
+  setSecurityDeps({ toast: (message, kind) => toast(message, kind) });
   await loadStandingPermissions().catch(() => {});
   // Before the first agent exists: an Agent reads the configured sampling at
   // construction, so a conversation opened during boot would otherwise be
@@ -5459,7 +5464,7 @@ async function boot() {
   // here, which silently shifted ⌘6 to ⌘8 by one: ⌘6 opened Memory.
   const navOrder = (): View[] => {
     const full: View[] = [
-      "chat", "code", "models", "connectors", "runs", "images", "memory", "agent", "learned", "settings",
+      "chat", "code", "models", "connectors", "runs", "images", "security", "memory", "agent", "learned", "settings",
     ];
     return appMode === "server" ? full.filter((v) => SERVER_VIEWS.includes(v)) : full;
   };

@@ -1392,6 +1392,14 @@ html.pane-dragging .pvw-frame { pointer-events: none; }
 .term-act { border: none; background: transparent; color: var(--dim3); font-size: 14px;
   line-height: 1; padding: 0 8px; cursor: pointer; }
 .term-act:hover { color: var(--acc-tx); }
+/* The remote-machines button used to be a bare arrow lost between + and clear.
+   It carries its label now and reads as a pill, so the SSH manager is findable
+   rather than hidden behind a glyph. */
+.term-ssh { display: inline-flex; align-items: center; gap: 5px; color: var(--acc-tx);
+  background: rgba(138, 124, 255, 0.12); border-radius: 7px; padding: 3px 9px; margin: 0 2px;
+  font-size: 11.5px; font-weight: 600; }
+.term-ssh:hover { background: rgba(138, 124, 255, 0.22); }
+.term-ssh .tssh-ic { font-size: 13px; }
 .term-screen { flex: 1; min-height: 0; overflow: hidden; padding: 6px 10px;
   font-family: var(--mono); font-size: 12px; line-height: 1.35; color: var(--term-fg);
   white-space: pre; -webkit-user-select: text; user-select: text; }
@@ -1944,3 +1952,26 @@ html.pane-dragging .pvw-frame { pointer-events: none; }
   cursor: pointer;
 }
 .toastx:hover { opacity: 1; }
+
+/* ---- Security view ---------------------------------------------------- */
+.sectgap { margin-top: 22px; }
+.secctl { display: flex; align-items: center; gap: 8px; }
+.secctl .grow { flex: 1; }
+.secfindings { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.securlline { margin-top: 10px; font-size: 12px; color: var(--dim2); }
+.secstatus { color: var(--dim4); margin-left: 6px; }
+.secfind { display: flex; align-items: flex-start; gap: 10px; padding: 9px 11px; border-radius: 9px; background: var(--inset); }
+.secfind .secdot { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex: none; }
+.secfind.ok .secdot { background: var(--good); }
+.secfind.warn .secdot { background: var(--warn); }
+.secfind.risk .secdot { background: var(--bad); }
+.secfind .secbody { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.secfind .secbody b { font-size: 12.5px; font-weight: 600; }
+.secfind .secbody span { font-size: 11.5px; color: var(--dim); line-height: 1.4; }
+.secfind.risk .secbody b { color: var(--bad); }
+.secports { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 8px; }
+.secport { display: flex; align-items: center; gap: 8px; padding: 7px 11px; border-radius: 9px; background: var(--inset); font-size: 12.5px; }
+.secport b { font-variant-numeric: tabular-nums; }
+.secport .secsvc { color: var(--acc); font-size: 11.5px; font-weight: 600; }
+.secport .secbanner { color: var(--dim4); font-size: 11px; font-family: var(--mono, monospace); max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.secfoot { margin: 22px 4px 8px; font-size: 11px; color: var(--dim4); }

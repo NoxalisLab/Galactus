@@ -107,6 +107,28 @@ export interface SshHost {
   port?: number | null;
 }
 
+/** One open port from a defensive scan. Closed ports are not returned. */
+export interface PortResult {
+  port: number;
+  open: boolean;
+  service: string | null;
+  banner: string | null;
+}
+
+/** One observation from a web audit, with how much it matters. */
+export interface SecFinding {
+  /** "ok" | "warn" | "risk"; the view colours on it. */
+  level: string;
+  title: string;
+  detail: string;
+}
+
+export interface WebAudit {
+  url: string;
+  status: number | null;
+  findings: SecFinding[];
+}
+
 export interface VolumeInfo {
   name: string;
   mount: string;
@@ -371,6 +393,11 @@ export const api = {
   sshHostSave: (label: string, target: string, port?: number, id?: string) =>
     invoke<SshHost[]>("ssh_host_save", { id, label, target, port }),
   sshHostRemove: (id: string) => invoke<SshHost[]>("ssh_host_remove", { id }),
+  /** Defensive audit of a machine the user controls: what is listening. */
+  secScanPorts: (host: string, ports: number[]) =>
+    invoke<PortResult[]>("sec_scan_ports", { host, ports }),
+  /** Defensive audit of a web endpoint: headers, TLS, cookies. Read only. */
+  secAuditWeb: (url: string) => invoke<WebAudit>("sec_audit_web", { url }),
   sshSpawn: (id: string, cwd: string, cols: number, rows: number) =>
     invoke<{ id: string; cols: number; rows: number; shell: string; cwd: string }>("ssh_spawn", {
       id, cwd, cols, rows,
