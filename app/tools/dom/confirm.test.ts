@@ -99,3 +99,42 @@ test("the destructive button is not the one given focus", async () => {
     proto.focus = before;
   }
 });
+
+test("the prompt returns what was typed, and null for every refusal", async () => {
+  const { promptModal } = await import("../../src/confirm.js");
+
+  const typed = promptModal("New file", "Name it", "name.ts");
+  let box = document.querySelector<HTMLElement>(".modal-bd")!;
+  box.querySelector<HTMLInputElement>("input")!.value = "  hello.ts  ";
+  click(box, "1");
+  assert.equal(await typed, "hello.ts", "trimmed, since a trailing space is not a name");
+
+  const cancelled = promptModal("New file", "Name it", "name.ts");
+  box = document.querySelector<HTMLElement>(".modal-bd")!;
+  click(box, "0");
+  assert.equal(await cancelled, null);
+
+  // Escape used to be handled by the input's own listener, so it only worked
+  // while the field held the focus. It is the shell's job now.
+  const escaped = promptModal("New file", "Name it", "name.ts");
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  assert.equal(await escaped, null);
+
+  // An empty field is not an answer either.
+  const blank = promptModal("New file", "Name it", "name.ts");
+  box = document.querySelector<HTMLElement>(".modal-bd")!;
+  box.querySelector<HTMLInputElement>("input")!.value = "   ";
+  click(box, "1");
+  assert.equal(await blank, null);
+});
+
+test("the confirmation the Code view uses can now be dismissed with a key", async () => {
+  // confirmModal had no keydown listener at all: once it was up, a keyboard
+  // could not get rid of it.
+  const { confirmModal } = await import("../../src/confirm.js");
+  const answer = confirmModal("Drop them?", "Three pending diffs", "<ul><li>a.ts</li></ul>", "Drop");
+  const box = document.querySelector<HTMLElement>(".modal .acts")!;
+  assert.ok(box, "the dialog is up");
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  assert.equal(await answer, false, "and escaping means no, not an unsettled promise");
+});

@@ -284,10 +284,45 @@ export function isElevatedCommand(cmd: string): boolean {
  * `~/.zshrc` now raises exactly the dialog that `write_file` would have.
  */
 const MCP_DANGEROUS_VERBS =
-  /(^|_)(exec|execute|run|shell|sudo|spawn|kill|write|create|update|delete|remove|rm|drop|deploy|upload|push|publish|send|install|restart|move|rename)($|_)/i;
+  /(^|_)(exec|execute|run|shell|sudo|spawn|kill|write|create|update|delete|remove|rm|drop|deploy|upload|push|publish|send|install|restart|move|rename|dump|download|sync|restore|import|grant|revoke|chmod|chown|truncate|purge|wipe|reset|format|mount|unmount|manage|patch|apply|revert|stop|start|enable|disable)($|_)/i;
+
+/**
+ * SQL that changes or removes something, as opposed to reading it.
+ *
+ * A tool called `query` cannot be judged by its name: `SELECT 1` is harmless
+ * and `DROP TABLE users` is not, and both arrive through the same connector
+ * with the same verb. So the ARGUMENT decides.
+ *
+ * Each verb has to be followed by what the grammar requires after it, not just
+ * appear. The looser version matched "delete the old ones" typed into a search
+ * box, which is prose, and asking somebody to type ALLOW to run a search is
+ * how a gate teaches people to dismiss it.
+ */
+const MUTATING_SQL = new RegExp(
+  "(?:^|;|\\n)\\s*(?:" +
+    [
+      "drop\\s+(?:table|database|schema|index|view|column|user|role|function|trigger)\\b",
+      "delete\\s+from\\b",
+      "truncate\\s+(?:table\\s+)?[\\w\"`\\[]",
+      "update\\s+[\\w.\"`\\[\\]]+\\s+set\\b",
+      "insert\\s+(?:or\\s+\\w+\\s+)?into\\b",
+      "replace\\s+into\\b",
+      "alter\\s+(?:table|database|schema|user|role|index|view)\\b",
+      "create\\s+(?:or\\s+replace\\s+)?(?:table|database|schema|index|view|user|role|function|trigger)\\b",
+      "grant\\s+[\\w,\\s]+\\s+on\\b",
+      "revoke\\s+[\\w,\\s]+\\s+on\\b",
+    ].join("|") +
+    ")",
+  "i",
+);
 
 export function isElevatedMcp(tool: string, args: Record<string, unknown>): boolean {
   if (MCP_DANGEROUS_VERBS.test(tool)) return true;
+  // A statement that writes, whatever the tool calling itself is. This is the
+  // half that catches `db_query` and anything else that takes SQL as text.
+  for (const value of Object.values(args ?? {})) {
+    if (typeof value === "string" && MUTATING_SQL.test(value)) return true;
+  }
   for (const value of Object.values(args ?? {})) {
     if (typeof value !== "string") continue;
     // Only things that look like a path: a prose argument must not raise a

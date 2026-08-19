@@ -35,6 +35,7 @@ import { css } from "@codemirror/lang-css";
 import { api, onEvent, CodeEntry, GitChange, GitCommitInfo, GitInfo } from "./api";
 import type { PermissionRequest } from "./agent";
 import { isElevatedCommand } from "./agent";
+import { confirmModal, promptModal } from "./confirm";
 import { t, getLang } from "./i18n";
 
 import { Docs, type Doc, docRel } from "./code/docs";
@@ -2675,56 +2676,6 @@ async function checkout(branch: string, create: boolean): Promise<void> {
   } catch (e: any) {
     deps?.toast(String(e?.message ?? e));
   }
-}
-
-/** A confirmation dialog in the app's own modal language. */
-function confirmModal(title: string, sub: string, bodyHtml: string, okLabel: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const m = el(`<div class="modal-bd"><div class="modal wide">
-      <h3>${esc(title)}</h3>
-      <div class="ps">${esc(sub)}</div>
-      ${bodyHtml}
-      <div class="acts">
-        <button class="bs" data-x="0">${esc(t("conn.cancel"))}</button>
-        <button class="bp" data-x="1">${esc(okLabel)}</button>
-      </div></div></div>`);
-    m.addEventListener("click", (e) => {
-      const b = (e.target as HTMLElement).closest("[data-x]") as HTMLElement | null;
-      if (!b) return;
-      m.remove();
-      resolve(b.dataset.x === "1");
-    });
-    document.body.appendChild(m);
-  });
-}
-
-/** The same shell, with one text field. Resolves null when cancelled. */
-function promptModal(title: string, sub: string, placeholder: string): Promise<string | null> {
-  return new Promise((resolve) => {
-    const m = el(`<div class="modal-bd"><div class="modal">
-      <h3>${esc(title)}</h3>
-      <div class="ps">${esc(sub)}</div>
-      <div class="cbox"><input id="pmv" placeholder="${esc(placeholder)}" autocomplete="off" spellcheck="false"/></div>
-      <div class="acts">
-        <button class="bs" data-x="0">${esc(t("conn.cancel"))}</button>
-        <button class="bp" data-x="1">${esc(t("code.create"))}</button>
-      </div></div></div>`);
-    const input = m.querySelector<HTMLInputElement>("#pmv")!;
-    const done = (ok: boolean) => {
-      m.remove();
-      resolve(ok ? input.value.trim() || null : null);
-    };
-    m.addEventListener("click", (e) => {
-      const b = (e.target as HTMLElement).closest("[data-x]") as HTMLElement | null;
-      if (b) done(b.dataset.x === "1");
-    });
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") done(true);
-      else if (e.key === "Escape") done(false);
-    });
-    document.body.appendChild(m);
-    input.focus();
-  });
 }
 
 // ---------------------------------------------------------------- painting

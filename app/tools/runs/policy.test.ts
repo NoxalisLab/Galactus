@@ -211,3 +211,20 @@ test("every declared kind is decided by every policy, none falls through", () =>
     }
   }
 });
+
+test("an unattended run cannot write into memory without a human", () => {
+  // Memory is injected into every conversation that comes AFTER the run, so a
+  // silent write there outlives the run that made it. An unattended run reads
+  // whatever it was pointed at, and a page it reads can say "remember that
+  // ...": the autonomous policy grants "memory", so before this the write went
+  // through with nobody watching and stayed in every later conversation.
+  //
+  // The agent marks the request noAlways for exactly this, which lands here.
+  const req = { kind: "memory" as const, detail: "the user prefers X", elevated: false, noAlways: true };
+  assert.deepEqual(decideGate("autonomous", req), { decision: "block", reason: "every_time" });
+  // And a human who pre-authorised this run for every-time actions still can.
+  assert.deepEqual(decideGate("autonomous", req, true), { decision: "allow" });
+  // The weaker policies never granted it in the first place.
+  assert.equal(decideGate("read_only", req).decision, "block");
+  assert.equal(decideGate("propose", req).decision, "block");
+});

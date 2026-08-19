@@ -119,6 +119,18 @@ export interface PermissionRequest {
    * is that the user sees the branch and the count EVERY time.
    */
   noAlways?: boolean;
+  /**
+   * Never auto-approve this, however autonomous the run is. Not the same as
+   * `elevated`, which additionally makes the user type ALLOW: this only takes
+   * away the silent yes, and still shows an ordinary dialog.
+   *
+   * Set on the actions whose effect OUTLIVES the run. An unattended run reads
+   * documents and web pages it was pointed at, and a page can say "remember
+   * that ...". Memory is injected into every future conversation, so a silent
+   * write there is the one thing that survives the session that produced it,
+   * which is the same reason a self-authored skill turns autonomy off.
+   */
+  noAuto?: boolean;
   /** Filled only for kind === "fs_write", via api.fsPreview, when a dialog will show. */
   diff?: {
     before: string;
@@ -2087,25 +2099,50 @@ export class Agent {
     this.port = port;
   }
 
-  /** Roughly what the tool definitions cost in this turn's request. */
+  /**
+   * Roughly what the tool definitions cost in this turn's request.
+   *
+   * It has to measure the SAME list the request sends, and it did not: the
+   * fifth argument is `hasTeam`, the request passes `directory !== null`, and
+   * this passed `codeWorkspace !== null`. Open a folder in the Code view with
+   * no team and the budget counted delegation tools that were never sent; have
+   * a team with no folder open and it missed them. The measurement is what
+   * decides when history gets trimmed, so it was trimming on a wrong figure.
+   *
+   * The cache is keyed on every input rather than cleared by hand. It used to
+   * be invalidated only by setMcpTools, so switching memory off, gaining a
+   * vault, changing role or joining a team all kept the stale number.
+   */
   private toolSchemaTokens(): number {
-    if (this.toolTokens === null) {
+    const hasTeam = directory !== null;
+    const key = [
+      this.hasVault,
+      this.role,
+      this.hasKb,
+      this.canDelegate(),
+      hasTeam,
+      this.memoryOn,
+      this.mcp.length,
+    ].join("|");
+    if (this.toolTokens === null || this.toolTokensKey !== key) {
       const tools = builtinTools(
         this.hasVault,
         this.role,
         this.hasKb,
         this.canDelegate(),
-        codeWorkspace !== null,
+        hasTeam,
         this.memoryOn,
       );
       const size = JSON.stringify([...tools, ...mcpToolDefs(this.mcp)]).length;
       this.toolTokens = Math.ceil(size / BYTES_PER_TOKEN);
+      this.toolTokensKey = key;
     }
     return this.toolTokens;
   }
 
-  /** Cached per turn: the list only changes when connectors reload. */
+  /** Cached while nothing that feeds the list has changed. */
   private toolTokens: number | null = null;
+  private toolTokensKey = "";
 
   setNoStanding(on: boolean): void {
     this.noStanding = on;
@@ -2129,7 +2166,7 @@ export class Agent {
 
   private async gate(req: PermissionRequest): Promise<boolean> {
     if (this.abort?.signal.aborted) return false;
-    if (!req.elevated && !this.noStanding && isStanding(req.kind, req.detail)) return true;
+    if (!req.elevated && !req.noAuto && !this.noStanding && isStanding(req.kind, req.detail)) return true;
     // Agent mode autonomy: auto-approve ordinary actions for the run.
     // Elevated (system-modifying) actions ALWAYS ask, even in agent mode.
     //
@@ -2140,7 +2177,7 @@ export class Agent {
     // durable: a procedure the agent wrote for itself outlives the turn it was
     // written in, and the one thing that must never become unattended is a
     // path that survives across sessions.
-    if (!req.elevated && effectiveAutoApprove(this.autoApprove, this.authoredLoaded)) return true;
+    if (!req.elevated && !req.noAuto && effectiveAutoApprove(this.autoApprove, this.authoredLoaded)) return true;
     this.denialReason = "denied by user";
     const decision = await this.hooks.askPermission(req);
     // The user may have hit Stop while the dialog was open: an approval that
@@ -2317,7 +2354,17 @@ export class Agent {
         // Memory is injected into every future conversation: an ungated write
         // here would let any read document poison it silently.
         const fact = String(args.fact ?? "");
-        const ok = await this.gate({ kind: "memory", detail: fact.slice(0, 300), elevated: false });
+        const ok = await this.gate({
+          kind: "memory",
+          detail: fact.slice(0, 300),
+          elevated: false,
+          // Asked every time, including in an unattended run, where the answer
+          // will be no because nobody is there. That is the intended outcome:
+          // a page the run was told to read must not be able to write into
+          // every conversation that comes after it.
+          noAuto: true,
+          noAlways: true,
+        });
         result = ok ? await api.memoryAppend(fact) : this.denialReason;
         if (ok) {
           this.memory = await api.memoryRead();

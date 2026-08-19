@@ -10,6 +10,7 @@ import {
   isElevatedCommand,
   isElevatedRead,
   isElevatedWrite,
+  isElevatedMcp,
   isNetworkGitCommand,
 } from "../../src/sensitive.js";
 
@@ -238,4 +239,44 @@ test("running the project's own scripts stays ordinary", () => {
   ]) {
     assert.equal(isElevatedCommand(cmd), false, cmd);
   }
+});
+
+test("a connector tool that moves data off a machine is elevated", () => {
+  // A connector is a third-party program, so the name is one of the only two
+  // things there is to go on. The first list stopped at write and delete verbs
+  // and let through the ones that copy a database out, overwrite a tree, or
+  // put a machine's services up and down.
+  for (const tool of [
+    "db_dump",
+    "backup_restore",
+    "file_download",
+    "folder_sync",
+    "db_import",
+    "key_manage",
+    "service_stop",
+    "acl_grant",
+    "disk_format",
+    "table_truncate",
+  ]) {
+    assert.equal(isElevatedMcp(tool, {}), true, tool);
+  }
+});
+
+test("reading through a connector still does not ask for ALLOW", () => {
+  // Elevation makes the user type the word ALLOW. Applied to every call it
+  // stops meaning anything, so the read verbs have to stay out.
+  for (const tool of ["list_servers", "get_status", "search_notes", "read_note", "graph_stats"]) {
+    assert.equal(isElevatedMcp(tool, { q: "delete the old ones" }), false, tool);
+  }
+});
+
+test("a query is judged by the statement, not by the word query", () => {
+  // db_query carries both SELECT and DROP TABLE, so the name cannot decide.
+  assert.equal(isElevatedMcp("db_query", { sql: "SELECT id FROM users" }), false);
+  assert.equal(isElevatedMcp("db_query", { sql: "DROP TABLE users" }), true);
+  assert.equal(isElevatedMcp("db_query", { sql: "  delete from sessions where id = 1" }), true);
+  assert.equal(isElevatedMcp("db_query", { sql: "SELECT 1; TRUNCATE audit" }), true, "the second statement counts");
+  // And prose that merely mentions the words is not a statement.
+  assert.equal(isElevatedMcp("search", { q: "how do I delete a row" }), false);
+  assert.equal(isElevatedMcp("search", { q: "the update_at column" }), false);
 });
