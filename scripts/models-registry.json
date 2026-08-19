@@ -1025,6 +1025,29 @@
         "writing"
       ],
       "context_length": 262144
+    },
+    {
+      "id": "qwen38-27b-uncensored",
+      "name": "Qwen3.8 27B Uncensored (Q4_K, dense)",
+      "arch": "qwen35",
+      "dense": true,
+      "gguf_bytes": 16810714400,
+      "non_expert_bytes": 16810714400,
+      "min_ram_gb": 32,
+      "status": "stock_unmodified",
+      "download": {
+        "base": "https://huggingface.co/huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF/resolve/main",
+        "files": [
+          "Huihui-Qwen3.8-27B-abliterated-Q4_K.gguf"
+        ]
+      },
+      "tasks": [
+        "general",
+        "writing",
+        "roleplay"
+      ],
+      "context_length": 262144,
+      "note": "Version abliterated (huihui-ai) : les directions de refus sont supprimees, le modele ne refuse plus. Meme architecture et meme fenetre que la version de base."
     }
   ],
   "mac_lineup": {
