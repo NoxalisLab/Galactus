@@ -7540,7 +7540,23 @@ fn conv_save(id: String, data: String) -> Result<(), String> {
     let safe = sanitize_id(&id);
     let p = dir.join(format!("{safe}.json"));
     let tmp = dir.join(format!(".{safe}.{}.tmp", std::process::id()));
-    std::fs::write(&tmp, data.as_bytes()).map_err(|e| e.to_string())?;
+    // Written, forced to the platter, and only then renamed. The rename alone
+    // is atomic with respect to a READER, which is what it was there for, but
+    // it says nothing about a power cut: rename metadata can land while the
+    // data behind it has not, and the conversation reopens as a valid name
+    // pointing at zeros. Same order as settings_write and memory_store, which
+    // is the pattern this file uses everywhere else it cares.
+    {
+        use std::io::Write;
+        let mut file = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+        if let Err(e) = file
+            .write_all(data.as_bytes())
+            .and_then(|()| file.sync_all())
+        {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e.to_string());
+        }
+    }
     if let Err(e) = std::fs::rename(&tmp, &p) {
         let _ = std::fs::remove_file(&tmp);
         return Err(e.to_string());

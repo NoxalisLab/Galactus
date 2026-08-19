@@ -389,13 +389,34 @@ fn code_write_blocking(
     // minutes earlier and everything written in between was gone, silently.
     // That is the ordinary case of an editor sitting next to a terminal, and
     // this app has one built in.
-    if let Some(expected) = expect.filter(|s| !s.is_empty()) {
-        if let Some(now) = disk_stamp(&full) {
-            if now != expected {
+    //
+    // None and Some("") are NOT the same thing, and treating them alike is how
+    // the check turned itself off. None is a caller that deliberately wants no
+    // check: accepting a hunk writes against the merge base, which IS the disk
+    // content it was built from. Some("") is a caller that wanted the check and
+    // has no stamp to offer, which happens because every code_stamp call site
+    // ends in `.catch(() => "")`: one failed IPC and the file's protection was
+    // gone for the rest of the session, silently.
+    //
+    // So an empty stamp refuses, unless the file is not there at all, which is
+    // a new file and the case an empty stamp was originally meant to allow.
+    if let Some(expected) = expect {
+        match (disk_stamp(&full), expected.is_empty()) {
+            // Not on disk: nothing to overwrite, whatever the stamp says.
+            (None, _) => {}
+            (Some(_), true) => {
                 return Err(format!(
-                    "{path} changed on disk since it was opened. Reload it, or save a copy \
-                     elsewhere, so nothing is lost."
+                    "{path} cannot be saved safely: Galactus does not know what is on disk \
+                     right now. Reload it, or save a copy elsewhere, so nothing is lost."
                 ));
+            }
+            (Some(now), false) => {
+                if now != expected {
+                    return Err(format!(
+                        "{path} changed on disk since it was opened. Reload it, or save a copy \
+                         elsewhere, so nothing is lost."
+                    ));
+                }
             }
         }
     }
@@ -1209,6 +1230,35 @@ mod stale_write_tests {
         // And no stamp at all still writes: a new file has nothing to compare.
         code_write_blocking(root, "new.txt".into(), "hello".into(), None).unwrap();
         assert_eq!(std::fs::read(d.join("new.txt")).unwrap(), b"hello");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn an_empty_stamp_refuses_over_a_file_that_exists() {
+        // Every code_stamp call site on the frontend ends in `.catch(() => "")`.
+        // One failed IPC and the document's stamp was "", which the check read
+        // as "no check wanted" and skipped: the file lost its protection for
+        // the rest of the session and said nothing about it.
+        //
+        // None still means no check, because accepting a hunk writes against
+        // the merge base, which IS the disk content. Some("") is a caller that
+        // wanted the check and has nothing to offer, and that has to refuse.
+        let d = tmp("blank");
+        let root = d.to_string_lossy().to_string();
+        std::fs::write(d.join("a.txt"), b"someone else's work").unwrap();
+
+        let refused = code_write_blocking(root.clone(), "a.txt".into(), "buffer".into(), Some(String::new()));
+        assert!(refused.is_err(), "an unknown stamp must not overwrite");
+        assert_eq!(std::fs::read(d.join("a.txt")).unwrap(), b"someone else's work");
+
+        // None is the deliberate opt out, and still writes.
+        code_write_blocking(root.clone(), "a.txt".into(), "buffer".into(), None).unwrap();
+        assert_eq!(std::fs::read(d.join("a.txt")).unwrap(), b"buffer");
+
+        // And an empty stamp on a file that is NOT there is a new file, which
+        // is the case the empty stamp was there to allow in the first place.
+        code_write_blocking(root, "fresh.txt".into(), "hello".into(), Some(String::new())).unwrap();
+        assert_eq!(std::fs::read(d.join("fresh.txt")).unwrap(), b"hello");
         let _ = std::fs::remove_dir_all(&d);
     }
 

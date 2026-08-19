@@ -566,7 +566,12 @@ function closeTab(rel: string): void {
   if (editor) docs.capture(editor, editor.scrollSnapshot());
   forgetPython(rel);
   closeRustBuffer(rel);
-  docs.close(rel);
+  // The registry that actually HOLDS it, which is not always the focused one.
+  // Closing in `docs` did nothing for a file open on the other side, so after
+  // deleting or renaming from the tree the old tab stayed there, live and
+  // saveable: one Cmd+S and the file was back under the name that had just
+  // gone away.
+  (regOf(rel) ?? docs).close(rel);
   // An empty second pane is not a pane: it closes, and the focus comes back to
   // the left, rather than leaving half the column showing "pick a file".
   if (registries[1].size === 0 && pane === 1) {
@@ -609,6 +614,12 @@ async function moveToOtherPane(): Promise<void> {
   from.close(rel);
   const to = registries[target];
   const doc = to.open(rel, d.saved);
+  // The freshness stamp travels too. open() starts a document at "", meaning
+  // "nothing known about the disk", and the same file crossing panes has not
+  // become unknown: it was read a second ago. Without this the next save on
+  // the other side is refused as unsafe, and before the backend learned to
+  // refuse it, it overwrote whatever had landed in the meantime.
+  to.setStamp(rel, d.stamp);
   if (dirty) {
     to.rebuild(rel, text);
   } else {
@@ -1089,6 +1100,13 @@ export async function fileProposal(
       return `refused: ${rel} has unsaved changes open in the editor. Ask the user to save or discard them first.`;
     }
     holder.open(rel, existed ? before : "", content);
+    // A proposal can open a file that had no tab, and open() starts a document
+    // with no stamp. Accepting a hunk writes without one on purpose, but the
+    // user can also edit the buffer and press Cmd+S, and that save needs to
+    // know what it is writing over.
+    if (existed && root) {
+      holder.setStamp(rel, await api.codeStamp(root, rel).catch(() => ""));
+    }
     setReview(rel, existed ? before : "");
     applyTsBindings(rel);
     applyRustBindings(rel);
@@ -1498,7 +1516,9 @@ async function renameEntry(rel: string): Promise<void> {
   }
   // An open tab pointed at the old name: close it and reopen the new one, so
   // the next save cannot recreate the file under the name that just went away.
-  const wasOpen = docs.list().some((d) => d.rel === rel);
+  // Either pane. Asking only the focused one left the tab open on the other
+  // side, still pointing at a name that no longer exists.
+  const wasOpen = regOf(rel) !== null;
   if (wasOpen) closeTab(rel);
   // The palette and the project search read a cached file list. Creating,
   // renaming or deleting from the tree left it stale for the whole session:
@@ -1525,7 +1545,7 @@ async function deleteEntry(rel: string): Promise<void> {
     deps?.toast(String(e?.message ?? e));
     return;
   }
-  if (docs.list().some((d) => d.rel === rel)) closeTab(rel);
+  if (regOf(rel) !== null) closeTab(rel);
   expanded.delete(rel);
   treeCache.delete(rel);
   // The palette and the project search read a cached file list. Creating,
