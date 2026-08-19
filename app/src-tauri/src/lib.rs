@@ -14,6 +14,7 @@ mod pty;
 mod housekeeping;
 mod image;
 mod regexlite;
+mod secaudit;
 mod ssh;
 mod relay;
 mod pylang;
@@ -8821,6 +8822,8 @@ pub fn run() {
             ssh::ssh_host_save,
             ssh::ssh_host_remove,
             ssh::ssh_spawn,
+            secaudit::sec_scan_ports,
+            secaudit::sec_audit_web,
             code::git_push,
             code::git_pull,
             code::git_branches,
