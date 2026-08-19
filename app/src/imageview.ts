@@ -9,7 +9,7 @@
  * DOM and the wiring.
  */
 
-import { api, onEvent, type ImageModelInfo, type ImageRequest } from "./api";
+import { api, onEvent, type HwInfo, type ImageModelInfo, type ImageRequest } from "./api";
 import { t } from "./i18n";
 /**
  * Same two helpers as every other view in this app. Duplicated rather than
@@ -36,6 +36,13 @@ export interface ImageDeps {
 let models: ImageModelInfo[] = [];
 /** Set once per session: whether this build carries the engine at all. */
 let enginePresent: boolean | null = null;
+/**
+ * The machine, for the "this Mac has N GB" half of a blocked model's sentence.
+ * Fetched once, like the Models view does: soldered memory does not move while
+ * the app runs. Null only when hw_info itself failed, and the card then falls
+ * back to the backend's English reason rather than showing a blank.
+ */
+let hw: HwInfo | null = null;
 /** The live element, so a repaint after an await never targets a detached one. */
 let liveWrap: HTMLElement | null = null;
 /** Download progress, straight from the backend. */
@@ -112,6 +119,9 @@ async function refresh(_wrap?: HTMLElement): Promise<void> {
     );
     return;
   }
+  if (!hw) {
+    hw = await api.hwInfo().catch(() => null);
+  }
   try {
     models = await api.imageModels();
   } catch (e: any) {
@@ -120,7 +130,12 @@ async function refresh(_wrap?: HTMLElement): Promise<void> {
     return;
   }
   if (!chosen || !models.some((m) => m.id === chosen)) {
-    chosen = (models.find((m) => m.installed) ?? models[0])?.id ?? "";
+    // Installed AND usable first: opening the view on a model this machine
+    // cannot run would start every session with a disabled prompt.
+    chosen =
+      (models.find((m) => m.installed && m.usable) ??
+        models.find((m) => m.usable) ??
+        models[0])?.id ?? "";
   }
   try {
     gallery = await api.imageGallery();
@@ -140,6 +155,17 @@ function current(): ImageModelInfo | undefined {
   return models.find((m) => m.id === chosen);
 }
 
+/**
+ * Why a model is blocked here, as the sentence the LLM cards get: what it
+ * needs against what this Mac has. The backend's English reason is the
+ * fallback for the rare case where hw_info itself failed.
+ */
+function blockedLine(m: ImageModelInfo): string {
+  return hw
+    ? t("img.tooBig").replace("%n", String(m.need_gb)).replace("%r", String(hw.ram_gb))
+    : m.reason;
+}
+
 function modelCard(m: ImageModelInfo): string {
   const gb = (m.bytes / 1e9).toFixed(1);
   const fastest = m.measured.find((x) => x.seconds);
@@ -148,12 +174,19 @@ function modelCard(m: ImageModelInfo): string {
         .replace("%t", fmtSeconds(fastest.seconds ?? 0))
         .replace("%s", sizeLabel(fastest.width ?? 0, fastest.height ?? 0))
     : t("img.notMeasured");
+  // The same verdict the LLM cards carry: what this MACHINE can do with the
+  // model, next to what the model is. A usable model says how far it goes
+  // here; a blocked one wears the chip and says why underneath.
+  const fit = m.usable
+    ? ` · ${esc(t("img.fitsUpTo").replace("%s", sizeLabel(m.max_side, m.max_side)))}`
+    : "";
   return `<div class="mcard ${m.id === chosen ? "on" : ""}" data-pick="${esc(m.id)}">
     <div class="top"><div class="info">
-      <div class="nm"><b>${esc(m.name)}</b>${m.installed ? "" : `<span class="chip-cert pending">◷ ${esc(t("img.notInstalled"))}</span>`}</div>
-      <span class="meta">${gb} GB · ${esc(speed)}</span>
+      <div class="nm"><b>${esc(m.name)}</b>${m.usable ? "" : `<span class="chip-cert pending">✕ ${esc(t("img.blockedChip"))}</span>`}${m.installed ? "" : `<span class="chip-cert pending">◷ ${esc(t("img.notInstalled"))}</span>`}</div>
+      <span class="meta">${gb} GB · ${esc(speed)}${fit}</span>
     </div><span data-a></span></div>
     <div class="brief">${esc(m.note)}</div>
+    ${m.usable ? "" : `<div class="brief blocked">${esc(blockedLine(m))}</div>`}
   </div>`;
 }
 
@@ -161,15 +194,30 @@ function bodyHtml(): string {
   const m = current();
   const d = defaultsFor(m);
   const cards = models.map(modelCard).join("");
-  const canRun = !!m?.installed;
+  // Startable means installed AND within this machine, exactly the pair the
+  // LLM list uses: an installed model too big for the Mac would otherwise
+  // offer a Generate button whose only outcome is a swap spiral.
+  const canRun = !!m?.installed && !!m?.usable;
+  // The sizes offered stop at what image_plan says this machine can decode,
+  // and the model's own default is capped the same way, so the selected entry
+  // is always the largest thing that is both wanted and possible.
+  const cap = m?.usable && m.max_side ? m.max_side : 2048;
+  const dw = Math.min(d.width, cap);
+  const dh = Math.min(d.height, cap);
+  // A machine near its memory opens with the shorter run the plan suggested;
+  // the input stays editable, this is a starting point rather than a wall.
+  const steps = m?.recommended_steps ?? d.steps;
   return `
   <div class="imgmodels">${cards}</div>
   ${
     m && !m.installed
-      ? `<div class="card"><div class="hd"><div class="grow"><b>${esc(t("img.installTitle").replace("%s", m.name))}</b>
-           <span class="d">${esc(t("img.installHint").replace("%g", (m.bytes / 1e9).toFixed(1)))}</span></div>
-           ${installing === m.id ? `<button class="bs" id="imginstallstop">${esc(t("img.stop"))}</button>` : ""}
-           <button class="bp" id="imginstall" ${installing ? "disabled" : ""}>${esc(installing === m.id ? t("img.installing") : t("img.install"))}</button></div></div>`
+      ? m.usable
+        ? `<div class="card"><div class="hd"><div class="grow"><b>${esc(t("img.installTitle").replace("%s", m.name))}</b>
+             <span class="d">${esc(t("img.installHint").replace("%g", (m.bytes / 1e9).toFixed(1)))}</span></div>
+             ${installing === m.id ? `<button class="bs" id="imginstallstop">${esc(t("img.stop"))}</button>` : ""}
+             <button class="bp" id="imginstall" ${installing ? "disabled" : ""}>${esc(installing === m.id ? t("img.installing") : t("img.install"))}</button></div></div>`
+        : `<div class="card"><div class="hd"><div class="grow"><b>${esc(t("img.cantRunTitle").replace("%s", m.name))}</b>
+             <span class="d">${esc(blockedLine(m))}</span></div></div></div>`
       : ""
   }
   <div class="card imgmake">
@@ -178,15 +226,15 @@ function bodyHtml(): string {
       <label>${esc(t("img.negative"))}<input id="imgneg" ${canRun ? "" : "disabled"} placeholder="${esc(t("img.negativePlaceholder"))}"/></label>
     </div>
     <div class="imgrow">
-      <label>${esc(t("img.size"))}<select id="imgsize" ${canRun ? "" : "disabled"}>${sizePresets(d.width, d.height)
-        .map((p) => `<option value="${p.w}x${p.h}" ${p.w === d.width && p.h === d.height ? "selected" : ""}>${esc(sizeLabel(p.w, p.h))}</option>`)
+      <label>${esc(t("img.size"))}<select id="imgsize" ${canRun ? "" : "disabled"}>${sizePresets(dw, dh, cap)
+        .map((p) => `<option value="${p.w}x${p.h}" ${p.w === dw && p.h === dh ? "selected" : ""}>${esc(sizeLabel(p.w, p.h))}</option>`)
         .join("")}</select></label>
-      <label>${esc(t("img.steps"))}<input id="imgsteps" type="number" min="1" max="100" value="${d.steps}" ${canRun ? "" : "disabled"}/></label>
+      <label>${esc(t("img.steps"))}<input id="imgsteps" type="number" min="1" max="100" value="${steps}" ${canRun ? "" : "disabled"}/></label>
       <label>${esc(t("img.cfg"))}<input id="imgcfg" type="number" min="0" max="30" step="0.5" value="${d.cfg}" ${canRun ? "" : "disabled"}/></label>
       <label>${esc(t("img.seed"))}<input id="imgseed" type="number" value="-1" ${canRun ? "" : "disabled"}/></label>
     </div>
     <div class="imgacts">
-      <span class="d" id="imgstatus">${esc(canRun ? t("img.ready") : t("img.pickInstalled"))}</span>
+      <span class="d" id="imgstatus">${esc(canRun ? t("img.ready") : m && !m.usable ? blockedLine(m) : t("img.pickInstalled"))}</span>
       <span class="grow"></span>
       ${busy ? `<button class="bs" id="imgstop">${esc(t("img.stop"))}</button>` : ""}
       <button class="bp" id="imggo" ${canRun && !busy ? "" : "disabled"}>${esc(busy ? t("img.working") : t("img.generate"))}</button>
@@ -444,6 +492,13 @@ async function generate(): Promise<void> {
   const wrap = liveWrap;
   const m = current();
   if (!wrap || !m || busy) return;
+  if (!m.usable) {
+    // The button is disabled, but this function is also reachable through a
+    // stale repaint. Saying why beats silently doing nothing, and the Rust
+    // side refuses too: this is the polite layer, not the load-bearing one.
+    deps?.toast(blockedLine(m));
+    return;
+  }
   const num = (id: string, fallback: number): number => {
     const raw = wrap.querySelector<HTMLInputElement>(id)?.value ?? "";
     const v = Number(raw);

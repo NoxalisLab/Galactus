@@ -748,6 +748,13 @@ const dict: Record<string, { en: string; fr: string }> = {
   "img.measured": { en: "%t at %s, measured", fr: "%t en %s, mesuré" },
   "img.notMeasured": { en: "not measured yet", fr: "pas encore mesuré" },
   "img.notInstalled": { en: "Not installed", fr: "Pas installé" },
+  "img.fitsUpTo": { en: "up to %s here", fr: "jusqu'à %s ici" },
+  "img.blockedChip": { en: "Too big for this Mac", fr: "Trop gros pour ce Mac" },
+  "img.tooBig": {
+    en: "Needs about %n GB of memory and this Mac has %r GB.",
+    fr: "Nécessite environ %n Go de mémoire et ce Mac en a %r Go.",
+  },
+  "img.cantRunTitle": { en: "%s cannot run on this Mac", fr: "%s ne peut pas tourner sur ce Mac" },
   "img.install": { en: "Download", fr: "Télécharger" },
   "img.installing": { en: "Downloading...", fr: "Téléchargement..." },
   "img.installed": { en: "%s is ready", fr: "%s est prêt" },

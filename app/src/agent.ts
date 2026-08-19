@@ -1917,24 +1917,32 @@ export class Agent {
     } catch (e: any) {
       return `the image model list could not be read: ${String(e?.message ?? e)}`;
     }
-    const installed = models.filter((m) => m.installed);
+    // Installed AND usable: the backend now carries a per-machine verdict, and
+    // the largest installed model can be one this Mac cannot hold. Picking it
+    // anyway would only bounce off the Rust gate with an error the user has to
+    // translate, while a runnable model sat right next to it.
+    const installed = models.filter((m) => m.installed && m.usable);
     if (!installed.length) {
       const names = models.map((m) => m.name).join(", ");
-      return `no image model is installed yet. Open the Images view and download one${names ? ` (${names})` : ""}.`;
+      return `no image model is installed and runnable on this machine yet. Open the Images view and download one${names ? ` (${names})` : ""}.`;
     }
-    // The largest installed one: on this short list size is quality, and the
+    // The largest runnable one: on this short list size is quality, and the
     // user spent the disk on it deliberately.
     const m = installed.reduce((a, b) => (b.bytes > a.bytes ? b : a));
     const d = m.defaults ?? {};
+    // The same bounds the view applies: the plan's ceiling on the sides, and
+    // its shorter first run on a tight machine. The Rust side clamps too;
+    // asking for what will be granted just keeps the tool's report honest.
+    const cap = m.max_side || 2048;
     try {
       const path = await api.imageGenerate({
         model: m.id,
         prompt: String(args.prompt ?? ""),
         negative: String(args.negative ?? ""),
-        steps: Number(d.steps ?? 20),
+        steps: m.recommended_steps ?? Number(d.steps ?? 20),
         cfg: Number(d.cfg ?? 7),
-        width: Number(args.width ?? d.width ?? 512),
-        height: Number(args.height ?? d.height ?? 512),
+        width: Math.min(Number(args.width ?? d.width ?? 512), cap),
+        height: Math.min(Number(args.height ?? d.height ?? 512), cap),
         seed: -1,
       });
       return `image written to ${path}, made with ${m.name} on this machine. Give the user that path; it is also in the Images view.`;

@@ -306,6 +306,16 @@ export interface ImageModelInfo {
   measured: Array<{ mac_gb?: number; width?: number; height?: number; steps?: number; seconds?: number }>;
   note: string;
   installed: boolean;
+  /** The verdict for THIS machine, computed by image_models like `installed`. */
+  usable: boolean;
+  /** English fallback sentence; the view builds a translated one from need_gb. */
+  reason: string;
+  /** Largest square side this Mac can decode, 0 when none can. */
+  max_side: number;
+  /** A shorter first run on a machine near its memory, null when the default is fine. */
+  recommended_steps: number | null;
+  /** Installed GB a Mac needs to run this model at all. */
+  need_gb: number;
 }
 
 export interface ImageRequest {

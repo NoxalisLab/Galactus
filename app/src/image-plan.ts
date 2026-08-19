@@ -35,8 +35,14 @@ function clamp(v: number, lo: number, hi: number): number {
  *
  * A list that omitted it would quietly generate something other than what the
  * model was measured at, and the first thing a user compares is the time.
+ *
+ * `maxSide` is the ceiling the backend's image_plan computed for this machine:
+ * a preset above it would be an invitation to a generation the Rust side will
+ * clamp anyway, so it is simply not offered. The caller caps the default it
+ * passes in the same way, which keeps the "default is always present" rule
+ * true for the default this machine can actually reach.
  */
-export function sizePresets(width: number, height: number): Array<{ w: number; h: number }> {
+export function sizePresets(width: number, height: number, maxSide = 2048): Array<{ w: number; h: number }> {
   const base = [
     { w: 512, h: 512 },
     { w: 768, h: 768 },
@@ -45,8 +51,13 @@ export function sizePresets(width: number, height: number): Array<{ w: number; h
     { w: 576, h: 1024 },
   ];
   const has = base.some((p) => p.w === width && p.h === height);
-  const out = has ? base : [{ w: width, h: height }, ...base];
-  return out;
+  const out = (has ? base : [{ w: width, h: height }, ...base]).filter(
+    (p) => Math.max(p.w, p.h) <= maxSide,
+  );
+  // A ceiling below every preset still needs one entry to render. 512 is the
+  // floor image_plan itself uses, so this only shows for an unusable model,
+  // whose selector is disabled anyway.
+  return out.length ? out : [{ w: 512, h: 512 }];
 }
 
 /** "1024 x 1024", or "1024 x 576 (wide)" for the ones with a shape. */

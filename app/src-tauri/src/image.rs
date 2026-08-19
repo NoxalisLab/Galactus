@@ -75,6 +75,26 @@ pub struct ImageModel {
     /// Filled in by `image_models`, never stored.
     #[serde(default)]
     pub installed: bool,
+    /// The verdict for THIS machine, filled by `image_models` exactly like
+    /// `installed`: computed from the RAM at answer time, never stored in the
+    /// registry, so the same registry file serves every Mac it is read on.
+    #[serde(default)]
+    pub usable: bool,
+    /// One English sentence saying why, kept for logs and as the fallback the
+    /// view shows when it cannot build a translated one.
+    #[serde(default)]
+    pub reason: String,
+    /// The largest square side this machine can decode, 0 when none can.
+    #[serde(default)]
+    pub max_side: u32,
+    /// A shorter first run for a machine near its memory, None when the
+    /// model's own default is fine.
+    #[serde(default)]
+    pub recommended_steps: Option<u32>,
+    /// Installed GB a Mac needs for this model at all, for the "needs X,
+    /// this machine has Y" sentence.
+    #[serde(default)]
+    pub need_gb: u64,
 }
 
 /// Where generated images and downloaded weights live.
@@ -261,15 +281,27 @@ pub struct GenerateRequest {
 /// Not validation for its own sake: a width of 20000 is minutes of swapping
 /// before an out-of-memory kill, and a step count of 500 is twenty minutes for
 /// an image indistinguishable from the one at 30.
-pub fn clamp_request(mut r: GenerateRequest) -> GenerateRequest {
+///
+/// `max_side` is the ceiling `image_plan` computed for this machine, applied
+/// here as well as in the view for the same reason ctx_within_model bounds
+/// the context even though the slider already does: this command is callable
+/// without the view, and a bound that lives only in the UI is not a bound.
+/// Zero means no plan was consulted (tests, callers refused upstream) and
+/// keeps the engine-wide 2048.
+pub fn clamp_request(mut r: GenerateRequest, max_side: u32) -> GenerateRequest {
     r.steps = r.steps.clamp(1, 100);
     r.cfg = if r.cfg.is_finite() { r.cfg.clamp(0.0, 30.0) } else { 7.0 };
     // Multiples of 64: the latent space is the image divided by eight, and a
     // size that does not divide cleanly comes back subtly stretched. Rounded to
     // the NEAREST multiple rather than truncated, because 700 meant "about
     // seven hundred" and 640 is further from it than 704.
-    r.width = round64(r.width);
-    r.height = round64(r.height);
+    //
+    // The plan's ceiling is floored to a multiple of 64 too, so applying it
+    // after the rounding cannot undo the rounding: every SIDE_LADDER rung
+    // already divides, and a caller-supplied oddity is made to.
+    let cap = if max_side == 0 { 2048 } else { (max_side.clamp(64, 2048) / 64) * 64 };
+    r.width = round64(r.width).min(cap);
+    r.height = round64(r.height).min(cap);
     // The engine parses this with stoll and dies on anything outside i64. A
     // negative value means "pick one", which it understands, so everything out
     // of range becomes that rather than an error nobody can read.
@@ -282,6 +314,132 @@ pub fn clamp_request(mut r: GenerateRequest) -> GenerateRequest {
 fn round64(v: u32) -> u32 {
     let v = v.clamp(64, 2048);
     (((v + 32) / 64) * 64).clamp(64, 2048)
+}
+
+// ------------------------------------------------ will it run on THIS Mac
+//
+// The text models get a per-machine verdict (plan_cache in lib.rs): weights
+// and caches against what the Mac can give, and a model that cannot fit is
+// blocked before it wastes anyone's afternoon. The image models had only the
+// static `min_ram_gb`, which answers "can it run somewhere" and says nothing
+// about what THIS machine can do with it. This is the same idea sized for
+// diffusion, where the variable cost is not a KV cache but activations that
+// grow with the pixel count: the verdict is therefore not just yes or no, it
+// is the largest square this machine can decode without swapping.
+
+const GB: u64 = 1_000_000_000;
+
+/// Bytes one generation needs on top of the weights, at a given square side.
+///
+/// Two terms, both from what the engine actually allocates:
+///
+///   * a flat gigabyte for everything that does not scale with the image:
+///     the runtime, the text encoder activations, the sampler's scratch and
+///     the latent itself, which at side/8 squared is small change;
+///   * the VAE decode, which is the peak. Its widest feature maps are 256
+///     channels at FULL resolution in f32: 256 * 1024 * 1024 * 4 bytes is
+///     1 GiB per map at a 1024 square, and a convolution keeps about three
+///     alive at once (input, output, scratch). So 3 GB at 1024, scaling
+///     with the pixel count.
+///
+/// Calibrated against the machines this app has really run on: with these
+/// numbers every shipped model reaches 1024 on the 128 GB Mac each was
+/// measured on, SD 1.5 reaches 1024 on an 8 GB Mac, and Qwen-Image's
+/// 21.4 GB of weights alone overrun a 16 GB Mac. All three match what those
+/// machines actually do.
+fn activation_bytes(side: u32) -> u64 {
+    GB + 3 * GB * (side as u64 * side as u64) / (1024 * 1024)
+}
+
+/// The square sides a plan can answer with, largest first.
+///
+/// The ladder stops where round64 stops, and every rung is a multiple of 64,
+/// so a request clamped to a rung never comes back subtly stretched.
+const SIDE_LADDER: [u32; 5] = [2048, 1536, 1024, 768, 512];
+
+/// What this machine can do with one image model. See `image_plan`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImagePlan {
+    /// This model can decode at least a 512 square here without swapping.
+    pub usable: bool,
+    /// One short English sentence saying why, for a log or a refusal.
+    pub reason: String,
+    /// The largest square side that fits, 0 when nothing does.
+    pub max_side: u32,
+    /// A shorter first run when the machine sits close to its memory: a
+    /// tight fit means macOS is already compressing pages around the engine,
+    /// every step costs more than it would on a roomy Mac, and the first
+    /// image a user waits ten minutes for reads as a hang. None when the
+    /// model's own default is fine.
+    pub recommended_steps: Option<u32>,
+    /// Installed GB a Mac needs to run this model at all.
+    pub need_gb: u64,
+}
+
+/// The per-machine verdict, pure so a test can hold any Mac in one integer.
+///
+/// The memory model is deliberately simple: a diffusion model must hold its
+/// weights plus `activation_bytes` of the side it decodes, inside the RAM
+/// left after the same `system_reserve_bytes` the text engine honours,
+/// because macOS does not care which engine is asking. `installed` is
+/// `ram_gb * 1e9`, the text planner's own convention: it understates a Mac
+/// sold in GiB by about 7 percent, and a bound that errs toward leaving
+/// memory free is the one to keep.
+///
+/// The registry `min_ram_gb` stays a floor rather than being replaced: that
+/// number can carry knowledge this arithmetic does not have, like an engine
+/// that allocates worse for one architecture than the model's size says.
+pub fn image_plan(bytes: u64, min_ram_gb: u64, ram_gb: u64, default_steps: u32) -> ImagePlan {
+    let installed = ram_gb * GB;
+    let budget = installed.saturating_sub(crate::system_reserve_bytes(installed));
+    let floor = bytes.saturating_add(activation_bytes(SIDE_LADDER[SIDE_LADDER.len() - 1]));
+    // What a Mac must have INSTALLED for the smallest side: the peak, plus
+    // the 2 GB reserve a Mac of that size would keep, rounded up. The
+    // registry minimum stays a floor under it.
+    let need_gb = min_ram_gb.max((floor + 2 * GB).div_ceil(GB));
+    if ram_gb < min_ram_gb || floor > budget {
+        return ImagePlan {
+            usable: false,
+            reason: format!("needs about {need_gb} GB of memory and this Mac has {ram_gb} GB"),
+            max_side: 0,
+            recommended_steps: None,
+            need_gb,
+        };
+    }
+    let max_side = SIDE_LADDER
+        .iter()
+        .copied()
+        .find(|side| bytes.saturating_add(activation_bytes(*side)) <= budget)
+        // Unreachable: the floor gate above already proved the 512 rung fits.
+        .unwrap_or(SIDE_LADDER[SIDE_LADDER.len() - 1]);
+    // Tight means the room left after the weights would not hold a second
+    // decode: the engine will run, but at the edge, where every extra step
+    // is paid in compressed pages. Twenty steps is where the shipped
+    // defaults cluster and where quality stops moving for most samplers.
+    let recommended_steps = if budget - bytes < 2 * activation_bytes(max_side) {
+        Some(default_steps.clamp(1, 100).min(20))
+    } else {
+        None
+    };
+    ImagePlan {
+        usable: true,
+        reason: format!("runs here up to {max_side} x {max_side}"),
+        max_side,
+        recommended_steps,
+        need_gb,
+    }
+}
+
+/// The step count a model opens with, from its registry defaults.
+fn default_steps(m: &ImageModel) -> u32 {
+    m.defaults["steps"].as_u64().unwrap_or(20) as u32
+}
+
+/// Installed GiB, read the way every `min_ram_gb` gate in lib.rs reads it:
+/// hw.memsize is a power of two, so shift rather than divide by 1e9, which
+/// would report 137 on a 128 GB Mac and defeat every gate written in GB.
+fn machine_ram_gb() -> u64 {
+    crate::hardware::static_profile().ram_bytes >> 30
 }
 
 /// The progress line sd-cli prints, as a fraction, or None for anything else.
@@ -401,8 +559,18 @@ fn generate_cancel_flag() -> &'static AtomicBool {
 pub async fn image_models() -> Result<Vec<ImageModel>, String> {
     let dir = model_root();
     let mut list = load_registry(&crate::galactus_root()?)?;
+    let ram_gb = machine_ram_gb();
     for m in list.iter_mut() {
         m.installed = model_installed(&dir, m);
+        // The per-machine verdict rides on the same answer as `installed`,
+        // for the same reason: the view needs one call to paint a card, and
+        // both facts are properties of this Mac rather than of the registry.
+        let plan = image_plan(m.bytes, m.min_ram_gb, ram_gb, default_steps(m));
+        m.usable = plan.usable;
+        m.reason = plan.reason;
+        m.max_side = plan.max_side;
+        m.recommended_steps = plan.recommended_steps;
+        m.need_gb = plan.need_gb;
     }
     Ok(list)
 }
@@ -546,13 +714,21 @@ pub async fn image_generate(
     app: tauri::AppHandle,
     req: GenerateRequest,
 ) -> Result<String, String> {
-    let req = clamp_request(req);
     if req.prompt.trim().is_empty() {
         return Err("write what you want to see first".into());
     }
     let root = crate::galactus_root()?;
     let list = load_registry(&root)?;
     let m = list.into_iter().find(|m| m.id == req.model).ok_or("no such image model")?;
+    // The same gate the text models pass through, here rather than only in
+    // the view: the agent side of the app reaches this command directly and
+    // never sees a disabled button, so a model too big for this Mac has to be
+    // refused at the door instead of being discovered as a swap spiral.
+    let plan = image_plan(m.bytes, m.min_ram_gb, machine_ram_gb(), default_steps(&m));
+    if !plan.usable {
+        return Err(format!("{} {}", m.name, plan.reason));
+    }
+    let req = clamp_request(req, plan.max_side);
     let dir = model_root();
     if !model_installed(&dir, &m) {
         return Err(format!("{} is not installed yet", m.name));
@@ -928,6 +1104,11 @@ mod tests {
             note: String::new(),
             installed: false,
             vae_on_cpu: false,
+            usable: false,
+            reason: String::new(),
+            max_side: 0,
+            recommended_steps: None,
+            need_gb: 0,
         }
     }
 
@@ -1008,11 +1189,110 @@ mod tests {
         r.height = 700;
         r.steps = 5000;
         r.cfg = f32::INFINITY;
-        let c = clamp_request(r);
+        let c = clamp_request(r, 0);
         assert_eq!(c.width, 2048);
         assert_eq!(c.height, 704);
         assert_eq!(c.steps, 100);
         assert_eq!(c.cfg, 7.0, "a non-finite guidance falls back, it does not propagate");
+    }
+
+    #[test]
+    fn the_plans_ceiling_binds_the_request_even_past_the_view() {
+        // Defense in depth, like ctx_within_model: the view already offers
+        // nothing above max_side, but this command is callable without it.
+        let mut r = req("x");
+        r.width = 2048;
+        r.height = 1536;
+        let c = clamp_request(r, 1024);
+        assert_eq!(c.width, 1024);
+        assert_eq!(c.height, 1024);
+        // A ceiling that is not a multiple of 64 is floored to one, so the
+        // latent still divides cleanly.
+        let mut odd = req("x");
+        odd.width = 2048;
+        let c = clamp_request(odd, 1000);
+        assert_eq!(c.width, 960);
+        // Zero means no plan was consulted and keeps the engine-wide bound.
+        let mut free = req("x");
+        free.width = 2048;
+        assert_eq!(clamp_request(free, 0).width, 2048);
+    }
+
+    #[test]
+    fn a_model_too_big_for_the_machine_is_blocked_with_a_reason() {
+        use super::image_plan;
+        // Qwen-Image's real figures against a 16 GB Mac: 21.4 GB of weights
+        // cannot fit under any budget that machine has.
+        let p = image_plan(21_418_077_382, 32, 16, 20);
+        assert!(!p.usable, "21 GB of weights on a 16 GB Mac must be refused");
+        assert_eq!(p.max_side, 0);
+        assert!(p.need_gb >= 32, "the registry minimum stays a floor: {}", p.need_gb);
+        assert!(p.reason.contains("16"), "the reason names this machine: {}", p.reason);
+        assert!(
+            p.reason.contains(&p.need_gb.to_string()),
+            "and what it would take: {}",
+            p.reason
+        );
+    }
+
+    #[test]
+    fn the_same_models_run_at_a_full_square_on_a_big_mac() {
+        use super::image_plan;
+        // Measured, not hoped: every shipped model has produced a 1024 image
+        // on a 128 GB Mac, so the plan must allow at least that there. The
+        // bytes are the real registry figures.
+        for bytes in [7_270_000_000u64, 20_537_837_720, 21_418_077_382, 23_171_010_812] {
+            let p = image_plan(bytes, 32, 128, 20);
+            assert!(p.usable);
+            assert!(p.max_side >= 1024, "{bytes} bytes must reach 1024 on 128 GB, got {}", p.max_side);
+        }
+        // And the small model runs on a small Mac: SD 1.5 on 8 GB, at 1024.
+        let sd15 = image_plan(1_770_000_000, 8, 8, 20);
+        assert!(sd15.usable, "SD 1.5 fits on an 8 GB Mac");
+        assert!(sd15.max_side >= 1024, "got {}", sd15.max_side);
+    }
+
+    #[test]
+    fn max_side_never_grows_when_ram_shrinks() {
+        use super::image_plan;
+        // SDXL's real size across the machines that exist. The ceiling may
+        // only fall as the memory does, and it must actually fall: a constant
+        // would mean the plan is not reading the machine at all.
+        let sides: Vec<u32> = [128u64, 64, 32, 24, 16]
+            .iter()
+            .map(|ram| image_plan(7_270_000_000, 16, *ram, 20).max_side)
+            .collect();
+        for w in sides.windows(2) {
+            assert!(w[0] >= w[1], "the ceiling rose as RAM fell: {sides:?}");
+        }
+        assert!(sides[0] > sides[sides.len() - 1], "the ceiling never moved: {sides:?}");
+    }
+
+    #[test]
+    fn the_system_reserve_is_never_given_to_the_model() {
+        use super::image_plan;
+        // 13 GB of weights on a 16 GB Mac: the bytes fit in RAM, but only by
+        // eating the 2 GB macOS keeps for itself, so the plan refuses.
+        let p = image_plan(13_000_000_000, 8, 16, 20);
+        assert!(!p.usable, "weights that fit only inside the reserve are refused");
+        // 12 GB leaves room for the reserve and the smallest decode, and for
+        // nothing more: the ceiling lands on the bottom rung.
+        let q = image_plan(12_000_000_000, 8, 16, 20);
+        assert!(q.usable);
+        assert_eq!(q.max_side, 512, "one rung is all the room there is");
+    }
+
+    #[test]
+    fn a_tight_machine_gets_a_shorter_first_run() {
+        use super::image_plan;
+        // SD 3.5 Large on the smallest Mac its registry minimum allows: it
+        // runs, but at the edge, so the plan trims its 28 step default.
+        let tight = image_plan(20_537_837_720, 32, 32, 28);
+        assert!(tight.usable);
+        assert_eq!(tight.recommended_steps, Some(20));
+        // The same model with room to spare keeps its own default.
+        let roomy = image_plan(20_537_837_720, 32, 128, 28);
+        assert_eq!(roomy.recommended_steps, None);
     }
 
     #[test]
