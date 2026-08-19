@@ -180,7 +180,12 @@ fn serve(root: &Path, model_id: &str, args: &[String]) -> Result<(), String> {
         .arg("--batch-size").arg("512")
         .arg("--ubatch-size").arg(ubatch.to_string())
         .arg("--parallel").arg(slots.to_string())
-        .arg("--jinja")
+        // Les memes que l'app, depuis la meme fonction. `serve` passait
+        // `--jinja` seul : sans `--reasoning-format deepseek` le moteur laisse
+        // la reflexion dans `message.content`, donc un client branche sur le
+        // serveur du CLI recevait des balises `<think>` melees a la reponse
+        // alors que l'app, elle, les separait.
+        .args(crate::chat_parsing_args())
         .status()
         .map_err(|e| e.to_string())?;
     if !status.success() {

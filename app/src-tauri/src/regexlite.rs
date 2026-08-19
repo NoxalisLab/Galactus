@@ -606,10 +606,26 @@ impl Regex {
     /// Leftmost, longest: at a given start the longest match wins, and the scan
     /// resumes after it. An empty match advances by one character, so a pattern
     /// that can match nothing (`x*`) cannot spin.
+    /// Every match on one line, run to completion. The tests use it; the search
+    /// itself goes through find_line_until so it can be cancelled.
+    #[cfg(test)]
     pub fn find_line(&self, line: &str) -> Vec<(usize, usize)> {
+        self.find_line_until(line, &mut || false)
+    }
+
+    /// The same, abandoning the line when `stop` says so.
+    ///
+    /// The caller checked its stop flag between LINES, which is no help at all
+    /// on the file that needs it: a minified bundle is one line of a million
+    /// characters, and the whole cost is inside this one call. Cancel did
+    /// nothing and a core stayed busy until the scan finished on its own.
+    ///
+    /// Returns what it found so far rather than an error. A partial answer for
+    /// a search the user has already cancelled is never read.
+    pub fn find_line_until(&self, line: &str, stop: &mut dyn FnMut() -> bool) -> Vec<(usize, usize)> {
         let chars: Vec<(usize, char)> = line.char_indices().collect();
         // Longest match starting at each character index, in char units.
-        let best = self.scan(&chars);
+        let Some(best) = self.scan_until(&chars, stop) else { return Vec::new() };
         let mut out = Vec::new();
     let mut i = 0usize;
     while i <= chars.len() {
@@ -638,7 +654,12 @@ impl Regex {
     /// This is what makes the engine safe: a thread is identified by its
     /// instruction, so there are never more live threads than the pattern has
     /// instructions, whatever the input is.
-    fn scan(&self, chars: &[(usize, char)]) -> Vec<Option<usize>> {
+    /// None when `stop` asked it to give up part way through.
+    fn scan_until(
+        &self,
+        chars: &[(usize, char)],
+        stop: &mut dyn FnMut() -> bool,
+    ) -> Option<Vec<Option<usize>>> {
         let n = chars.len();
         let mut best: Vec<Option<usize>> = vec![None; n + 1];
         // (pc -> earliest start) for the current position.
@@ -648,6 +669,12 @@ impl Regex {
         let mut seen_next = vec![usize::MAX; self.prog.len()];
 
         for pos in 0..=n {
+            // Every 4096 positions, the same cadence the file loop uses. The
+            // check is a flag load, so it costs nothing next to the work of one
+            // position, and it is the only place a long line can be given up.
+            if pos & 0xfff == 0 && pos > 0 && stop() {
+                return None;
+            }
             // Every position is also a possible start.
             self.add(&mut current, &mut seen, 0, pos, pos, n, &mut best);
             if pos == n {
@@ -668,7 +695,7 @@ impl Regex {
             std::mem::swap(&mut current, &mut next);
             std::mem::swap(&mut seen, &mut seen_next);
         }
-        best
+        Some(best)
     }
 
     /// Follow every zero-width instruction from `pc`, recording matches.
@@ -805,6 +832,38 @@ mod tests {
         assert_eq!(Regex::new("^$", true).unwrap().find_line(""), vec![(0, 0)]);
         assert_eq!(Regex::new(r"^\s*$", true).unwrap().find_line("   ").len(), 1);
         assert!(Regex::new("^$", true).unwrap().find_line("text").is_empty());
+    }
+
+    #[test]
+    fn one_enormous_line_can_be_given_up_part_way_through() {
+        // The case the per-line cancel check could never reach: a minified
+        // bundle is ONE line, so the caller's check between lines does not come
+        // round again until the whole thing is scanned. Cancel did nothing and
+        // a core stayed busy.
+        let line = "ab".repeat(400_000);
+        let re = Regex::new(r"a\w*b", true).unwrap();
+
+        let mut calls = 0usize;
+        let started = std::time::Instant::now();
+        let out = re.find_line_until(&line, &mut || {
+            calls += 1;
+            // Give up at the first check that is offered.
+            true
+        });
+        let gave_up = started.elapsed();
+        assert!(calls > 0, "the scan has to ask, or it can never be stopped");
+        assert!(out.is_empty(), "a cancelled scan returns nothing to report");
+
+        // And it really did stop early: running the same line to completion has
+        // to take materially longer than giving up did.
+        let started = std::time::Instant::now();
+        let full = re.find_line(&line);
+        let whole = started.elapsed();
+        assert!(!full.is_empty(), "the line does match, so the comparison is fair");
+        assert!(
+            gave_up * 4 < whole,
+            "giving up took {gave_up:?} against {whole:?} for the whole line"
+        );
     }
 
     #[test]

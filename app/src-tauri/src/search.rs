@@ -794,7 +794,14 @@ impl Matcher {
                     }
                     let bare = line.strip_suffix('\n').unwrap_or(line);
                     let bare = bare.strip_suffix('\r').unwrap_or(bare);
-                    for (s, e) in re.find_line(bare) {
+                    // The flag goes INTO the scan. Checking it per line is no
+                    // help on the file that needs it: a minified bundle is one
+                    // line of a million characters, so the per-line check never
+                    // came round again and Cancel did nothing until the whole
+                    // line was done.
+                    for (s, e) in re.find_line_until(bare, &mut || {
+                        stop.map(|s| s.load(Ordering::Relaxed)).unwrap_or(false)
+                    }) {
                         out.push((base + s, base + e));
                     }
                     base += line.len();

@@ -1881,7 +1881,7 @@ fn kv_bytes_for(ctx_per_slot: u32, slots: u32) -> u64 {
 /// default is a thing two parts of llama.cpp disagree about, and a vendored
 /// dependency is bumped by whoever is bumping it. Stating the value costs two
 /// arguments and removes the app's most visible behaviour from that argument.
-fn chat_parsing_args() -> [&'static str; 3] {
+pub(crate) fn chat_parsing_args() -> [&'static str; 3] {
     ["--jinja", "--reasoning-format", "deepseek"]
 }
 /// Hard ceiling on slots: past this the KV cache stops being free and a Mac
@@ -4345,6 +4345,27 @@ mod chat_parsing_tests {
         // --jinja the server never runs the parser that fills reasoning_content.
         assert!(chat_parsing_args().contains(&"--jinja"));
     }
+
+    #[test]
+    fn the_cli_server_is_started_with_the_same_parsing_flags_as_the_app() {
+        // `galactus serve` passed --jinja alone. Without --reasoning-format
+        // deepseek the engine leaves the thinking inside message.content, so a
+        // client pointed at the CLI's server got <think> tags mixed into the
+        // answer while the app, on the same model, separated them.
+        //
+        // Read from the source rather than asserted about a string, because
+        // what went wrong was a second copy of the list drifting from the
+        // first, and a test with its own third copy would not have caught it.
+        let cli = include_str!("cli.rs");
+        assert!(
+            cli.contains("crate::chat_parsing_args()"),
+            "serve must take its parsing flags from the one function that defines them"
+        );
+        assert!(
+            !cli.contains(".arg(\"--jinja\")"),
+            "and must not carry its own copy of any of them"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -5095,6 +5116,30 @@ async fn install_model(app: AppHandle, model_id: String, volumes: Option<Value>)
     Ok(())
 }
 
+/// Removes a half-written pack when the install does not reach the end.
+///
+/// A Drop guard rather than cleanup at each exit: the pipeline returns from
+/// eight places and a ninth would be added without this. `keep` is set once the
+/// pack writer has succeeded, which is the only moment the bytes on disk are
+/// worth anything.
+struct PackCleanup {
+    paths: Vec<PathBuf>,
+    keep: bool,
+}
+
+impl Drop for PackCleanup {
+    fn drop(&mut self) {
+        if self.keep {
+            return;
+        }
+        for p in &self.paths {
+            // The pack FILE only. Never its folder: with custom placement that
+            // folder is somewhere the user picked and may hold other packs.
+            let _ = std::fs::remove_file(p);
+        }
+    }
+}
+
 // Eight arguments, one over clippy's threshold, and allowed rather than
 // bundled into a struct. The eight are genuinely independent: five say what to
 // install and three say how to run it, and the only grouping that would satisfy
@@ -5343,6 +5388,26 @@ fn install_pipeline_with(
         std::fs::create_dir_all(ext.parent().unwrap()).map_err(|e| e.to_string())?;
     }
 
+    // Anything the writer leaves behind if this does not finish.
+    //
+    // A pack is tens of gigabytes and, with custom placement, it is written to
+    // a volume the user chose. Cancelling during the write returned an error
+    // and left the partial file exactly where a finished one would be, with
+    // nothing pointing at it: the Models view shows the model as not installed,
+    // so the only way to find those bytes again was to remember where they were
+    // put. Removed on ANY failure, not only on cancel, since a pack writer that
+    // died half way leaves the same thing.
+    let partial = PackCleanup {
+        paths: {
+            let mut v = vec![pack_internal.clone()];
+            if let Some(ext) = &pack_external {
+                v.push(ext.clone());
+            }
+            v
+        },
+        keep: false,
+    };
+
     progress("pack", 68.0, "building pack");
     let mut cmd = python3_cmd();
     cmd.current_dir(root)
@@ -5420,6 +5485,12 @@ fn install_pipeline_with(
             format!("pack writer failed: {err_tail}")
         });
     }
+
+    // The writer succeeded, so what is on disk is a whole pack: the cleanup
+    // stands down. Anything after this point failing is a settings write, which
+    // leaves a usable pack behind rather than a partial one.
+    let mut partial = partial;
+    partial.keep = true;
 
     // 5. Custom placement: remember the pack paths so resolve_packs (serve,
     //    registry, CLI) finds them. The default location needs no settings.
@@ -8961,5 +9032,38 @@ mod ctx_window_tests {
         assert_eq!(ctx_within_model(4096, 131_072), CTX_PER_SLOT, "the floor holds");
         assert_eq!(ctx_within_model(32_768, 131_072), 32_768, "a wish inside the limit is met");
         assert_eq!(ctx_within_model(262_144, 131_072), 131_072, "the model's limit is the ceiling");
+    }
+}
+
+#[cfg(test)]
+mod pack_cleanup_tests {
+    use super::PackCleanup;
+
+    #[test]
+    fn a_pack_that_never_finished_does_not_stay_on_the_disk() {
+        // Cancelling during the pack write returned an error and left tens of
+        // gigabytes exactly where a finished pack would be, with nothing
+        // pointing at it: the Models view reports the model as not installed,
+        // so the only way to find those bytes again was to remember where the
+        // custom placement had put them.
+        let dir = std::env::temp_dir().join(format!("galactus-packclean-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.h4pack");
+        let b = dir.join("b.h4pack");
+        std::fs::write(&a, b"half a pack").unwrap();
+        std::fs::write(&b, b"half a pack").unwrap();
+
+        drop(PackCleanup { paths: vec![a.clone(), b.clone()], keep: false });
+        assert!(!a.exists(), "the partial internal pack goes");
+        assert!(!b.exists(), "and so does the external one");
+        assert!(dir.exists(), "the folder stays: with custom placement it is the user's");
+
+        // A finished pack is kept, which is what `keep` is set for.
+        std::fs::write(&a, b"a whole pack").unwrap();
+        drop(PackCleanup { paths: vec![a.clone()], keep: true });
+        assert!(a.exists(), "a pack the writer finished is never removed");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
