@@ -744,6 +744,15 @@ const dict: Record<string, { en: string; fr: string }> = {
     fr: "Téléchargez un modèle ci-dessus pour commencer.",
   },
   "img.gallery": { en: "Made here", fr: "Fabriquées ici" },
+  "img.open": { en: "Open larger", fr: "Ouvrir en grand" },
+  "img.lbClose": { en: "Close", fr: "Fermer" },
+  "img.lbPrev": { en: "Previous", fr: "Précédente" },
+  "img.lbNext": { en: "Next", fr: "Suivante" },
+  "img.lbCount": { en: "%i of %n", fr: "%i sur %n" },
+  "img.lbHint": {
+    en: "Arrows to move, escape to close.",
+    fr: "Flèches pour naviguer, échap pour fermer.",
+  },
   "img.galleryHint": {
     en: "Alt-click a picture to delete it.",
     fr: "Alt-clic sur une image pour la supprimer.",

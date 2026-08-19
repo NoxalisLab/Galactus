@@ -195,7 +195,7 @@ function bodyHtml(): string {
   <div class="sect"><b>${esc(t("img.gallery"))}</b><span>${esc(t("img.galleryHint"))}</span></div>
   <div class="imggrid" id="imggrid">${
     gallery.length
-      ? gallery.slice(0, GALLERY_PAGE).map((p) => `<figure class="imgcell" data-img="${esc(p)}"><div class="ph"></div></figure>`).join("")
+      ? gallery.slice(0, GALLERY_PAGE).map((p) => `<figure class="imgcell" data-img="${esc(p)}" title="${esc(t("img.open"))}" role="button" tabindex="0"><div class="ph"></div></figure>`).join("")
       : `<div class="cempty">${esc(t("img.galleryEmpty"))}</div>`
   }</div>`;
 }
@@ -255,9 +255,143 @@ function wire(wrap: HTMLElement): void {
       // a delete control under the pointer in a grid is a picture lost to a
       // mis-click.
       void api.imageForget(cell.dataset.img!).then(() => refresh(wrap)).catch(() => undefined);
+      return;
+    }
+    if (cell) {
+      // A plain click opens it. Checked AFTER the alt-click branch, so the
+      // modifier keeps meaning delete and never both.
+      openLightbox(gallery.indexOf(cell.dataset.img!));
     }
   });
+  // The tiles say role="button" and carry a tabindex, so Return and Space have
+  // to work: an element that announces itself as a button and answers no key is
+  // worse than a plain image, because a screen reader will offer it.
+  box.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    const cell = (e.target as HTMLElement).closest("[data-img]") as HTMLElement | null;
+    if (!cell) return;
+    e.preventDefault();
+    openLightbox(gallery.indexOf(cell.dataset.img!));
+  });
   void decodeVisible(wrap);
+}
+
+/**
+ * One picture, filling the window.
+ *
+ * WHY. A generated image is 512 or 1024 square and the gallery shows it in a
+ * grid tile a few hundred pixels wide, which is not enough to judge the thing
+ * you just waited thirty seconds for. Clicking did nothing at all: the only
+ * gesture the grid had was alt-click, and that DELETES. So the obvious click
+ * was the one action with no result, and the destructive one was the only one
+ * bound.
+ *
+ * Keyboard first, since this is a viewer and the hands are already there:
+ * arrows move through the gallery, escape closes, and focus is trapped and
+ * returned like every other dialog in the app.
+ */
+function openLightbox(startAt: number): void {
+  if (gallery.length === 0) return;
+  let at = Math.max(0, Math.min(startAt, gallery.length - 1));
+  const previous = document.activeElement as HTMLElement | null;
+
+  const back = el(`<div class="lightbox" role="dialog" aria-modal="true" aria-label="${esc(t("img.open"))}">
+    <div class="lb-bar">
+      <span class="lb-count"></span>
+      <span class="lb-hint">${esc(t("img.lbHint"))}</span>
+      <button class="lb-btn" data-lb="close" title="${esc(t("img.lbClose"))}" aria-label="${esc(t("img.lbClose"))}">✕</button>
+    </div>
+    <button class="lb-nav prev" data-lb="prev" aria-label="${esc(t("img.lbPrev"))}">‹</button>
+    <figure class="lb-stage"><img alt=""/></figure>
+    <button class="lb-nav next" data-lb="next" aria-label="${esc(t("img.lbNext"))}">›</button>
+  </div>`);
+
+  const img = back.querySelector("img")!;
+  const count = back.querySelector<HTMLElement>(".lb-count")!;
+  const prev = back.querySelector<HTMLElement>('[data-lb="prev"]')!;
+  const next = back.querySelector<HTMLElement>('[data-lb="next"]')!;
+
+  // A token per show: the decode is async, so arrowing quickly through the
+  // gallery can land an older answer after a newer one and show the wrong
+  // picture. Only the most recent request is allowed to paint.
+  let token = 0;
+  const show = async (): Promise<void> => {
+    const mine = ++token;
+    count.textContent = t("img.lbCount")
+      .replace("%i", String(at + 1))
+      .replace("%n", String(gallery.length));
+    prev.toggleAttribute("disabled", at === 0);
+    next.toggleAttribute("disabled", at >= gallery.length - 1);
+    try {
+      const url = await api.imageRead(gallery[at]);
+      if (mine !== token) return;
+      img.src = url;
+    } catch {
+      // Removed under us. Close rather than show a broken frame.
+      if (mine === token) close();
+    }
+  };
+
+  const close = (): void => {
+    document.removeEventListener("keydown", onKey, true);
+    back.remove();
+    previous?.focus?.();
+  };
+
+  const move = (delta: number): void => {
+    const to = at + delta;
+    if (to < 0 || to >= gallery.length) return;
+    at = to;
+    void show();
+  };
+
+  function onKey(e: KeyboardEvent): void {
+    switch (e.key) {
+      case "Escape":
+        e.preventDefault();
+        e.stopPropagation();
+        close();
+        return;
+      case "ArrowLeft":
+        e.preventDefault();
+        move(-1);
+        return;
+      case "ArrowRight":
+        e.preventDefault();
+        move(1);
+        return;
+      case "Tab": {
+        // Trapped: the grid behind is still there and still reachable.
+        const items = [...back.querySelectorAll<HTMLElement>("button:not([disabled])")];
+        if (items.length === 0) return;
+        const first = items[0];
+        const last = items[items.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+        return;
+      }
+      default:
+    }
+  }
+
+  back.addEventListener("click", (e) => {
+    const btn = (e.target as HTMLElement).closest("[data-lb]") as HTMLElement | null;
+    if (btn?.dataset.lb === "close") return close();
+    if (btn?.dataset.lb === "prev") return move(-1);
+    if (btn?.dataset.lb === "next") return move(1);
+    // The backdrop, meaning anywhere that is not the picture or a control.
+    if (e.target === back || (e.target as HTMLElement).classList.contains("lb-stage")) close();
+  });
+
+  document.addEventListener("keydown", onKey, true);
+  document.body.appendChild(back);
+  back.querySelector<HTMLElement>('[data-lb="close"]')!.focus();
+  void show();
 }
 
 /** Decode the visible tiles. One command per image, newest first. */
