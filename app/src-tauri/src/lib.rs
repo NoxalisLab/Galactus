@@ -1830,7 +1830,20 @@ fn ctx_per_slot_for(entry: &Value) -> u32 {
         .as_u64()
         .and_then(|v| u32::try_from(v).ok())
         .unwrap_or(CTX_CEILING_UNKNOWN);
-    asked.clamp(CTX_PER_SLOT, model_max.max(CTX_PER_SLOT))
+    ctx_within_model(asked, model_max)
+}
+
+/// The decision on its own, without the settings read, so a test can reach it.
+///
+/// The model's own limit wins, including when it is BELOW the default. The
+/// previous form raised the ceiling to the default instead of lowering the
+/// floor (`model_max.max(CTX_PER_SLOT)`), so OLMoE, trained on 4096, was served
+/// 8192: llama.cpp extends the rope, the answers quietly get worse, and that is
+/// the exact failure ctx_per_slot_for's own comment says it exists to prevent.
+/// The floor only applies where there is room for it.
+fn ctx_within_model(asked: u32, model_max: u32) -> u32 {
+    let floor = CTX_PER_SLOT.min(model_max);
+    asked.clamp(floor, model_max)
 }
 
 /// What one decode slot's KV cache costs at a given window.
@@ -2239,7 +2252,7 @@ mod context_window_tests {
 
     #[test]
     fn the_planner_actually_charges_for_the_window() {
-        use super::{plan_cache, MachineLimits, CTX_PER_SLOT};
+        use super::{plan_cache, MachineLimits};
         use serde_json::json;
         // THE TEST THAT WAS MISSING. The three above exercise kv_bytes_for on
         // its own, and they all passed while the planner never called it: the
@@ -2370,7 +2383,7 @@ mod dense_model_tests {
 
     #[test]
     fn a_dense_footprint_counts_more_than_the_file_size() {
-        use super::{plan_cache, MachineLimits, DENSE_RUNTIME_OVERHEAD, CTX_PER_SLOT};
+        use super::{plan_cache, MachineLimits, DENSE_RUNTIME_OVERHEAD};
         use serde_json::json;
         // The weights are not the footprint. Comparing the file size alone
         // against the budget let a 17 GB model onto an 18 GB budget, where the
@@ -8904,5 +8917,33 @@ mod memory_lock_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod ctx_window_tests {
+    use super::{ctx_within_model, CTX_PER_SLOT};
+
+    #[test]
+    fn a_model_trained_on_less_than_the_default_is_not_stretched_to_it() {
+        // OLMoE states 4096. The old form was
+        // `asked.clamp(CTX_PER_SLOT, model_max.max(CTX_PER_SLOT))`, which
+        // raised the CEILING to 8192 instead of lowering the floor, so every
+        // window handed to it was twice what it was trained on. llama.cpp does
+        // not refuse that; it extends the rope and the answers get worse
+        // without saying so.
+        assert_eq!(ctx_within_model(8192, 4096), 4096);
+        assert_eq!(ctx_within_model(131_072, 4096), 4096, "asking for more changes nothing");
+        // The floor collapses onto the ceiling rather than disappearing: the
+        // settings field offers 8K upwards, so anything below it is not a wish
+        // the user expressed, and the model gets all it can hold.
+        assert_eq!(ctx_within_model(2048, 4096), 4096);
+    }
+
+    #[test]
+    fn the_default_still_applies_when_the_model_has_room_for_it() {
+        assert_eq!(ctx_within_model(4096, 131_072), CTX_PER_SLOT, "the floor holds");
+        assert_eq!(ctx_within_model(32_768, 131_072), 32_768, "a wish inside the limit is met");
+        assert_eq!(ctx_within_model(262_144, 131_072), 131_072, "the model's limit is the ceiling");
     }
 }

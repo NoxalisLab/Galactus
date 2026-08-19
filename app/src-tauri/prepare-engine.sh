@@ -189,6 +189,18 @@ if [ -x "$SD_SRC" ]; then
   codesign -f -s - "$SD_DEST/sd-cli" >/dev/null 2>&1 || true
   echo "Moteur image embarque ($(du -sh "$SD_DEST" | cut -f1))"
 elif [ "${GALACTUS_ALLOW_NO_IMAGE_ENGINE:-0}" = "1" ]; then
+  # image-engine est liste dans bundle.resources de tauri.conf.json, et Tauri
+  # echoue sur une ressource absente. L'opt-out se terminait donc par un echec
+  # de build, ce qui en faisait un drapeau qui ne servait a rien. Le dossier
+  # existe, vide sauf sa raison d'etre, et l'app detecte l'absence de sd-cli.
+  mkdir -p "$SD_DEST"
+  cat > "$SD_DEST/README" <<'EOT'
+Ce build a ete fait avec GALACTUS_ALLOW_NO_IMAGE_ENGINE=1.
+
+sd-cli n'est pas embarque : la vue Images le signale et refuse de generer,
+plutot que d'echouer au moment ou l'utilisateur clique. Ce dossier existe
+parce que tauri.conf.json le liste dans bundle.resources.
+EOT
   echo "AVERTISSEMENT: sd-cli absent, generation d'images indisponible (opt-out explicite)"
 else
   echo "ECHEC: sd-cli absent, la generation d'images serait livree morte." >&2
