@@ -33,7 +33,7 @@
     "test:learned": "tsc -p tools/learned/tsconfig.json && node --test \"tools/learned/out/**/*.test.js\"",
     "test:schedule": "tsc -p tools/schedule/tsconfig.json && node --test \"tools/schedule/out/**/*.test.js\"",
     "test:update": "tsc -p tools/update/tsconfig.json && node --test \"tools/update/out/**/*.test.js\"",
-    "test:dom": "tsc -p tools/dom/tsconfig.json && node --import ./tools/dom/loader.mjs --test \"tools/dom/out/tools/dom/runsview.test.js\" \"tools/dom/out/tools/dom/learnedview.test.js\" \"tools/dom/out/tools/dom/reasoning.test.js\" \"tools/dom/out/tools/dom/installprogress.test.js\" && node tools/dom/boot.mjs",
+    "test:dom": "tsc -p tools/dom/tsconfig.json && node --import ./tools/dom/loader.mjs --test \"tools/dom/out/tools/dom/runsview.test.js\" \"tools/dom/out/tools/dom/learnedview.test.js\" \"tools/dom/out/tools/dom/reasoning.test.js\" \"tools/dom/out/tools/dom/installprogress.test.js\" \"tools/dom/out/tools/dom/confirm.test.js\" && node tools/dom/boot.mjs",
     "test:mutate": "npm run test:mutate:dom && npm run test:mutate:pure && npm run test:mutate:rust",
     "test:mutate:dom": "tsc -p tools/dom/tsconfig.json && node tools/dom/mutate.mjs && node tools/dom/mutate-boot.mjs",
     "test:mutate:pure": "node tools/mutate-pure.mjs",

@@ -1559,6 +1559,22 @@ const dict: Record<string, { en: string; fr: string }> = {
   "learned.reject": { en: "Reject", fr: "Rejeter" },
   "learned.delete": { en: "Delete", fr: "Supprimer" },
   "learned.deleteAll": { en: "Delete everything learned", fr: "Tout supprimer" },
+  "confirm.learnedTitle": { en: "Delete everything learned?", fr: "Tout supprimer de ce qui a été appris ?" },
+  "confirm.learnedBody": {
+    en: "Every preference the app picked up about how you work goes, and it cannot be brought back. What it learns next starts from nothing.",
+    fr: "Toutes les préférences que l'app a retenues sur ta façon de travailler disparaissent, sans retour possible. Ce qu'elle apprendra ensuite repart de zéro.",
+  },
+  "confirm.runTitle": { en: "Delete this run?", fr: "Supprimer ce run ?" },
+  "confirm.runBody": {
+    en: "The run and its full transcript go from the disk. Nothing else in the app keeps a copy.",
+    fr: "Le run et sa transcription complète quittent le disque. Rien d'autre dans l'app n'en garde de copie.",
+  },
+  "confirm.jobTitle": { en: "Delete this scheduled job?", fr: "Supprimer cette tâche planifiée ?" },
+  "confirm.jobBody": {
+    en: "It stops running and its definition goes. Runs it already produced are kept.",
+    fr: "Elle cesse de s'exécuter et sa définition disparaît. Les runs déjà produits sont conservés.",
+  },
+  "confirm.delete": { en: "Delete", fr: "Supprimer" },
   "learned.folderTitle": { en: "Where they live", fr: "Où elles sont rangées" },
   "learned.folderDesc": {
     en: "A folder of its own. The skills that ship with the app are elsewhere and are never touched.",

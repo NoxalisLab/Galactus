@@ -386,6 +386,9 @@ html.pane-dragging iframe { pointer-events: none !important; }
 .bp:hover { filter: brightness(1.14); }
 .bp:active { transform: scale(0.97); }
 .bp:disabled { filter: saturate(0.4) brightness(0.7); }
+/* A primary button for something irreversible. The gradient reads as "go
+   ahead", which is the wrong thing to say above "this cannot be undone". */
+.bp.danger { background: var(--bad); color: #fff; }
 .bs { padding: 6px 13px; border-radius: 0; font-size: 12.5px; font-weight: 500; cursor: default; background: rgba(255, 255, 255, 0.05); color: var(--tx); border: 1px solid var(--bd3); transition: background 0.15s, transform 0.1s; white-space: nowrap; }
 .bs:hover { background: rgba(255, 255, 255, 0.09); }
 .bs:active { transform: scale(0.97); }

@@ -20,6 +20,7 @@
 // This module owns no rule. Everything it enforces it asks learned.ts for.
 
 import { api } from "./api";
+import { confirmDestructive } from "./confirm";
 import { t } from "./i18n";
 import { AUTHORED_MARKER, MAX_BANK, type AuthoredSkill } from "./learned";
 import {
@@ -163,6 +164,14 @@ export function learnedPanel(): HTMLElement {
     repaint();
   });
   wrap.querySelector("#lwipe")!.addEventListener("click", async () => {
+    // One click used to be enough to drop months of accumulated preferences,
+    // with nothing to undo it and no copy anywhere.
+    const ok = await confirmDestructive({
+      title: t("confirm.learnedTitle"),
+      detail: t("confirm.learnedBody"),
+      confirmLabel: t("confirm.delete"),
+    });
+    if (!ok) return;
     await deleteAllLearned();
     repaint();
   });

@@ -26,6 +26,7 @@
 //   RunGrants.grant refuses one anyway if the question is ever put to it.
 
 import { api } from "./api";
+import { confirmDestructive } from "./confirm";
 import { Agent, type PermissionDecision, type PermissionRequest } from "./agent";
 import { t } from "./i18n";
 import {
@@ -339,6 +340,14 @@ async function loadStored(): Promise<void> {
 }
 
 async function forget(run: LiveRun): Promise<void> {
+  // The run AND its transcript go, and nothing else keeps a copy. One click on
+  // a row in a list is not enough intent for that.
+  const ok = await confirmDestructive({
+    title: t("confirm.runTitle"),
+    detail: t("confirm.runBody"),
+    confirmLabel: t("confirm.delete"),
+  });
+  if (!ok) return;
   const id = run.run.id;
   const timer = saveTimers.get(id);
   if (timer !== undefined) clearTimeout(timer);
@@ -1023,8 +1032,15 @@ function jobsSectionEl(): HTMLElement {
         openJobForm(row);
         break;
       case "delete":
-        if (jobDraft && jobDraft.id === row.id) closeJobForm();
-        void applyJobs(api.jobsDelete(row.id));
+        void confirmDestructive({
+          title: t("confirm.jobTitle"),
+          detail: t("confirm.jobBody"),
+          confirmLabel: t("confirm.delete"),
+        }).then((ok) => {
+          if (!ok) return;
+          if (jobDraft && jobDraft.id === row.id) closeJobForm();
+          void applyJobs(api.jobsDelete(row.id));
+        });
         break;
     }
   });

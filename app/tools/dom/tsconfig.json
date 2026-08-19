@@ -25,6 +25,7 @@
     "learnedview.test.ts",
     "reasoning.test.ts",
     "installprogress.test.ts",
+    "confirm.test.ts",
     "mainmode.test.ts"
   ]
 }
