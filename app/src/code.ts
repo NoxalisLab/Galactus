@@ -95,6 +95,7 @@ import {
 } from "./code/searchpanel";
 import { openFilePalette, openSymbolPalette, closePalette, paletteOpen } from "./code/palette";
 import { planReplace, REPLACE_FILE_CAP, ReplaceCapError } from "./code/replace";
+import { scalarToIndex } from "./code/workspace-api";
 import type {
   SearchHit,
   SearchOpts as WsSearchOpts,
@@ -2032,7 +2033,10 @@ function applyReveal(): void {
   if (line < 1 || line > doc.lines) return;
   pendingReveal = null;
   const l = doc.line(line);
-  const pos = Math.min(l.to, l.from + Math.max(0, col - 1));
+  // `col` counts Unicode scalars, the document is indexed in UTF-16 units, and
+  // a line with an emoji in it has more indices than scalars: adding the count
+  // straight to l.from put the caret one place left per emoji before it.
+  const pos = Math.min(l.to, l.from + scalarToIndex(doc.sliceString(l.from, l.to), col - 1));
   editor.dispatch({ selection: { anchor: pos }, effects: EditorView.scrollIntoView(pos, { y: "center" }) });
   editor.focus();
 }

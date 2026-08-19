@@ -14,8 +14,13 @@
 //   * `path` is relative to the workspace root, POSIX separators, no leading
 //     "./" and no leading "/".
 //   * `line` is 1-based.
-//   * `col` is a 1-based CHARACTER column into `text`, so an editor can place
-//     a caret with it directly. This matches `search.rs` as it is written.
+//   * `col` is a 1-based count of UNICODE SCALARS into `text`. This matches
+//     `search.rs`, which computes it with `chars().count()`. It is NOT a
+//     JavaScript string index: everything outside the Basic Multilingual Plane
+//     costs two UTF-16 units, so a line with an emoji in it has more indices
+//     than scalars. Reading it as an index directly put the highlight, and the
+//     caret that follows, one place left per emoji. `scalarToIndex()` is the
+//     conversion, and `hitCharSpan()` is the only place that should need it.
 //   * `len` is the BYTE length of the match, which is NOT the byte length of
 //     the query once a case-insensitive search runs over non-ASCII text. The
 //     end of a highlight is therefore computed by converting the character
@@ -141,6 +146,44 @@ export function charToByteIndex(text: string, charIndex: number): number {
 }
 
 /**
+ * A count of Unicode scalars to a JavaScript string index.
+ *
+ * The backend counts columns with `chars().count()`, which counts SCALARS.
+ * JavaScript indexes UTF-16 code UNITS, and everything outside the Basic
+ * Multilingual Plane costs two of those: an emoji earlier in the line put the
+ * highlight, and the cursor that follows it, one place to the left per emoji.
+ *
+ * The fast path is the normal one. A line with no surrogate in it has one unit
+ * per scalar, so the count IS the index and nothing is scanned.
+ */
+export function indexToScalar(text: string, index: number): number {
+  if (index <= 0) return 0;
+  if (!/[\uD800-\uDBFF]/.test(text)) return Math.min(index, text.length);
+  let scalars = 0;
+  let i = 0;
+  while (i < text.length && i < index) {
+    const code = text.charCodeAt(i);
+    i += code >= 0xd800 && code <= 0xdbff && i + 1 < text.length ? 2 : 1;
+    scalars++;
+  }
+  return scalars;
+}
+
+export function scalarToIndex(text: string, scalars: number): number {
+  if (scalars <= 0) return 0;
+  // eslint-disable-next-line no-control-regex
+  if (!/[\uD800-\uDBFF]/.test(text)) return Math.min(scalars, text.length);
+  let seen = 0;
+  let i = 0;
+  while (i < text.length && seen < scalars) {
+    const code = text.charCodeAt(i);
+    i += code >= 0xd800 && code <= 0xdbff && i + 1 < text.length ? 2 : 1;
+    seen++;
+  }
+  return i;
+}
+
+/**
  * The character span of a hit inside its line: a 1-based CHARACTER column in,
  * a pair of JavaScript string indices out. `byteLen` is the match length in
  * BYTES, which is why the end goes through the two conversions rather than
@@ -155,7 +198,7 @@ export function charToByteIndex(text: string, charIndex: number): number {
  * highlighter now.
  */
 export function hitCharSpan(text: string, col: number, byteLen: number): { start: number; end: number } {
-  const start = Math.max(0, Math.min(text.length, col - 1));
+  const start = Math.max(0, Math.min(text.length, scalarToIndex(text, col - 1)));
   const bytes = Math.max(0, byteLen);
   const end = Math.min(text.length, byteToCharIndex(text, charToByteIndex(text, start) + bytes));
   return { start, end: Math.max(start, end) };
@@ -340,12 +383,16 @@ export class FakeWorkspaceApi implements WorkspaceApi {
           if (at < 0) break;
           from = at + Math.max(1, needle.length);
           if (opts.wholeWord && !wordBounded(raw, at, at + query.length)) continue;
-          // Exactly what search.rs reports: a 1-based CHARACTER column, the
-          // byte offset in the file, and the byte length of the match.
+          // Exactly what search.rs reports: a 1-based count of Unicode
+          // SCALARS, the byte offset in the file, and the byte length of the
+          // match. The fake used to report `at + 1`, which is a JavaScript
+          // string index, so on a line with an emoji it disagreed with the
+          // real backend by one per emoji. Every test built on the fake then
+          // agreed with the fake and not with the app.
           out.push({
             path: rel,
             line: li + 1,
-            col: at + 1,
+            col: indexToScalar(raw, at) + 1,
             text: raw,
             offset: lineByte + charToByteIndex(raw, at),
             len: utf8Len(raw.slice(at, at + query.length)),

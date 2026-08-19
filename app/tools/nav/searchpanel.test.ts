@@ -20,7 +20,7 @@ import {
 } from "../../src/code/searchpanel.js";
 import { paletteRowsHtml, fileRow, markHtml, symbolSub } from "../../src/code/palette.js";
 import { rank } from "../../src/code/fuzzy.js";
-import { utf8Len, byteToCharIndex, charToByteIndex, pathAllowed } from "../../src/code/workspace-api.js";
+import { utf8Len, byteToCharIndex, charToByteIndex, hitCharSpan, indexToScalar, pathAllowed } from "../../src/code/workspace-api.js";
 import type { SearchHit } from "../../src/code/workspace-api.js";
 import { makeFake, searchAll, opts, SYMBOLS } from "./fake.js";
 import { t } from "../../src/i18n.js";
@@ -253,10 +253,16 @@ test("highlight offsets are byte-safe past an emoji", () => {
   const at = text.indexOf("target");
   // The emoji is four bytes but two UTF-16 code units: the offsets diverge.
   assert.equal(charToByteIndex(text, at) - at, 2);
-  assert.equal(hitTextHtml(text, at + 1, utf8Len("target")), 'const emoji = &quot;🎉 <b>target</b> 🎉&quot;;');
+  // And it is ONE scalar, which is the unit the backend counts columns in. This
+  // test used to pass the JavaScript index as the column, which is the very
+  // confusion the app had: with a real backend the highlight landed one place
+  // left per emoji before it.
+  const col = indexToScalar(text, at) + 1;
+  assert.equal(col, at, "one emoji before it, so the column is one less than the index");
+  assert.equal(hitTextHtml(text, col, utf8Len("target")), 'const emoji = &quot;🎉 <b>target</b> 🎉&quot;;');
   // And the emoji itself, four bytes long, is highlighted whole.
   const e = text.indexOf("🎉");
-  assert.deepEqual(hitSpan(text, e + 1, 4), { start: e, end: e + 2 });
+  assert.deepEqual(hitSpan(text, indexToScalar(text, e) + 1, 4), { start: e, end: e + 2 });
   assert.equal(hitTextHtml(text, e + 1, 4), 'const emoji = &quot;<b>🎉</b> target 🎉&quot;;');
 });
 
@@ -427,4 +433,29 @@ test("turning on the pattern toggle drops whole word, which is a literal idea", 
   assert.equal(s.wholeWord, false);
   // And the button is in the panel.
   assert.match(searchPanelHtml(s), /data-toggle="regex"/);
+});
+
+test("a column past an emoji lands where the backend meant it", () => {
+  // search.rs computes col with chars().count(), which counts SCALARS.
+  // JavaScript indexes UTF-16 units and an emoji costs two, so reading the
+  // column as an index put the highlight one place left per emoji before it.
+  const line = "const x = 1; // 🚀 ok, target here";
+  const scalars = [...line];
+  const at = scalars.indexOf("t", scalars.indexOf("🚀"));
+  // What the backend would send: a 1-based scalar count.
+  const col = at + 1;
+
+  const span = hitCharSpan(line, col, 6);
+  assert.equal(line.slice(span.start, span.end), "target", "the span covers the word, not one before it");
+
+  // Nothing changes for a line that stays inside the BMP.
+  const plain = "const target = 1;";
+  const plainSpan = hitCharSpan(plain, plain.indexOf("target") + 1, 6);
+  assert.equal(plain.slice(plainSpan.start, plainSpan.end), "target");
+
+  // Accented text is two BYTES but one unit, which the byte side already knew.
+  const accented = "// éé target";
+  const accCol = [...accented].indexOf("t") + 1;
+  const accSpan = hitCharSpan(accented, accCol, 6);
+  assert.equal(accented.slice(accSpan.start, accSpan.end), "target");
 });
