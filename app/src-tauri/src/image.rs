@@ -129,20 +129,57 @@ pub fn load_registry(root: &Path) -> Result<Vec<ImageModel>, String> {
     Ok(out)
 }
 
-/// Every file of a model is present and non-empty.
+/// The file written once every byte of a model is on disk.
 ///
-/// Non-empty matters: an interrupted download leaves a zero byte file, and a
-/// model reported as installed that fails to load reads as a broken app rather
-/// than as an interrupted download.
+/// Its content is the total size the install ended with, so the marker cannot
+/// outlive the files it vouches for: delete one and the sizes stop agreeing.
+fn install_marker(dir: &Path, m: &ImageModel) -> PathBuf {
+    dir.join(format!(".{}.installed", m.id))
+}
+
+fn installed_size(dir: &Path, m: &ImageModel) -> Option<u64> {
+    let mut total = 0u64;
+    for f in m.roles.values() {
+        let meta = std::fs::metadata(dir.join(f)).ok()?;
+        if !meta.is_file() || meta.len() == 0 {
+            return None;
+        }
+        total += meta.len();
+    }
+    Some(total)
+}
+
+/// Every file of a model is on disk, whole.
+///
+/// WHOLE is the hard part. The first version asked only that each file be
+/// non-empty, which an interrupted download satisfies from its first second:
+/// curl writes as it goes, so three gigabytes of a five gigabyte model is a
+/// large non-empty file, and the model was reported installed. sd-cli then
+/// failed to load it, which reads as a broken app rather than as a download
+/// that needs finishing.
+///
+/// Two ways to be sure, because the second has to work for models that were
+/// already on disk before the marker existed:
+///
+///   * the marker, written after the last byte and holding the total size it
+///     ended with. Exact, and the only one that can catch a download stopped
+///     at 99 per cent;
+///   * failing that, the total size against the figure in the registry. That
+///     figure is rounded (measured at 0.04 and 0.36 per cent off for the two
+///     shipped models), so the threshold is generous. It is there to catch the
+///     interrupted download, not to verify the bytes.
 pub fn model_installed(dir: &Path, m: &ImageModel) -> bool {
     if !m.roles.values().all(|f| is_plain_name(f)) {
         return false;
     }
-    m.roles.values().all(|f| {
-        std::fs::metadata(dir.join(f))
-            .map(|meta| meta.is_file() && meta.len() > 0)
-            .unwrap_or(false)
-    })
+    let Some(size) = installed_size(dir, m) else { return false };
+    if let Ok(text) = std::fs::read_to_string(install_marker(dir, m)) {
+        if text.trim().parse::<u64>() == Ok(size) {
+            return true;
+        }
+    }
+    // No marker, or one that no longer matches: fall back on the declared size.
+    m.bytes == 0 || size as f64 >= m.bytes as f64 * 0.95
 }
 
 /// The argv for one generation.
@@ -326,7 +363,20 @@ pub fn download_files(download: &Value) -> Result<Vec<(String, String)>, String>
     Ok(out)
 }
 
-fn cancel_flag() -> &'static AtomicBool {
+/// Two flags, not one.
+///
+/// They were the same flag, on the stated reasoning that only one of a download
+/// and a generation runs at a time. Nothing enforced that: busy_flag guards two
+/// GENERATIONS against each other and says nothing about a download, which runs
+/// on its own blocking thread. So starting a generation during a download reset
+/// the shared flag and threw away a cancellation already asked for, and
+/// cancelling either one stopped whichever of the two was running.
+fn install_cancel_flag() -> &'static AtomicBool {
+    static FLAG: OnceLock<AtomicBool> = OnceLock::new();
+    FLAG.get_or_init(|| AtomicBool::new(false))
+}
+
+fn generate_cancel_flag() -> &'static AtomicBool {
     static FLAG: OnceLock<AtomicBool> = OnceLock::new();
     FLAG.get_or_init(|| AtomicBool::new(false))
 }
@@ -376,7 +426,7 @@ fn install_blocking(
     dir: PathBuf,
 ) -> Result<(), String> {
     let total = files.len();
-    cancel_flag().store(false, Ordering::SeqCst);
+    install_cancel_flag().store(false, Ordering::SeqCst);
     for (i, (url, name)) in files.iter().enumerate() {
         let dest = dir.join(name);
         let _ = app.emit(
@@ -392,17 +442,17 @@ fn install_blocking(
             .arg(url)
             .spawn()
             .map_err(|e| format!("curl: {e}"))?;
-        remember_child(child.id());
+        remember_child(Work::Install, child.id());
         loop {
-            if cancel_flag().load(Ordering::SeqCst) {
+            if install_cancel_flag().load(Ordering::SeqCst) {
                 let _ = child.kill();
                 let _ = child.wait();
-                forget_child();
+                forget_child(Work::Install);
                 return Err("cancelled".into());
             }
             match child.try_wait().map_err(|e| e.to_string())? {
                 Some(status) => {
-                    forget_child();
+                    forget_child(Work::Install);
                     if !status.success() {
                         // 33 is curl's "this server cannot resume": the partial
                         // file is unusable and every later attempt would fail
@@ -439,6 +489,15 @@ fn install_blocking(
             }
         }
     }
+    // Only now, with every file downloaded, is this model installed. Written
+    // last on purpose: a marker written any earlier would vouch for a download
+    // that had not finished, which is the whole failure this exists to stop.
+    match installed_size(&dir, &m) {
+        Some(size) => {
+            let _ = std::fs::write(install_marker(&dir, &m), size.to_string());
+        }
+        None => return Err(format!("{} finished with a file missing or empty", m.name)),
+    }
     let _ = app.emit("galactus://image", json!({"kind": "installed", "id": m.id}));
     Ok(())
 }
@@ -447,8 +506,8 @@ fn install_blocking(
 /// two can be running at a time.
 #[tauri::command]
 pub fn image_install_cancel() {
-    cancel_flag().store(true, Ordering::SeqCst);
-    kill_child();
+    install_cancel_flag().store(true, Ordering::SeqCst);
+    kill_one(Work::Install);
 }
 
 /// Whether this build carries the image engine at all.
@@ -462,7 +521,7 @@ pub fn image_engine_present() -> bool {
 
 #[tauri::command]
 pub fn image_cancel() {
-    cancel_flag().store(true, Ordering::SeqCst);
+    generate_cancel_flag().store(true, Ordering::SeqCst);
 }
 
 /// Generate one image. Returns the path it was written to.
@@ -499,7 +558,7 @@ pub async fn image_generate(
     if busy_flag().swap(true, Ordering::SeqCst) {
         return Err("an image is already being made: wait for it, or stop it first".into());
     }
-    cancel_flag().store(false, Ordering::SeqCst);
+    generate_cancel_flag().store(false, Ordering::SeqCst);
     let path = out.clone();
     let done = tauri::async_runtime::spawn_blocking(move || run_generation(app, bin, args, path)).await;
     busy_flag().store(false, Ordering::SeqCst);
@@ -527,7 +586,7 @@ fn run_generation(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("image engine: {e}"))?;
-    remember_child(child.id());
+    remember_child(Work::Generate, child.id());
 
     // BOTH pipes are read by threads, and the wait loop waits for nothing else.
     //
@@ -555,13 +614,13 @@ fn run_generation(
 
     let mut cancelled_first = false;
     loop {
-        if !cancelled_first && cancel_flag().load(Ordering::SeqCst) {
+        if !cancelled_first && generate_cancel_flag().load(Ordering::SeqCst) {
             cancelled_first = true;
             let _ = child.kill();
         }
         match child.try_wait().map_err(|e| e.to_string())? {
             Some(status) => {
-                forget_child();
+                forget_child(Work::Generate);
                 if cancelled_first {
                     // Only when the user asked BEFORE it finished: an image that
                     // completed on its own is theirs, whatever was pressed after.
@@ -594,12 +653,24 @@ fn run_generation(
     }
     if looks_blank(&written) {
         // A flat square, which is what a decode that failed on this backend
-        // leaves behind. Handing it over as a result would read as the app being
-        // broken, so it is deleted and the failure is named.
-        let _ = std::fs::remove_file(&out);
+        // leaves behind. Handing it over as a result would read as the app
+        // being broken, so the failure is named rather than shown.
+        //
+        // KEPT, not deleted. The test is a size heuristic with wide margins,
+        // and a wide margin is not a certainty: ask for a white square on a
+        // white background and a real, correct PNG compresses down into the
+        // same range. Deleting it threw away a minute of the machine's work
+        // with no way to look at what was actually produced. It is set aside
+        // under a name that says what happened, and the path is in the error.
+        let kept = out.with_extension("suspect.png");
+        let where_ = match std::fs::rename(&out, &kept) {
+            Ok(()) => kept.to_string_lossy().to_string(),
+            Err(_) => out.to_string_lossy().to_string(),
+        };
         let _ = app.emit("galactus://image", json!({"kind": "failed", "log": "blank"}));
         return Err(format!(
-            "the engine produced an empty image: this model did not run correctly here{}",
+            "the engine produced what looks like an empty image: this model may not run \
+             correctly here. It was kept at {where_} in case it is not{}",
             with_reason(&lines)
         ));
     }
@@ -685,32 +756,53 @@ fn with_reason(lines: &Arc<Mutex<Vec<String>>>) -> String {
 /// the reason stated there: an abandoned engine keeps gigabytes pinned. An image
 /// process is the same thing for ten of them, and a curl left running writes
 /// seven more to the disk after the window has gone.
-static IMAGE_CHILD: OnceLock<Mutex<Option<u32>>> = OnceLock::new();
+/// One slot per KIND of work, for the same reason there are two cancel flags:
+/// a download and a generation can be running at once, and a single slot meant
+/// whichever started second erased the first. Cancelling the download then
+/// killed the generation, or nothing at all.
+static INSTALL_CHILD: OnceLock<Mutex<Option<u32>>> = OnceLock::new();
+static GENERATE_CHILD: OnceLock<Mutex<Option<u32>>> = OnceLock::new();
 
-fn child_slot() -> &'static Mutex<Option<u32>> {
-    IMAGE_CHILD.get_or_init(|| Mutex::new(None))
+#[derive(Clone, Copy)]
+pub(crate) enum Work {
+    Install,
+    Generate,
 }
 
-pub(crate) fn remember_child(pid: u32) {
-    if let Ok(mut slot) = child_slot().lock() {
+fn child_slot(which: Work) -> &'static Mutex<Option<u32>> {
+    match which {
+        Work::Install => INSTALL_CHILD.get_or_init(|| Mutex::new(None)),
+        Work::Generate => GENERATE_CHILD.get_or_init(|| Mutex::new(None)),
+    }
+}
+
+pub(crate) fn remember_child(which: Work, pid: u32) {
+    if let Ok(mut slot) = child_slot(which).lock() {
         *slot = Some(pid);
     }
 }
 
-pub(crate) fn forget_child() {
-    if let Ok(mut slot) = child_slot().lock() {
+pub(crate) fn forget_child(which: Work) {
+    if let Ok(mut slot) = child_slot(which).lock() {
         *slot = None;
     }
 }
 
-/// Kill whatever image work is running. Called from the app's exit handler.
-pub(crate) fn kill_child() {
-    let pid = child_slot().lock().ok().and_then(|s| *s);
+fn kill_one(which: Work) {
+    let pid = child_slot(which).lock().ok().and_then(|s| *s);
     if let Some(pid) = pid {
         // SAFETY: a plain kill(2) on a pid this process spawned; ESRCH on an
         // already-dead child is not an error here.
         unsafe { crate::kill(pid as i32, 9) };
     }
+}
+
+/// Kill every image process. Called from the app's exit handler, where both
+/// have to go: an abandoned curl keeps writing gigabytes after the window is
+/// gone, and an abandoned sd-cli keeps ten of them pinned.
+pub(crate) fn kill_child() {
+    kill_one(Work::Install);
+    kill_one(Work::Generate);
 }
 
 /// A generated image, as a data URL the webview can show.
@@ -896,6 +988,37 @@ mod tests {
         assert!(!model_installed(&dir, &m), "an empty file is not a model");
         std::fs::write(dir.join("b.gguf"), b"y").unwrap();
         assert!(model_installed(&dir, &m));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_download_stopped_half_way_does_not_count_as_installed() {
+        // The case the non-empty test could not see. curl writes as it goes, so
+        // an interrupted download is a large NON-EMPTY file: three gigabytes of
+        // a five gigabyte model passed every check, and sd-cli then failed to
+        // load it, which reads as a broken app rather than as a download that
+        // needs finishing.
+        let dir = std::env::temp_dir().join(format!("galactus-img-half-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut m = model(&[("model", "a.gguf")]);
+        m.bytes = 1000;
+
+        std::fs::write(dir.join("a.gguf"), vec![0u8; 600]).unwrap();
+        assert!(!model_installed(&dir, &m), "600 of 1000 bytes is not an installed model");
+
+        // The declared size is rounded, so what is nearly all there passes.
+        std::fs::write(dir.join("a.gguf"), vec![0u8; 970]).unwrap();
+        assert!(model_installed(&dir, &m), "within the rounding of the registry figure");
+
+        // And the marker is exact: it vouches for the size the install ended
+        // with, so it cannot outlive the file it was written for.
+        std::fs::write(dir.join("a.gguf"), vec![0u8; 600]).unwrap();
+        std::fs::write(dir.join(".m.installed"), "600").unwrap();
+        assert!(model_installed(&dir, &m), "the marker agrees with what is there");
+        std::fs::write(dir.join("a.gguf"), vec![0u8; 601]).unwrap();
+        assert!(!model_installed(&dir, &m), "a marker that no longer matches is not trusted");
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
