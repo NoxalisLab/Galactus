@@ -61,6 +61,12 @@ pub struct ImageModel {
     pub download: Value,
     pub defaults: Value,
     pub min_ram_gb: u64,
+    /// Decode the VAE on the CPU rather than the GPU. Flux needs this on Metal:
+    /// its VAE saturates to a white image on the GPU (measured), and only the
+    /// CPU path produces a real picture. Off by default, since it is slower and
+    /// every other model decodes fine on the GPU.
+    #[serde(default)]
+    pub vae_on_cpu: bool,
     /// Times measured on real machines. Empty until someone runs it.
     #[serde(default)]
     pub measured: Vec<Value>,
@@ -202,6 +208,12 @@ pub fn generate_argv(
             args.push((*flag).to_string());
             args.push(dir.join(file).to_string_lossy().to_string());
         }
+    }
+    // The CPU VAE path, for the models that need it (Flux on Metal). A flag on
+    // the model, not the request: the user does not choose this, the model
+    // does, and every other model leaves it off and decodes on the GPU.
+    if m.vae_on_cpu {
+        args.push("--vae-on-cpu".into());
     }
     args.push("-p".into());
     args.push(req.prompt.clone());
@@ -915,6 +927,7 @@ mod tests {
             measured: vec![],
             note: String::new(),
             installed: false,
+            vae_on_cpu: false,
         }
     }
 
@@ -951,6 +964,21 @@ mod tests {
             let at = argv.iter().position(|a| a == flag).unwrap_or_else(|| panic!("{flag} missing"));
             assert_eq!(argv[at + 1], file);
         }
+    }
+
+    #[test]
+    fn the_cpu_vae_flag_is_emitted_only_when_the_model_asks_for_it() {
+        // Flux on Metal saturates its VAE to a white image on the GPU, measured,
+        // and only the CPU path produces a real picture. The flag is a property
+        // of the model, so it appears for a model that sets it and for no other.
+        let mut flux = model(&[("diffusion", "flux.gguf"), ("vae", "ae.gguf")]);
+        flux.vae_on_cpu = true;
+        let argv = generate_argv(Path::new("/models"), &flux, &req("a cat"), Path::new("/out/x.png"));
+        assert!(argv.iter().any(|a| a == "--vae-on-cpu"), "Flux must decode its VAE on the CPU");
+
+        let sdxl = model(&[("model", "sdxl.gguf")]);
+        let argv = generate_argv(Path::new("/models"), &sdxl, &req("a cat"), Path::new("/out/x.png"));
+        assert!(!argv.iter().any(|a| a == "--vae-on-cpu"), "every other model decodes on the GPU");
     }
 
     #[test]

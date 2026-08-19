@@ -124,7 +124,15 @@
       },
       "min_ram_gb": 32,
       "note": "MMDiT 8B en Q8_0, converti depuis le checkpoint complet, VAE inclus. Trois encodeurs de texte a part, dont T5-XXL en fp16 qui pese 9.8 Go a lui seul. Licence Stability AI Community. A tester en Metal avant de s'y fier.",
-      "measured": []
+      "measured": [
+        {
+          "mac_gb": 128,
+          "width": 1024,
+          "height": 1024,
+          "steps": 28,
+          "seconds": 205.0
+        }
+      ]
     },
     {
       "id": "qwen-image",
@@ -198,8 +206,17 @@
         "height": 1024
       },
       "min_ram_gb": 32,
-      "note": "Quatre pas suffisent, le cfg reste a 1.0 (modele distille avec sa guidance). Le VAE est le vrai ae.safetensors, miroir non restreint, taille identique a l'octet pres. L'echec Metal d'avant venait du sampler ancestral de l'ancien moteur et du mauvais VAE, tous deux corriges. A tester.",
-      "measured": []
+      "note": "Quatre pas suffisent, le cfg reste a 1.0 (modele distille avec sa guidance). Le VAE est le vrai ae.safetensors, miroir non restreint, taille identique a l'octet pres. L'echec Metal d'avant venait du sampler ancestral de l'ancien moteur et du mauvais VAE, tous deux corriges. Le VAE se decode sur CPU (obligatoire sur Metal, sinon image blanche), ce qui explique le temps malgre seulement 4 pas.",
+      "measured": [
+        {
+          "mac_gb": 128,
+          "width": 1024,
+          "height": 1024,
+          "steps": 4,
+          "seconds": 87.0
+        }
+      ],
+      "vae_on_cpu": true
     }
   ]
 }
