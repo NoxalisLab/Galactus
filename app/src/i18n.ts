@@ -1559,6 +1559,14 @@ const dict: Record<string, { en: string; fr: string }> = {
   "learned.reject": { en: "Reject", fr: "Rejeter" },
   "learned.delete": { en: "Delete", fr: "Supprimer" },
   "learned.deleteAll": { en: "Delete everything learned", fr: "Tout supprimer" },
+  "runs.blockPolicy": {
+    en: "%s is outside this run's policy. Grant it?",
+    fr: "%s sort de ce que la politique de ce run autorise. L'accorder ?",
+  },
+  "runs.blockEveryTime": {
+    en: "%s is shown every time and cannot be granted in advance. Approve this one?",
+    fr: "%s est montré à chaque fois et ne peut pas être accordé d'avance. Approuver celui-ci ?",
+  },
   "confirm.learnedTitle": { en: "Delete everything learned?", fr: "Tout supprimer de ce qui a été appris ?" },
   "confirm.learnedBody": {
     en: "Every preference the app picked up about how you work goes, and it cannot be brought back. What it learns next starts from nothing.",

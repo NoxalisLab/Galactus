@@ -402,6 +402,47 @@ function engineSlots(): number {
   return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 1;
 }
 
+/**
+ * The window one slot is serving, in tokens.
+ *
+ * What the engine reports while it runs, and the default otherwise. NOT the
+ * stored setting: a model is capped by the window it was trained on, so asking
+ * for 128K on a model that holds 32K gets 32K, and an estimate built on the
+ * wish rather than on the answer describes a machine nobody has.
+ */
+function engineCtx(): number {
+  const live = Number(server.ctx_per_slot);
+  return Number.isFinite(live) && live > 0 ? live : 8192;
+}
+
+/**
+ * Switch view, and re-read anything that goes stale while it is off screen.
+ *
+ * The registry carries an `installed` flag computed by the backend from what is
+ * on disk. It was re-read after an install and after a delete, which covers the
+ * app doing it and nothing else: delete a weights file in Finder, or interrupt
+ * a download, and the Models view kept offering to start a model that was no
+ * longer there until the next launch.
+ *
+ * Painted first, then refreshed, so the view appears at once and corrects
+ * itself a moment later rather than waiting on IPC before showing anything.
+ */
+function goToView(target: View): void {
+  view = target;
+  render();
+  if (target !== "models") return;
+  api
+    .registry()
+    .then((r) => {
+      // Only repaint when something actually moved: an unconditional render
+      // here would fight with whatever the user started doing in between.
+      if (JSON.stringify(r) === JSON.stringify(registry)) return;
+      registry = r;
+      if (view === "models") render();
+    })
+    .catch(() => undefined);
+}
+
 let slotsInUse = 0;
 const slotWaiters: (() => void)[] = [];
 
@@ -656,7 +697,13 @@ function expectedTps(m: ModelEntry): number | null {
   // the KV cache of every decode slot past the first (0.8 GB each, measured).
   // Rust pays it too; an estimate that skipped it would promise a cache 0.8 GB
   // larger than a default two-slot start actually gets.
-  const fixed = nonExpert + (2.5 + nonExpert * 0.45) + (engineSlots() - 1) * 0.8;
+  // 0.8 GB is the measured KV cost of one slot AT 8192, which is the window
+  // every figure in this estimate was measured at. It scales with the window,
+  // exactly as kv_bytes_for does in Rust: a user who sets 32K pays four times
+  // that per slot, and the estimate that ignored it promised a cache several
+  // gigabytes larger than the engine would ever be given.
+  const ctxScale = engineCtx() / 8192;
+  const fixed = nonExpert + (2.5 + nonExpert * 0.45) + (engineSlots() - 1) * 0.8 * ctxScale;
   // The 70 percent cap bounds the TOTAL, exactly as engine_budget_bytes does.
   // It used to bound this arena alone, with `fixed` added on top, so the
   // estimate assumed a cache 5 GB larger than any start would ever plan and
@@ -4773,7 +4820,8 @@ function render() {
   if (slot) slot.replaceWith(convListEl());
   layout.querySelector(".nav")!.addEventListener("click", (e) => {
     const it = (e.target as HTMLElement).closest("[data-v]") as HTMLElement | null;
-    if (!it) return; view = it.dataset.v as View; render();
+    if (!it) return;
+    goToView(it.dataset.v as View);
   });
   layout.appendChild(
     view === "chat" ? chatView()
@@ -5453,8 +5501,7 @@ async function boot() {
       // guard is the guard not existing.
       if (appMode === "server" && !SERVER_VIEWS.includes(target)) return;
       if ((target === "code" || target === "runs") && toolsBlocked()) return;
-      view = target;
-      render();
+      goToView(target);
     }
   });
 }

@@ -40,6 +40,7 @@ import {
   type RunState,
 } from "./runs";
 import {
+  blockQuestionText,
   driveRun,
   type DrivableAgent,
   type DrivePermissionRequest,
@@ -1446,7 +1447,7 @@ function cardHtml(run: LiveRun): string {
       question !== null
         ? `<div class="runs-block plate">
              <div class="runs-block-hd"><b>${esc(t("runs.blockedTitle"))}</b><span>${esc(t("runs.blockedHint"))}</span></div>
-             <div class="runs-question">${esc(question)}</div>
+             <div class="runs-question">${esc(blockQuestionText(question, t))}</div>
              <div class="runs-answer">
                <div class="inset-input"><input data-field="note" type="text" placeholder="${esc(t("runs.notePlaceholder"))}" value="${esc(run.note)}"/></div>
                <button class="bp" data-act="grant">${esc(t("runs.grant"))}</button>

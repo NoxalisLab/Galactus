@@ -135,6 +135,31 @@ export function blockQuestion(req: DrivePermissionRequest, reason: "policy" | "e
 }
 
 /**
+ * The same question in the reader's language.
+ *
+ * NOT a translation of blockQuestion in place. That string is an IDENTITY: a
+ * parked run stores it, and requestBehind() finds the request it came from by
+ * comparing text. Translating it would break the match for every run recorded
+ * before the change, and again for anyone who switches language while a run is
+ * parked. So the stored form stays English and stable, and this reads it back
+ * for the screen.
+ *
+ * Falls back to the stored text for anything it does not recognise, which is
+ * what a question written by an older version looks like.
+ */
+export function blockQuestionText(question: string, translate: (key: string) => string): string {
+  const everyTime = " is shown every time and cannot be granted in advance. Approve this one?";
+  const policy = " is outside this run's policy. Grant it?";
+  if (question.endsWith(everyTime)) {
+    return translate("runs.blockEveryTime").replace("%s", question.slice(0, -everyTime.length));
+  }
+  if (question.endsWith(policy)) {
+    return translate("runs.blockPolicy").replace("%s", question.slice(0, -policy.length));
+  }
+  return question;
+}
+
+/**
  * Run one turn of an agent under a run's budget and policy.
  *
  * The agent is built by the caller, because building one needs api.ts and a

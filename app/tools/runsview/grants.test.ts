@@ -16,7 +16,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { Run, type RunLimits, type RunPermissionRequest } from "../../src/runs.js";
-import { blockQuestion, type DrivePermissionRequest } from "../../src/rundrive.js";
+import { blockQuestion, blockQuestionText, type DrivePermissionRequest } from "../../src/rundrive.js";
 import {
   RunGrants,
   grantAnswer,
@@ -183,4 +183,31 @@ test("an answer naming a kind that does not exist is ignored", () => {
   const run = parked(WRITE);
   run.resume("granted for this run: root: everything");
   assert.equal(RunGrants.fromTranscript(run.transcript()).size(), 0);
+});
+
+test("the parked question is shown translated and matched untranslated", () => {
+  // Two jobs, and they must not be the same string. The STORED question is an
+  // identity: a parked run keeps it, and requestBehind finds the request it
+  // came from by comparing text. Translating it in place would break every run
+  // recorded before the change, and break again for anyone who switches
+  // language while a run is parked.
+  const fr = (key: string) =>
+    key === "runs.blockPolicy"
+      ? "%s sort de ce que la politique de ce run autorise. L'accorder ?"
+      : "%s est montré à chaque fois et ne peut pas être accordé d'avance. Approuver celui-ci ?";
+
+  const stored = blockQuestion(WRITE, "policy");
+  assert.match(stored, /outside this run's policy/, "what is stored stays English and stable");
+
+  const shown = blockQuestionText(stored, fr);
+  assert.match(shown, /sort de ce que la politique/);
+  assert.match(shown, /fs_write/, "and it keeps the thing being asked about");
+  assert.ok(!shown.includes("%s"), "the placeholder is filled");
+
+  const every = blockQuestion(PUSH, "every_time");
+  assert.match(blockQuestionText(every, fr), /montré à chaque fois/);
+
+  // Anything it does not recognise is passed through rather than mangled,
+  // which is what a question written by an older version looks like.
+  assert.equal(blockQuestionText("something older", fr), "something older");
 });
