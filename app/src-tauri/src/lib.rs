@@ -9067,3 +9067,59 @@ mod pack_cleanup_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+#[cfg(test)]
+mod registry_context_tests {
+    /// Every context window in the shipped registry, and why it has to be right.
+    ///
+    /// Both directions cost something. Too HIGH and llama.cpp extends the rope
+    /// past what the model was trained on, and the answers quietly get worse.
+    /// Too LOW and the user is refused a window the model has: the two 2507
+    /// entries carried 40960, which is the figure from the release BEFORE them,
+    /// so a 256K model was served a sixth of what it holds, and Qwen3.6 carried
+    /// none at all, which falls back to a cautious 32768.
+    ///
+    /// Checked against the config.json each model publishes, not against
+    /// memory. A missing entry is allowed and means the cautious ceiling: that
+    /// is the honest answer for Llama-4 Scout, whose repository is gated and
+    /// whose figure could not be read.
+    #[test]
+    fn the_declared_context_matches_what_the_model_publishes() {
+        let raw = include_str!("../packaged/scripts/models-registry.json");
+        let v: serde_json::Value = serde_json::from_str(raw).expect("registry parses");
+        let models = v["models"].as_array().expect("models is an array");
+
+        // id -> max_position_embeddings, read from each model's own config.json
+        // on 2026-08-19. text_config.max_position_embeddings for the
+        // multimodal ones, which nest it.
+        let published: &[(&str, u64)] = &[
+            ("qwen3-30b-a3b", 262_144),
+            ("qwen3-235b-a22b", 262_144),
+            ("qwen35-35b-a3b", 262_144),
+            ("mellum2-12b", 131_072),
+            ("olmoe-1b-7b", 4_096),
+        ];
+
+        for (id, want) in published {
+            let entry = models
+                .iter()
+                .find(|m| m["id"].as_str() == Some(id))
+                .unwrap_or_else(|| panic!("{id} is not in the registry"));
+            assert_eq!(
+                entry["context_length"].as_u64(),
+                Some(*want),
+                "{id} declares a window its published config does not"
+            );
+        }
+
+        // And nothing may declare a window as a string, or as zero, which
+        // parses to a ceiling of zero and would serve nothing at all.
+        for m in models {
+            let id = m["id"].as_str().unwrap_or("?");
+            if let Some(c) = m.get("context_length") {
+                let n = c.as_u64().unwrap_or_else(|| panic!("{id}: context_length is not a number"));
+                assert!(n >= 2048, "{id}: a window of {n} cannot hold a conversation");
+            }
+        }
+    }
+}

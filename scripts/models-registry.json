@@ -235,7 +235,7 @@
         "scripting"
       ],
       "min_ram_gb": 16,
-      "context_length": 40960
+      "context_length": 262144
     },
     {
       "id": "llama4-scout",
@@ -402,7 +402,7 @@
         "reasoning",
         "writing"
       ],
-      "context_length": 40960
+      "context_length": 262144
     },
     {
       "id": "glm-4.5-air",
@@ -853,6 +853,7 @@
       "expert_bytes_total": 7413432320,
       "non_expert_bytes": 657862720,
       "min_ram_gb": 16,
+      "context_length": 131072,
       "download": {
         "base": "https://huggingface.co/JetBrains/Mellum2-12B-A2.5B-Thinking-GGUF-Q4_K_M/resolve/main",
         "files": [
@@ -929,6 +930,7 @@
       "expert_bytes_total": 19574816768,
       "non_expert_bytes": 2559712224,
       "min_ram_gb": 16,
+      "context_length": 262144,
       "download": {
         "base": "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main",
         "files": [
