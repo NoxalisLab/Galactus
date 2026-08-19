@@ -9,10 +9,17 @@ import { REDACTED, redact } from "../../src/redact.js";
 
 test("an env file keeps its names and loses its values", () => {
   // The name is what makes the export useful and is not the secret.
+  //
+  // Compared whole, not with match(). The first version of this test asserted
+  // the line CONTAINED the mark, which stayed true while two rules chewed on
+  // each other's output and shipped
+  // "OPENAI_API_KEY=[removed by Galactus] by Galactus]" for months.
   const out = redact("OPENAI_API_KEY=sk-abcdefghijklmnopqrst\nexport DB_PASSWORD=hunter2\nPORT=3000");
-  assert.match(out.text, /OPENAI_API_KEY=\[removed by Galactus\]/);
-  assert.match(out.text, /DB_PASSWORD=\[removed by Galactus\]/);
-  assert.match(out.text, /PORT=3000/, "an ordinary variable is not a secret");
+  assert.equal(
+    out.text,
+    `OPENAI_API_KEY=${REDACTED}\nexport DB_PASSWORD=${REDACTED}\nPORT=3000`,
+    "an ordinary variable is not a secret, and a mark is written exactly once",
+  );
 });
 
 test("json and yaml credentials are masked wherever they sit", () => {
@@ -55,4 +62,46 @@ test("ordinary prose is left exactly as it was", () => {
   assert.equal(redact(prose).removed, 0);
   const code = "const total = items.length * 2;\nreturn { ok: true };";
   assert.equal(redact(code).text, code);
+});
+
+test("a name that cannot hold a secret keeps its value", () => {
+  // These read as credentials to a regex and are a flag, a type and an empty
+  // field to a person. Masking them made exported code unreadable for nothing.
+  for (const line of [
+    "const secret = false;",
+    "let password: string;",
+    "api_key: null",
+    'client_secret: ""',
+    "ACCESS_TOKEN = undefined",
+    "password: changeme",
+  ]) {
+    assert.equal(redact(line).text, line, line);
+  }
+});
+
+test("the forges and registries this app actually talks to", () => {
+  for (const secret of [
+    "glpat-ABCDEFGHIJKLMNOPQRST",
+    "hf_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "npm_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "AIzaSyAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sk_live_aaaaaaaaaaaaaaaaaaaa",
+  ]) {
+    const out = redact(`the value is ${secret} and that is all`);
+    assert.ok(!out.text.includes(secret), secret);
+  }
+});
+
+test("a credential inside a URL loses the password and keeps the rest", () => {
+  // A git remote or a database string carries one, and both get pasted whole.
+  const out = redact("git clone https://someuser:s3cr3tpassword@gitlab.com/team/repo.git");
+  assert.ok(!out.text.includes("s3cr3tpassword"));
+  assert.match(out.text, /someuser/, "who it was is not the secret");
+  assert.match(out.text, /gitlab\.com\/team\/repo\.git/);
+});
+
+test("masking twice changes nothing the second time", () => {
+  // The export masks at the source and once more over the assembled file.
+  const once = redact("OPENAI_API_KEY=sk-abcdefghijklmnopqrst").text;
+  assert.equal(redact(once).text, once);
 });

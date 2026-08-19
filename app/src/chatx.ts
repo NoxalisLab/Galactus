@@ -65,37 +65,57 @@ function localeOf(): string {
   return getLang() === "fr" ? "fr-FR" : "en-US";
 }
 
+/**
+ * Masked on the way out, at the source of every piece of text.
+ *
+ * WHY EVERY KIND AND NOT JUST TOOL RESULTS. The first version masked tool
+ * results only, on the reasoning that a secret enters the conversation by being
+ * read off disk. It does not: the user pastes a key into the composer to ask
+ * what is wrong with it, the assistant quotes the .env line back while
+ * explaining it, the reasoning block repeats it, and the error message from the
+ * failed call carries it whole. Each of those exported verbatim.
+ *
+ * BEFORE TRUNCATION, deliberately. quoted() cuts at a character budget, and a
+ * token cut in half no longer matches any rule, so masking has to happen while
+ * the shape is still intact.
+ */
+function red(s: string): string {
+  return redact(s).text;
+}
+
 function renderItem(it: ChatItem): string {
   switch (it.kind) {
     case "user":
-      return `**${t("chat.you")}**\n\n${it.text.trim()}`;
+      return `**${t("chat.you")}**\n\n${red(it.text.trim())}`;
     case "assistant":
-      return `**${t("chatx.exportAssistant")}**\n\n${it.text.trim()}`;
+      return `**${t("chatx.exportAssistant")}**\n\n${red(it.text.trim())}`;
     case "reasoning": {
       // Quoted, like a tool result, because it is working material and not the
       // answer. A block whose channel carried nothing readable exports nothing
       // at all rather than an empty heading.
-      const body = quoted(visibleReasoning(it.text), 2000);
+      const body = quoted(red(visibleReasoning(it.text)), 2000);
       return body === "" ? "" : `> **${t("chatx.exportReasoning")}**\n>\n${body}`;
     }
     case "tool": {
-      const head = `> **${t("chatx.exportTool")}, ${toolLabel(it.name)}**` + (it.arg ? ` \`${it.arg}\`` : "");
-      // Masked on the way out. A tool result is whatever the agent read, and an
-      // export is a file that gets mailed or pasted into a ticket: the
-      // permission asked whether it could READ the .env, not publish it.
-      const body = it.done ? quoted(redact(it.result).text) : "> " + t("chat.running");
+      const arg = it.arg ? ` \`${red(it.arg)}\`` : "";
+      const head = `> **${t("chatx.exportTool")}, ${toolLabel(it.name)}**` + arg;
+      // A tool result is whatever the agent read, and an export is a file that
+      // gets mailed or pasted into a ticket: the permission asked whether it
+      // could READ the .env, not publish it.
+      const body = it.done ? quoted(red(it.result)) : "> " + t("chat.running");
       return body ? head + "\n>\n" + body : head;
     }
     case "error":
-      return `> **${t("chatx.exportError")}**, ${it.text.trim()}`;
+      // A failed request answers with the request in it often enough.
+      return `> **${t("chatx.exportError")}**, ${red(it.text.trim())}`;
     case "notice":
-      return `*${it.text.trim()}*`;
+      return `*${red(it.text.trim())}*`;
     case "agent": {
       // A teammate's block: who, what it was asked, what it answered. The
       // teammate's own thread is exported in full further down the file.
       const head = `> **${t("chatx.exportAgent")} · ${it.name}**` + (it.role ? ` (${it.role})` : "");
-      const ask = quoted(it.ask, 400);
-      const ans = it.answer ? quoted(redact(it.answer).text, 2000) : "> " + t("chat.running");
+      const ask = quoted(red(it.ask), 400);
+      const ans = it.answer ? quoted(red(it.answer), 2000) : "> " + t("chat.running");
       return [head, ask, ans].filter((x) => x !== "").join("\n>\n");
     }
   }
@@ -137,12 +157,17 @@ export function exportConversationMarkdown(conv: Conversation): string {
   // the part the sub-agents did, which is what the user recruited them for.
   for (const sub of conv.team) {
     parts.push("---", `## ${t("chatx.exportAgent")} · ${sub.name}${sub.role ? ` (${sub.role})` : ""}`);
-    if (sub.brief.trim() !== "") parts.push(`> ${sub.brief.trim().split("\n").join("\n> ")}`);
+    if (sub.brief.trim() !== "") parts.push(`> ${red(sub.brief.trim()).split("\n").join("\n> ")}`);
     if (sub.items.length === 0) parts.push(`*${t("chatx.exportEmptyAgent")}*`);
     for (const it of sub.items) pushItem(parts, it);
   }
 
-  return parts.join("\n\n") + "\n";
+  // One more pass over the assembled file. Everything above is masked at its
+  // source, which is where a rule can still see a whole token; this catches the
+  // pieces that never go through renderItem, the title and the plan among them,
+  // and it is the thing that stays correct when a new field is added later.
+  // Masking twice is harmless: nothing inside REDACTED matches any rule.
+  return red(parts.join("\n\n")) + "\n";
 }
 
 // ================================================================ search
