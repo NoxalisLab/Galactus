@@ -114,7 +114,9 @@ export async function planReplace(
   return out;
 }
 
-function rewrite(
+// Exported for the test harness: it is the whole of the replacement logic
+// and it touches nothing but strings.
+export function rewrite(
   base: string,
   hits: SearchHit[],
   find: string,
@@ -140,9 +142,22 @@ function rewrite(
     // `col` is a character column, `len` a byte length: the span helper is the
     // only place allowed to mix the two. A hit without `len` falls back to the
     // needle's own character length.
+    // A zero-length match is a real answer, not a missing one. `h.len ?` read 0
+    // as absent and fell back to the pattern's own length, so replacing /^/
+    // deleted the first character of every matched line: the backend reported
+    // len 0, the fallback measured "^" as one character, and one character went.
     const spans = list
-      .map((h) => (h.len ? hitCharSpan(text, h.col, h.len) : { start: h.col - 1, end: h.col - 1 + find.length }))
-      .sort((a, b) => a.start - b.start);
+      .map((h) =>
+        h.len !== undefined
+          ? hitCharSpan(text, h.col, h.len)
+          : { start: h.col - 1, end: h.col - 1 + find.length },
+      )
+      .sort((a, b) => a.start - b.start || a.end - b.end)
+      // Two identical spans would each insert. The overlap guard below catches
+      // that for a span with width, since the second one starts before the
+      // cursor, but not for an insertion point, where start equals cursor and
+      // the test passes.
+      .filter((s, i, all) => i === 0 || s.start !== all[i - 1].start || s.end !== all[i - 1].end);
 
     let built = "";
     let cursor = 0;
@@ -158,7 +173,12 @@ function rewrite(
       // this comparison exists for is done by length instead, which is what
       // the backend reports per hit.
       if (opts.regex) {
-        if (end - start <= 0) continue;
+        // A zero-width match is an insertion point, and replacing /^/ with
+        // "// " to comment a block is a thing people do. The assembly below
+        // already handles it: with end === start it appends the replacement
+        // and consumes nothing. Skipping it made the feature silently do
+        // nothing once the fallback that ate a character was removed.
+        if (end < start) continue;
       } else {
         const same = opts.caseSensitive ? slice === find : slice.toLowerCase() === find.toLowerCase();
         if (!same) continue; // stale hit: the line moved under the search

@@ -214,3 +214,32 @@ test("NO WRITE CAPABILITY: the compiled module cannot reach the disk", () => {
   const src = readFileSync(APP_DIR + "src/code/replace.ts", "utf8");
   assert.ok(!/from\s+["']\.\.\/api/.test(src));
 });
+
+test("a pattern that matches a position inserts, and deletes nothing", async () => {
+  // The bug: the backend reports len 0 for /^/, `h.len ?` read that as "no
+  // length given", and the fallback measured the PATTERN "^" as one character.
+  // Replacing /^/ with "// " commented every line and ate its first character.
+  const fake = makeFake();
+  const base = "alpha\nbeta\n";
+  fake.filesMap.set("src/zero.ts", base);
+  const hits: SearchHit[] = [
+    { path: "src/zero.ts", line: 1, col: 1, len: 0, text: "alpha" },
+    { path: "src/zero.ts", line: 2, col: 1, len: 0, text: "beta" },
+  ];
+  const plan = await planReplace(hits, "^", "// ", opts({ regex: true }), reader(fake));
+  assert.equal(plan.length, 1);
+  assert.equal(plan[0].content, "// alpha\n// beta\n", "the first character of each line survives");
+});
+
+test("the same insertion point twice inserts once", async () => {
+  // Nothing consumes an empty span, so the overlap guard cannot see the second
+  // one: start still equals the cursor. Deduplication is what stops it.
+  const fake = makeFake();
+  fake.filesMap.set("src/zero.ts", "alpha\n");
+  const hits: SearchHit[] = [
+    { path: "src/zero.ts", line: 1, col: 1, len: 0, text: "alpha" },
+    { path: "src/zero.ts", line: 1, col: 1, len: 0, text: "alpha" },
+  ];
+  const plan = await planReplace(hits, "^", "X", opts({ regex: true }), reader(fake));
+  assert.equal(plan[0].content, "Xalpha\n");
+});

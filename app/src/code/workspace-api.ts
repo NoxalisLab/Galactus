@@ -146,10 +146,17 @@ export function charToByteIndex(text: string, charIndex: number): number {
  * BYTES, which is why the end goes through the two conversions rather than
  * being `start + something`. Both edges are clamped to the line, which matters
  * because the backend truncates very long lines.
+ *
+ * A byteLen of 0 gives an EMPTY span, which is the honest answer for a pattern
+ * like /^/ that matches a position rather than any text. It used to be widened
+ * to one byte so the highlight would be visible, and replace then rewrote that
+ * one character: replacing /^/ deleted the first character of every matched
+ * line. Wanting a visible highlight is a display concern and lives with the
+ * highlighter now.
  */
 export function hitCharSpan(text: string, col: number, byteLen: number): { start: number; end: number } {
   const start = Math.max(0, Math.min(text.length, col - 1));
-  const bytes = Math.max(1, byteLen);
+  const bytes = Math.max(0, byteLen);
   const end = Math.min(text.length, byteToCharIndex(text, charToByteIndex(text, start) + bytes));
   return { start, end: Math.max(start, end) };
 }

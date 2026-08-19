@@ -180,9 +180,16 @@ function dirName(p: string): string {
  * The character span of a hit inside its line. `col` is a 1-based CHARACTER
  * column and `byteLen` a BYTE length: the conversion between the two lives in
  * the contract module, next to the offsets it is about.
+ *
+ * Widened to one character when the match is empty, so a pattern that matches a
+ * position rather than text still shows the user WHERE. That widening belongs
+ * here and not in hitCharSpan, where replace was reading it as a character to
+ * overwrite.
  */
 export function hitSpan(text: string, col: number, byteLen: number): { start: number; end: number } {
-  return hitCharSpan(text, col, byteLen);
+  const span = hitCharSpan(text, col, byteLen);
+  if (span.end > span.start) return span;
+  return { start: span.start, end: Math.min(text.length, span.start + 1) };
 }
 
 /**
