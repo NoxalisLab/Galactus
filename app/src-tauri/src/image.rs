@@ -607,8 +607,17 @@ fn run_generation(
     }
     if let Some(outp) = child.stdout.take() {
         let sink = lines.clone();
+        let app3 = app.clone();
         std::thread::spawn(move || {
-            read_engine_stream(outp, sink, None);
+            // The step counter goes to STDOUT, which this passed None for, so
+            // the progress bar it feeds never moved: the user waited the whole
+            // twenty to thirty seconds of a generation with nothing on screen.
+            // Measured by running sd-cli directly, five progress lines on
+            // stdout and none on stderr. Both are given the handle rather than
+            // just the one that happens to carry it today: parse_progress only
+            // fires on a progress line, so a stream that has none costs
+            // nothing.
+            read_engine_stream(outp, sink, Some(app3));
         });
     }
 
@@ -1029,6 +1038,29 @@ mod tests {
         assert_eq!(parse_progress("  |####| 686/686 - 6.66GB/s"), Some((686, 686)));
         assert_eq!(parse_progress("[INFO ] sampling completed, taking 16.99s"), None);
         assert_eq!(parse_progress(""), None);
+    }
+
+    #[test]
+    fn the_lines_sd_cli_actually_prints_are_the_ones_that_parse() {
+        // Captured from a real run of the bundled sd-cli (4 steps, 256 square),
+        // bytes as they came, rather than a format written from memory. All
+        // four were on STDOUT, which the reader was passing None for, so the
+        // progress bar never moved during a generation.
+        let real = [
+            "  |============>                                     | 1/4 - 1.41s/it\u{1b}[K",
+            "  |=========================>                        | 2/4 - 6.88it/s\u{1b}[K",
+            "  |=====================================>            | 3/4 - 6.92it/s\u{1b}[K",
+            "  |==================================================| 4/4 - 6.90it/s\u{1b}[K",
+        ];
+        let got: Vec<_> = real.iter().filter_map(|l| parse_progress(l)).collect();
+        assert_eq!(got, vec![(1, 4), (2, 4), (3, 4), (4, 4)], "every step is read");
+
+        // The model LOADING bar has the same shape and is not a step count.
+        // It parses to a pair, which is harmless: the view shows a fraction
+        // that reaches 1/1 and then restarts for the steps.
+        assert_eq!(parse_progress("| 196/196 - 605.31MB/s\u{1b}[K"), Some((196, 196)));
+        // And ordinary chatter is not a fraction at all.
+        assert_eq!(parse_progress("loading model from ..."), None);
     }
 
     #[test]
