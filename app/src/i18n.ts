@@ -50,7 +50,7 @@ const dict: Record<string, { en: string; fr: string }> = {
   "mode.serverA": { en: "Models, connectors, settings, runs", fr: "Modèles, connecteurs, réglages, runs" },
   "mode.serverB": {
     en: "Authenticating relay, reachable from your network",
-    fr: "Relais authentifié, joignable depuis votre réseau",
+    fr: "Relais authentifié, joignable depuis ton réseau",
   },
   "mode.serverC": {
     en: "No surface that reads your files",
@@ -72,14 +72,14 @@ const dict: Record<string, { en: string; fr: string }> = {
   "net.expose": { en: "Reachable from", fr: "Joignable depuis" },
   "net.exposeHint": {
     en: "This Mac only, or every machine on your network. The engine itself never leaves 127.0.0.1: an authenticating relay is what listens.",
-    fr: "Ce Mac seulement, ou toute machine de ton réseau. Le moteur lui-même ne quitte jamais 127.0.0.1 : c'est un relais authentifie qui écoute.",
+    fr: "Ce Mac seulement, ou toute machine de ton réseau. Le moteur lui-même ne quitte jamais 127.0.0.1 : c'est un relais authentifié qui écoute.",
   },
   "net.localOnly": { en: "This Mac", fr: "Ce Mac" },
   "net.network": { en: "My network", fr: "Mon réseau" },
   "net.key": { en: "API key", fr: "Clé d'API" },
   "net.keyHint": {
     en: "Required. Shown once, right here, and never stored in clear: copy it now.",
-    fr: "Obligatoire. Affichée une seule fois, ici même, et jamais conservée en clair. Elle vient d'être copiée dans votre presse-papiers : collez-la quelque part avant de quitter cet écran.",
+    fr: "Obligatoire. Affichée une seule fois, ici même, et jamais conservée en clair. Elle vient d'être copiée dans ton presse-papiers : colle-la quelque part avant de quitter cet écran.",
   },
   "net.newKey": { en: "Generate", fr: "Générer" },
   "net.copied": { en: "copied", fr: "copiée" },
@@ -268,7 +268,7 @@ const dict: Record<string, { en: string; fr: string }> = {
   // can spare in GB.
   "brief.ok": {
     en: "Set up for your Mac: %m, %n conversation(s) at a time, using about %r GB of the %b GB available.",
-    fr: "Réglé pour votre Mac : %m, %n discussion(s) à la fois, environ %r Go sur les %b Go disponibles.",
+    fr: "Réglé pour ton Mac : %m, %n discussion(s) à la fois, environ %r Go sur les %b Go disponibles.",
   },
   "brief.adjusted": {
     en: "Your Mac has %b GB free right now, not enough for %q, so Galactus will run this model in %m (about %r GB).",
@@ -276,7 +276,7 @@ const dict: Record<string, { en: string; fr: string }> = {
   },
   "brief.blocked": {
     en: "Not enough free memory for this model right now: it needs about %r GB and your Mac can spare %b GB. Quit an application and try again.",
-    fr: "Pas assez de mémoire libre pour ce modèle en ce moment : il lui faut environ %r Go et votre Mac peut en libérer %b. Quittez une application puis réessayez.",
+    fr: "Pas assez de mémoire libre pour ce modèle en ce moment : il lui faut environ %r Go et ton Mac peut en libérer %b. Quittez une application puis réessayez.",
   },
   "brief.layoutSingle": {
     en: "It will be stored on one drive.",
@@ -738,7 +738,7 @@ const dict: Record<string, { en: string; fr: string }> = {
   "img.stop": { en: "Stop", fr: "Arrêter" },
   "img.ready": { en: "Ready", fr: "Prêt" },
   "img.progress": { en: "Step %d of %n (%p%)", fr: "Étape %d sur %n (%p%)" },
-  "img.needPrompt": { en: "Write what you want to see first.", fr: "Écrivez d'abord ce que vous voulez voir." },
+  "img.needPrompt": { en: "Write what you want to see first.", fr: "Écris d'abord ce que tu veux voir." },
   "img.pickInstalled": {
     en: "Download a model above to start.",
     fr: "Téléchargez un modèle ci-dessus pour commencer.",
@@ -761,7 +761,7 @@ const dict: Record<string, { en: string; fr: string }> = {
   "models.expertsWord": { en: "experts", fr: "experts" },
   "models.metaWhy": {
     en: "Family, size on disk, and how many of its experts run per token: a Mixture-of-Experts model uses a few of them at a time, which is why it can be larger than your memory.",
-    fr: "Famille, taille sur le disque, et combien de ses experts tournent par jeton : un modèle Mixture-of-Experts n'en utilise que quelques-uns à la fois, et c'est pour cela qu'il peut dépasser votre mémoire.",
+    fr: "Famille, taille sur le disque, et combien de ses experts tournent par jeton : un modèle Mixture-of-Experts n'en utilise que quelques-uns à la fois, et c'est pour cela qu'il peut dépasser ta mémoire.",
   },
   "settings.ctxCapped": {
     en: "Running at %s tokens: this model was not trained for more.",
@@ -770,7 +770,7 @@ const dict: Record<string, { en: string; fr: string }> = {
   "news.title": { en: "What changed in %s", fr: "Ce qui a changé dans la %s" },
   "news.sub": {
     en: "Since the version you were running.",
-    fr: "Depuis la version que vous utilisiez.",
+    fr: "Depuis la version que tu utilisais.",
   },
   "news.close": { en: "Got it", fr: "J'ai compris" },
   "boot.failedTitle": { en: "Galactus could not start", fr: "Galactus n'a pas pu démarrer" },
@@ -822,12 +822,12 @@ const dict: Record<string, { en: string; fr: string }> = {
     en: "It was not saved, so the tab stays open. Fix what the message above says, then close it again.",
     fr: "Il n'a pas été enregistré : l'onglet reste ouvert. Corrigez ce que dit le message ci-dessus, puis refermez-le.",
   },
-  "code.closeDirtyTitle": { en: "Save %s before closing?", fr: "Enregistrer %s avant de fermér ?" },
+  "code.closeDirtyTitle": { en: "Save %s before closing?", fr: "Enregistrer %s avant de fermer ?" },
   "code.closeDirtyBody": {
     en: "It has changes that are not on the disk. Closing without saving loses them.",
     fr: "Il a des modifications qui ne sont pas sur le disque. Fermer sans enregistrer les perd.",
   },
-  "code.closeDirtySave": { en: "Save and close", fr: "Enregistrer et fermér" },
+  "code.closeDirtySave": { en: "Save and close", fr: "Enregistrer et fermer" },
   "code.splitHint": {
     en: "Move this file to the other side (Cmd+\\)",
     fr: "Déplacer ce fichier de l'autre côté (Cmd+\\)",
@@ -839,7 +839,7 @@ const dict: Record<string, { en: string; fr: string }> = {
   "fop.namePrompt": { en: "Name", fr: "Nom" },
   "fop.nameHint": {
     en: "One name, no slashes. It is created next to what you clicked.",
-    fr: "Un seul nom, sans barre oblique. Il est créé à côté de ce que vous avez cliqué.",
+    fr: "Un seul nom, sans barre oblique. Il est créé à côté de ce que tu as cliqué.",
   },
   "fop.renameHint": { en: "The new name of this entry.", fr: "Le nouveau nom de cet élément." },
   "fop.deleteTitle": { en: "Move to Trash?", fr: "Mettre à la corbeille ?" },
@@ -851,7 +851,7 @@ const dict: Record<string, { en: string; fr: string }> = {
   "clone.title": { en: "Clone a repository", fr: "Cloner un dépôt" },
   "clone.urlHint": {
     en: "Paste the address. Galactus clones the latest state only; run `git fetch --unshallow` in the terminal if you need the full history.",
-    fr: "Collez l'adresse. Galactus ne clone que l'état actuel ; lancez `git fetch --unshallow` dans le terminal si vous voulez tout l'historique.",
+    fr: "Colle l'adresse. Galactus ne clone que l'état actuel ; lance `git fetch --unshallow` dans le terminal si tu veux tout l'historique.",
   },
   "clone.working": { en: "Cloning...", fr: "Clonage en cours..." },
   "clone.done": { en: "Cloned into %s", fr: "Cloné dans %s" },
@@ -1020,7 +1020,7 @@ const dict: Record<string, { en: string; fr: string }> = {
   "code.pal.symbolsPlaceholder": { en: "Go to symbol", fr: "Aller au symbole" },
   "code.pal.footer": {
     en: "↑↓ to move · ⏎ to open · esc to close",
-    fr: "↑↓ pour naviguer · ⏎ pour ouvrir · échap pour fermér",
+    fr: "↑↓ pour naviguer · ⏎ pour ouvrir · échap pour fermer",
   },
   "code.pal.loading": { en: "Indexing the workspace…", fr: "Indexation de l'espace de travail…" },
   "code.pal.none": { en: "Nothing matches.", fr: "Aucune correspondance." },
@@ -1183,7 +1183,7 @@ const dict: Record<string, { en: string; fr: string }> = {
   },
   "update.installedHint": {
     en: "The new version is on disk. Restart when you are ready.",
-    fr: "La nouvelle version est sur le disque. Redémarrez quand vous voulez.",
+    fr: "La nouvelle version est sur le disque. Redémarre quand tu veux.",
   },
   "update.busyJobs": {
     en: "A run is still working. Updating now would end it with no way back. Wait for it to finish, or stop it in Runs.",
@@ -1338,7 +1338,7 @@ const dict: Record<string, { en: string; fr: string }> = {
   "ssh.add": { en: "Add a machine", fr: "Ajouter une machine" },
   "ssh.addHint": {
     en: "Write user@host, or a name from your ~/.ssh/config. Galactus never stores a password: it connects with the keys your ssh already uses.",
-    fr: "Écrivez utilisateur@hôte, ou un nom de votre ~/.ssh/config. Galactus ne conserve aucun mot de passe : la connexion utilise les clés que votre ssh emploie déjà.",
+    fr: "Écris utilisateur@hôte, ou un nom de ton ~/.ssh/config. Galactus ne conserve aucun mot de passe : la connexion utilise les clés que ton ssh emploie déjà.",
   },
   "ssh.connect": { en: "Connect", fr: "Se connecter" },
   "ssh.remove": { en: "Forget", fr: "Oublier" },
@@ -1399,7 +1399,7 @@ const dict: Record<string, { en: string; fr: string }> = {
   },
   "runs.preauthHint": {
     en: "git push and git pull are the only two things that still stop an autonomous run, because the attended gate shows them every time. Nobody is watching this one, so decide here or it will stop.",
-    fr: "git push et git pull sont les deux seules choses qui arrêtent encore une run autonome, parce que la validation surveillée les montre a chaque fois. Personne ne regarde celle-ci : décide ici, sinon elle s'arrêtera.",
+    fr: "git push et git pull sont les deux seules choses qui arrêtent encore un run autonome, parce que la validation surveillée les montre à chaque fois. Personne ne regarde celle-ci : décide ici, sinon il s'arrêtera.",
   },
   "runs.turns": { en: "Turns", fr: "Tours" },
   "runs.turnsUnit": { en: "turns", fr: "tours" },
@@ -1530,7 +1530,7 @@ const dict: Record<string, { en: string; fr: string }> = {
   "learned.switchTitle": { en: "Learn from finished tasks", fr: "Apprendre des tâches terminées" },
   "learned.switchDesc": {
     en: "Off by default. When on, a task that recurs may become a skill.",
-    fr: "Désactivé par défaut. Une fois actif, une tâche qui revient peut devenir une skill.",
+    fr: "Désactivé par défaut. Une fois actif, une tâche qui revient peut devenir un skill.",
   },
   "learned.switchHint": {
     en: "The bar is high on purpose: five tool calls or more, no denied step, at least two actions that change something, and the same shape seen at least twice. What the agent writes lands in this list, never among the skills that ship with the app, and it waits here until you accept it.",

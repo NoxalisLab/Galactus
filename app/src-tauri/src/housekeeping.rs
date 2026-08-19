@@ -126,37 +126,47 @@ fn sweep_symbols(root: &Path) -> Swept {
     let now = SystemTime::now();
     let home = root.join("symbols");
     let _ = std::fs::create_dir_all(&home);
-    let Ok(read) = std::fs::read_dir(root) else { return out };
-    for entry in read.flatten() {
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().to_string();
-        if !name.starts_with("code-symbols-") || !name.ends_with(".json") {
-            continue;
-        }
-        let Ok(meta) = entry.metadata() else { continue };
-        let age = meta
-            .modified()
-            .ok()
-            .and_then(|m| now.duration_since(m).ok())
-            .unwrap_or_default();
-        let text = std::fs::read_to_string(&path).unwrap_or_default();
-        let workspace_gone = serde_json::from_str::<serde_json::Value>(&text)
-            .ok()
-            .and_then(|v| v["root"].as_str().map(|s| !Path::new(s).is_dir()))
-            .unwrap_or(false);
-        // An index with no symbols in it is what 144 of the 146 files here
-        // were: written for a folder that had none, and re-read forever.
-        let empty = text.len() < 400;
-        if workspace_gone || empty || age > SYMBOL_MAX_AGE {
-            let size = meta.len();
-            if std::fs::remove_file(&path).is_ok() {
-                out.files += 1;
-                out.bytes += size;
+
+    // Both places, and the order matters. The first version read only the root,
+    // so an index survived its first sweep, moved into symbols/, and was never
+    // looked at again: its workspace could be deleted and the file stayed for
+    // good. Sweeping the root migrates, sweeping the folder prunes, and a file
+    // migrated on this pass is judged on the next one rather than twice now.
+    for (dir, migrate) in [(root.to_path_buf(), true), (home.clone(), false)] {
+        let Ok(read) = std::fs::read_dir(&dir) else { continue };
+        for entry in read.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !name.starts_with("code-symbols-") || !name.ends_with(".json") {
+                continue;
             }
-            continue;
+            let Ok(meta) = entry.metadata() else { continue };
+            let age = meta
+                .modified()
+                .ok()
+                .and_then(|m| now.duration_since(m).ok())
+                .unwrap_or_default();
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            let workspace_gone = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| v["root"].as_str().map(|s| !Path::new(s).is_dir()))
+                .unwrap_or(false);
+            // An index with no symbols in it is what 144 of the 146 files here
+            // were: written for a folder that had none, and re-read forever.
+            let empty = text.len() < 400;
+            if workspace_gone || empty || age > SYMBOL_MAX_AGE {
+                let size = meta.len();
+                if std::fs::remove_file(&path).is_ok() {
+                    out.files += 1;
+                    out.bytes += size;
+                }
+                continue;
+            }
+            if migrate {
+                // Keep it, but out of the way of settings.json.
+                let _ = std::fs::rename(&path, home.join(&name));
+            }
         }
-        // Keep it, but out of the way of settings.json.
-        let _ = std::fs::rename(&path, home.join(&name));
     }
     out
 }
@@ -242,5 +252,42 @@ mod tests {
         assert_eq!(swept.files, 1);
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_index_that_was_already_filed_away_is_still_pruned() {
+        // The bug this pins: sweep_symbols read only the root, so an index kept
+        // by one pass moved into symbols/ and left the sweep's sight for good.
+        // Delete its workspace afterwards and the file stayed on disk forever.
+        let dir = std::env::temp_dir().join("galactus-symbols-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let home = dir.join("symbols");
+        std::fs::create_dir_all(&home).unwrap();
+
+        let live = std::env::temp_dir().join("galactus-symbols-workspace");
+        std::fs::create_dir_all(&live).unwrap();
+        // Valid JSON, and over the 400-byte floor, so neither the parse failure
+        // nor the empty-index rule is what decides the outcome here.
+        let body = |root: &Path| {
+            let names: Vec<String> = (0..40).map(|i| format!(r#""symbol_number_{i}""#)).collect();
+            format!(r#"{{"root":"{}","symbols":[{}]}}"#, root.display(), names.join(","))
+        };
+
+        // Already filed: one whose folder is gone, one whose folder is there.
+        std::fs::write(home.join("code-symbols-dead.json"), body(Path::new("/nope/gone"))).unwrap();
+        std::fs::write(home.join("code-symbols-live.json"), body(&live)).unwrap();
+        // And one still at the root, to check migration keeps working.
+        std::fs::write(dir.join("code-symbols-new.json"), body(&live)).unwrap();
+
+        let swept = sweep_symbols(&dir);
+
+        assert_eq!(swept.files, 1, "the filed-away orphan is the one that goes");
+        assert!(!home.join("code-symbols-dead.json").exists());
+        assert!(home.join("code-symbols-live.json").exists(), "a live index survives");
+        assert!(home.join("code-symbols-new.json").exists(), "and the root one is filed");
+        assert!(!dir.join("code-symbols-new.json").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&live);
     }
 }

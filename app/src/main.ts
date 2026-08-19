@@ -2442,12 +2442,20 @@ async function submitChat(): Promise<void> {
     // the log is the sentence they wrote, and the attached bodies ride with the
     // turn. The budget is a third of the live window, the same share agent.ts
     // gives one tool result, so a mention can never crowd out the conversation.
-    await dispatchTurn(target, await withMentions(text), { show: true });
+    const attached = await withMentions(text);
+    // Released HERE, before the turn runs.
+    //
+    // `submitting` is app-wide, and holding it across dispatchTurn held it for
+    // the whole turn: Enter in any other conversation or teammate thread then
+    // did nothing at all, with no bubble, no queue and no message, for as long
+    // as one thread was answering. That is worse than the double-submit it was
+    // widened to prevent, and it is not what prevents it either: dispatchTurn
+    // now refuses a second turn on a thread that is already generating, which
+    // is the guard that actually holds, because it is taken where the turn
+    // starts rather than one await earlier.
+    submitting = false;
+    await dispatchTurn(target, attached, { show: true });
   } finally {
-    // Released only once the turn is under way. It used to be released before
-    // withMentions, which reads files and asks the engine for its context size:
-    // a second Return during that window started a second turn on the same
-    // Agent, and the two interleaved their messages into one history.
     submitting = false;
   }
 }
@@ -2507,6 +2515,23 @@ interface TurnOptions {
  * asks the server for more streams than it was started with.
  */
 async function dispatchTurn(sess: Thread, text: string, opts: TurnOptions = {}): Promise<void> {
+  // ONE turn per thread, decided here.
+  //
+  // This is the only place that starts a turn, so it is the only place that can
+  // serialise them. Every caller's own guard is a check separated from its act
+  // by real awaits: submitChat reads the context size and the mentioned files,
+  // and a teammate's ask lands in exactly that gap. Two turns on one Agent
+  // interleave their messages into a single history and orphan the first
+  // turn's abort controller.
+  //
+  // The message is queued rather than refused, so nothing the user typed is
+  // lost, and a teammate's ask is answered when the teammate is free.
+  if (sess.generating) {
+    sess.queued.push(text);
+    if (opts.show) store.pushUser(sess, text, opts.from, true);
+    if (sess.key === active().key) { paintChat(); scrollChatDown(); }
+    return;
+  }
   const visible = () => sess.key === active().key;
   const shown = () => visible() || (!!sess.sub && active().key === threadKey(sess.conv.id));
   // A stop from a PREVIOUS turn must not cancel this one.

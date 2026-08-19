@@ -535,7 +535,10 @@ export function onSearchPanelEvent(e: Event, state: SearchPanelState, deps: Sear
     const line = Number(row.dataset.line);
     // A 1-based CHARACTER column, which is what a CodeMirror position wants.
     const col = Number(row.dataset.col || 1);
-    deps.openFile(path);
-    deps.revealLine(line, col);
+    // Awaited. Opening reads the file, so calling these one after the other
+    // returned while the PREVIOUS document was still on screen: the reveal
+    // landed in that one and scrolled it to an arbitrary line, and the file
+    // that was actually clicked opened at the top.
+    void Promise.resolve(deps.openFile(path)).then(() => deps.revealLine(line, col));
   }
 }

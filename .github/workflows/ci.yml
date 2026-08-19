@@ -55,6 +55,11 @@ jobs:
       - name: the three version numbers agree
         run: python3 scripts/check-versions.py
 
+      - name: French strings spell and address the reader the same way
+        # A pass that added the missing accents did it by substring, so it also
+        # turned fermer into fermér and shipped it three times.
+        run: python3 scripts/check-french.py
+
       - name: Skills validate against the runtime tool surface
         run: python3 scripts/check-skills.py
 

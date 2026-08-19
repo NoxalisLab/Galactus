@@ -350,8 +350,9 @@ export function openSymbolPalette(deps: PaletteDeps): void {
     fetch: (q) => build(q),
     pick: (v) => {
       const s = v as SymbolHit;
-      deps.openFile(s.path);
-      deps.revealLine?.(s.line, 1);
+      // Awaited, for the same reason as the search panel: the reveal must not
+      // fire while the previous document is still the one on screen.
+      void Promise.resolve(deps.openFile(s.path)).then(() => deps.revealLine?.(s.line, 1));
     },
   });
 }
