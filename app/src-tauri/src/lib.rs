@@ -9009,7 +9009,7 @@ mod memory_lock_tests {
 
 #[cfg(test)]
 mod ctx_window_tests {
-    use super::{ctx_within_model, CTX_PER_SLOT};
+    use super::{ctx_within_model, kv_bytes_for, CTX_PER_SLOT};
 
     #[test]
     fn a_model_trained_on_less_than_the_default_is_not_stretched_to_it() {
@@ -9032,6 +9032,25 @@ mod ctx_window_tests {
         assert_eq!(ctx_within_model(4096, 131_072), CTX_PER_SLOT, "the floor holds");
         assert_eq!(ctx_within_model(32_768, 131_072), 32_768, "a wish inside the limit is met");
         assert_eq!(ctx_within_model(262_144, 131_072), 131_072, "the model's limit is the ceiling");
+    }
+
+    #[test]
+    fn a_ten_million_token_ceiling_changes_nothing_but_the_limit() {
+        // Llama-4 Scout publishes 10 * 1024 * 1024. The settings offer stops at
+        // 128K, so what a ceiling that large does is stop capping, and every
+        // figure that follows still comes from what was asked for rather than
+        // from what the model could hold. Checked rather than assumed, because
+        // a number six orders of magnitude past the others is exactly where an
+        // overflow or a silly plan would show up.
+        let scout = 10_485_760;
+        assert_eq!(ctx_within_model(131_072, scout), 131_072, "the biggest offer is served whole");
+        assert_eq!(ctx_within_model(8192, scout), CTX_PER_SLOT, "and so is the smallest");
+        // The KV cost is driven by the WINDOW SERVED, never by the ceiling.
+        assert_eq!(kv_bytes_for(131_072, 2), kv_bytes_for(131_072, 2), "no term reads model_max");
+        assert!(
+            kv_bytes_for(ctx_within_model(131_072, scout), 4) < u64::MAX / 2,
+            "nothing overflows on the way through"
+        );
     }
 }
 
@@ -9098,6 +9117,18 @@ mod registry_context_tests {
             ("qwen35-35b-a3b", 262_144),
             ("mellum2-12b", 131_072),
             ("olmoe-1b-7b", 4_096),
+            // Meta's announced 10M, and the exact figure is 10 * 1024 * 1024.
+            // meta-llama's own repository is gated, so this was read from
+            // unsloth's mirror, which is the repository this entry actually
+            // downloads from: the number that matters here is the one shipped
+            // beside the weights we serve.
+            //
+            // Worth knowing what that 10M is made of: the config declares
+            // rope_scaling llama3 with original_max_position_embeddings 8192.
+            // The window is reached by extension, not by training at it. That
+            // does not change what belongs in this field, which is what the
+            // model publishes, and the settings offer stops at 128K anyway.
+            ("llama4-scout", 10_485_760),
         ];
 
         for (id, want) in published {

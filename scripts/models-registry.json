@@ -318,6 +318,7 @@
       ],
       "measured_note": "MacBook Pro M5 Max, 128 GB, internal SSD, shipped path (Metal bit-exact experts), batch 512, planner ubatch, 192 predicted tokens on a 24-paragraph prompt, bench 2026-08-10 by scripts/bench-curve.py; cache = app planning ceiling per Mac tier, curve stops at full residency (58.51 GB)",
       "min_ram_gb": 24,
+      "context_length": 10485760,
       "download": {
         "base": "https://huggingface.co/unsloth/Llama-4-Scout-17B-16E-Instruct-GGUF/resolve/main/Q4_K_M",
         "files": [
