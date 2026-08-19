@@ -43,6 +43,10 @@ pub const ROLE_FLAGS: &[(&str, &str)] = &[
     ("t5xxl", "--t5xxl"),
     ("clip_l", "--clip_l"),
     ("clip_g", "--clip_g"),
+    // Qwen-Image's text encoder is a full vision-language model rather than a
+    // CLIP/T5 pair. Without this role its --llm flag is never emitted and the
+    // model loads with no encoder at all.
+    ("llm", "--llm"),
     ("vae", "--vae"),
 ];
 
