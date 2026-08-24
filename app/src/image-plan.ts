@@ -66,6 +66,45 @@ export function sizeLabel(w: number, h: number): string {
   return `${w} x ${h}`;
 }
 
+/**
+ * The clip lengths offered, in frames, on the model's own grid.
+ *
+ * Video counts are not free-form: the engine accepts `step * k + base` and
+ * silently rounds anything else up, so every option here is a count that
+ * will render exactly as shown. The list walks the grid from about half a
+ * second to `maxFrames`, thinning as it grows: nearby long clips differ by
+ * seconds of rendering and pennies of content, so the ladder spaces out the
+ * way SIDE_LADDER does rather than listing every rung.
+ */
+export function framePresets(
+  v: { frames: number; frame_step: number; frame_base: number; fps: number },
+  maxFrames: number,
+): number[] {
+  const step = Math.max(1, v.frame_step);
+  const align = (n: number): number =>
+    step * Math.ceil(Math.max(0, n - v.frame_base) / step) + v.frame_base;
+  const out: number[] = [];
+  // Half a second, one, two, three, five, ten seconds... then the ceiling.
+  for (const secs of [0.5, 1, 2, 3, 5, 10, 15]) {
+    const f = align(Math.round(secs * v.fps));
+    if (f > maxFrames) break;
+    if (!out.includes(f)) out.push(f);
+  }
+  const top = align(Math.min(v.frames, maxFrames));
+  if (top <= maxFrames && !out.includes(top)) {
+    out.push(top);
+    out.sort((a, b) => a - b);
+  }
+  return out.length ? out : [align(v.frame_base)];
+}
+
+/** "56 frames" said as time: "2.3s at 24 fps". The number a person wants. */
+export function clipLabel(frames: number, fps: number): string {
+  const secs = frames / Math.max(1, fps);
+  const t = secs >= 10 ? String(Math.round(secs)) : (Math.round(secs * 10) / 10).toFixed(1);
+  return `${t}s`;
+}
+
 /** A duration a person reads at a glance: seconds under a minute, else m s. */
 export function fmtSeconds(s: number): string {
   if (!Number.isFinite(s) || s <= 0) return "";

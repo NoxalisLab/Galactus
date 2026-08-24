@@ -40,6 +40,10 @@ use tauri::Emitter;
 pub const ROLE_FLAGS: &[(&str, &str)] = &[
     ("model", "-m"),
     ("diffusion", "--diffusion-model"),
+    // Wan 2.2's A14B pair: two experts, one for the noisy half of the schedule
+    // and one for the clean half, both loaded at once. A model with this role
+    // is useless without it, so it rides in the same table as the rest.
+    ("high_noise_diffusion", "--high-noise-diffusion-model"),
     ("t5xxl", "--t5xxl"),
     ("clip_l", "--clip_l"),
     ("clip_g", "--clip_g"),
@@ -47,13 +51,87 @@ pub const ROLE_FLAGS: &[(&str, &str)] = &[
     // CLIP/T5 pair. Without this role its --llm flag is never emitted and the
     // model loads with no encoder at all.
     ("llm", "--llm"),
+    // The vision tower of that encoder, when it ships as its own file. Baked
+    // into the checkpoint for both models here, so nothing sets it today; it
+    // exists because a model that stores it apart loads with no vision at all
+    // and fails deep, and the flag is one line.
+    ("llm_vision", "--llm_vision"),
     ("vae", "--vae"),
+    // MiniMax-H3 decodes picture and sound in the same pass and wants a second
+    // VAE for the sound. Without it the engine still runs the joint model and
+    // simply writes a silent clip, which is a quiet way to lose half of what
+    // this model does.
+    ("audio_vae", "--audio-vae"),
 ];
+
+/// What a video model needs that an image model does not.
+///
+/// WHY THE GRID IS WRITTEN DOWN. Neither engine takes a free-form frame count:
+/// MiniMax-H3 rounds up to `17k + 5` and Wan to `4k + 1`, silently, inside the
+/// engine. A user who asks for two seconds and is handed 2.4 has no way to know
+/// where the extra came from, and the measured time in the registry would be
+/// for a clip nobody asked for. The grid lives here so the rounding happens
+/// where the number is still on screen.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct VideoSpec {
+    /// The frame count this model opens with.
+    pub frames: u32,
+    /// Accepted counts are `frame_step * k + frame_base`.
+    pub frame_step: u32,
+    pub frame_base: u32,
+    /// Frames per second the model was trained at. Wan's A14B is 16 and H3 is
+    /// 24; passing the wrong one gives a clip that plays at the wrong speed,
+    /// and H3 overrides anything else anyway.
+    pub fps: u32,
+    /// Flow shift, when the model wants one the engine would not pick itself.
+    /// None leaves the engine on auto, which is right for H3 (it picks 12).
+    #[serde(default)]
+    pub flow_shift: Option<f32>,
+    #[serde(default)]
+    pub sampling_method: Option<String>,
+    /// The engine's noise source. H3's published invocations all pass `cpu`,
+    /// which also makes a seed mean the same thing whatever the backend.
+    #[serde(default)]
+    pub rng: Option<String>,
+    /// Steps for the noisy half of the schedule, for the models that split it
+    /// across two weight files. None for the single-model ones.
+    #[serde(default)]
+    pub high_noise_steps: Option<u32>,
+    /// Weights in RAM, copied to the GPU as they are needed.
+    ///
+    /// A property of the model rather than of the machine: both video models
+    /// here are tens of gigabytes and neither is meant to sit in the graph
+    /// budget whole. Layer streaming, which rides on top of this, is NOT here
+    /// for the opposite reason: it costs throughput and only pays on a machine
+    /// that needs the room, so `image_plan` decides it per Mac.
+    #[serde(default)]
+    pub offload_to_cpu: bool,
+    /// This model cannot start from text alone: Wan's I2V was trained to
+    /// animate a picture and diverges into noise without one.
+    #[serde(default)]
+    pub needs_init_image: bool,
+    /// This model can take a starting picture but does not require one.
+    #[serde(default)]
+    pub accepts_init_image: bool,
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ImageModel {
     pub id: String,
     pub name: String,
+    /// "image" or "video". Absent means image, so every entry that predates
+    /// video keeps parsing unchanged.
+    #[serde(default = "kind_image")]
+    pub kind: String,
+    /// Present exactly when `kind` is video.
+    #[serde(default)]
+    pub video: Option<VideoSpec>,
+    /// What the licence restricts, when it restricts something worth showing
+    /// before forty gigabytes are fetched. An `{en, fr}` object, like `note`:
+    /// both travel to the card verbatim, so a bare string would reach half
+    /// the users in the wrong language. Empty/absent for the permissive ones.
+    #[serde(default)]
+    pub licence: Value,
     /// Total bytes on disk, for the install dialog.
     pub bytes: u64,
     /// What each file is for: role -> filename.
@@ -70,8 +148,9 @@ pub struct ImageModel {
     /// Times measured on real machines. Empty until someone runs it.
     #[serde(default)]
     pub measured: Vec<Value>,
+    /// `{en, fr}` object, displayed verbatim on the card in the user's language.
     #[serde(default)]
-    pub note: String,
+    pub note: Value,
     /// Filled in by `image_models`, never stored.
     #[serde(default)]
     pub installed: bool,
@@ -95,6 +174,20 @@ pub struct ImageModel {
     /// this machine has Y" sentence.
     #[serde(default)]
     pub need_gb: u64,
+    /// The longest clip this machine can decode, in frames. Zero for an image
+    /// model and for a video model that does not fit at all.
+    #[serde(default)]
+    pub max_frames: u32,
+}
+
+fn kind_image() -> String {
+    "image".to_string()
+}
+
+impl ImageModel {
+    pub fn is_video(&self) -> bool {
+        self.kind == "video"
+    }
 }
 
 /// Where generated images and downloaded weights live.
@@ -216,17 +309,82 @@ pub fn model_installed(dir: &Path, m: &ImageModel) -> bool {
 ///
 /// Separated from the spawn so the flags are visible in one place and testable
 /// without a model on disk, exactly like ssh_argv.
+/// `stream_layers` comes from the plan, not from the registry and not from the
+/// view: it buys room on a Mac that needs it and costs throughput on one that
+/// does not, which makes it a fact about the machine.
 pub fn generate_argv(
     dir: &Path,
     m: &ImageModel,
     req: &GenerateRequest,
     out: &Path,
+    stream_layers: bool,
 ) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
+    // The mode goes first, where a person reading a failing command line looks.
+    if m.is_video() {
+        args.push("-M".into());
+        args.push("vid_gen".into());
+    }
     for (role, flag) in ROLE_FLAGS {
         if let Some(file) = m.roles.get(*role).filter(|f| is_plain_name(f)) {
             args.push((*flag).to_string());
             args.push(dir.join(file).to_string_lossy().to_string());
+        }
+    }
+    if let Some(v) = m.video.as_ref() {
+        args.push("--video-frames".into());
+        args.push(align_frames(req.frames, v).to_string());
+        args.push("--fps".into());
+        args.push(v.fps.max(1).to_string());
+        // Flash attention in the diffusion model only, which is what every
+        // published invocation of both models uses. Not offered as a choice:
+        // it is how these two are meant to be run.
+        args.push("--diffusion-fa".into());
+        if let Some(shift) = v.flow_shift {
+            args.push("--flow-shift".into());
+            args.push(format!("{shift:.2}"));
+        }
+        if let Some(sampler) = v.sampling_method.as_deref().filter(|s| !s.is_empty()) {
+            args.push("--sampling-method".into());
+            args.push(sampler.to_string());
+        }
+        if let Some(rng) = v.rng.as_deref().filter(|s| !s.is_empty()) {
+            args.push("--rng".into());
+            args.push(rng.to_string());
+        }
+        // The noisy half of the schedule, for a model that splits it over two
+        // weight files. Its cfg and sampler follow the clean half's rather
+        // than being invented: the published Wan invocations set both halves
+        // to the same values and differ only in the step count.
+        if let Some(steps) = v.high_noise_steps.filter(|_| m.roles.contains_key("high_noise_diffusion")) {
+            args.push("--high-noise-steps".into());
+            args.push(steps.clamp(1, 100).to_string());
+            args.push("--high-noise-cfg-scale".into());
+            args.push(format!("{:.2}", req.cfg));
+            if let Some(sampler) = v.sampling_method.as_deref().filter(|s| !s.is_empty()) {
+                args.push("--high-noise-sampling-method".into());
+                args.push(sampler.to_string());
+            }
+        }
+        if v.offload_to_cpu {
+            args.push("--offload-to-cpu".into());
+        }
+        // The starting picture. Presence was already enforced by the caller
+        // for the models that need one; here an empty string simply emits
+        // nothing, which is the text-to-video case.
+        if !req.init_image.is_empty() {
+            args.push("-i".into());
+            args.push(req.init_image.clone());
+        }
+        // Residency streaming, and the budget it rides on. --stream-layers is
+        // documented as having no effect without --max-vram, so the two are
+        // emitted together or not at all. -1 means "most of the free VRAM,
+        // keeping about a gigabyte spare", which is the pairing the engine's
+        // own performance guide gives.
+        if stream_layers && v.offload_to_cpu {
+            args.push("--max-vram".into());
+            args.push("-1".into());
+            args.push("--stream-layers".into());
         }
     }
     // The CPU VAE path, for the models that need it (Flux on Metal). A flag on
@@ -274,7 +432,39 @@ pub struct GenerateRequest {
     pub height: u32,
     /// Negative means "pick one", which sd-cli understands directly.
     pub seed: i64,
+    /// Frames for a video model, ignored by an image one. Zero means "the
+    /// model's own default", which is what a caller that does not know the
+    /// model sends.
+    #[serde(default)]
+    pub frames: u32,
+    /// The starting picture for the models that animate one. A path the USER
+    /// picked, so unlike everything else it may point anywhere readable: it is
+    /// validated as an existing file, not confined to our folder.
+    #[serde(default)]
+    pub init_image: String,
 }
+
+/// The nearest frame count at or above `want` that this model accepts.
+///
+/// Rounded UP rather than to the nearest, and deliberately: the engine itself
+/// rounds up, so rounding down here would hand the engine a number it silently
+/// raises again, and the count shown to the user would be neither what was
+/// asked nor what was rendered.
+pub fn align_frames(want: u32, v: &VideoSpec) -> u32 {
+    let step = v.frame_step.max(1);
+    let base = v.frame_base;
+    let want = if want == 0 { v.frames } else { want }.max(base).min(MAX_FRAMES);
+    // k such that step * k + base is the first value at or above want.
+    let k = (want.saturating_sub(base)).div_ceil(step);
+    (step * k + base).min(MAX_FRAMES)
+}
+
+/// The longest clip this app will ask for, whatever the machine.
+///
+/// Not a memory bound (that is `video_plan`'s job) but a patience one: at the
+/// measured seconds-per-frame of these models, a four hundred frame clip is a
+/// machine busy overnight for something nobody watches to the end.
+const MAX_FRAMES: u32 = 241;
 
 /// Clamp a request to what the engine and the machine can actually do.
 ///
@@ -288,9 +478,28 @@ pub struct GenerateRequest {
 /// without the view, and a bound that lives only in the UI is not a bound.
 /// Zero means no plan was consulted (tests, callers refused upstream) and
 /// keeps the engine-wide 2048.
-pub fn clamp_request(mut r: GenerateRequest, max_side: u32) -> GenerateRequest {
+pub fn clamp_request(
+    mut r: GenerateRequest,
+    max_side: u32,
+    video: Option<&VideoSpec>,
+) -> GenerateRequest {
     r.steps = r.steps.clamp(1, 100);
     r.cfg = if r.cfg.is_finite() { r.cfg.clamp(0.0, 30.0) } else { 7.0 };
+    if let Some(v) = video {
+        r.frames = align_frames(r.frames, v);
+        // Thirty-two, not sixty-four, and this is load-bearing rather than a
+        // detail: both video models are trained at 864 x 480 and 832 x 480,
+        // and neither side is a multiple of 64. Rounding these the way images
+        // are rounded turns 864 x 480 into 896 x 512, which is no longer the
+        // shape the model was measured at, on every single run.
+        let cap = if max_side == 0 { 2048 } else { (max_side.clamp(64, 2048) / 32) * 32 };
+        r.width = round32(r.width).min(cap);
+        r.height = round32(r.height).min(cap);
+        if r.seed < -1 || r.seed > 4_294_967_295 {
+            r.seed = -1;
+        }
+        return r;
+    }
     // Multiples of 64: the latent space is the image divided by eight, and a
     // size that does not divide cleanly comes back subtly stretched. Rounded to
     // the NEAREST multiple rather than truncated, because 700 meant "about
@@ -314,6 +523,11 @@ pub fn clamp_request(mut r: GenerateRequest, max_side: u32) -> GenerateRequest {
 fn round64(v: u32) -> u32 {
     let v = v.clamp(64, 2048);
     (((v + 32) / 64) * 64).clamp(64, 2048)
+}
+
+fn round32(v: u32) -> u32 {
+    let v = v.clamp(32, 2048);
+    (((v + 16) / 32) * 32).clamp(32, 2048)
 }
 
 // ------------------------------------------------ will it run on THIS Mac
@@ -374,6 +588,93 @@ pub struct ImagePlan {
     pub recommended_steps: Option<u32>,
     /// Installed GB a Mac needs to run this model at all.
     pub need_gb: u64,
+    /// The longest clip that fits, on the model's own frame grid. Zero for
+    /// an image model.
+    pub max_frames: u32,
+    /// Stream the transformer blocks rather than keeping them resident. The
+    /// plan's call, not the registry's: it buys room a small Mac needs and
+    /// costs a roomy one a few percent of throughput for nothing.
+    pub stream_layers: bool,
+}
+
+/// Bytes one video generation needs on top of the weights.
+///
+/// The same two ideas as `activation_bytes`, with time as a third axis:
+///
+///   * a flat 2 GB for the runtime, the text encoder pass and the sampler.
+///     Twice the image figure, because the packed latent of a clip and the
+///     conditioning of a second diffusion model (Wan's high-noise expert)
+///     are not small change the way one image's latent is;
+///   * the VAE decode, per frame: the same 3 GB of feature maps a 1024
+///     square costs, scaled by the pixel count, with about one frame in
+///     eight's worth alive at once. The video VAEs decode through time in
+///     chunks rather than holding every frame's maps simultaneously, and
+///     one-in-eight reproduces the engine's behaviour at the shipped
+///     resolutions without flattering it.
+///
+/// AN ESTIMATE TO BE CALIBRATED, exactly as `activation_bytes` was: with
+/// these numbers H3's 42.8 GB of weights plus an 864 x 480 x 56-frame clip
+/// lands at 53 GB, which fits the 64 GB gate its registry entry carries, and
+/// TI2V-5B at 81 frames lands under a 32 GB Mac's budget. The first measured
+/// run on each model replaces trust in this formula with a number.
+fn video_activation_bytes(w: u32, h: u32, frames: u32) -> u64 {
+    let px = w as u64 * h as u64;
+    2 * GB + 3 * GB * px * (frames as u64).div_ceil(8) / (1024 * 1024)
+}
+
+/// The per-machine verdict for a video model, pure like `image_plan`.
+///
+/// The resolution is not a ladder here: video models are trained at one
+/// shape and diverge away from it, so the plan holds the registry's default
+/// resolution fixed and answers with the longest clip instead.
+pub fn video_plan(
+    bytes: u64,
+    min_ram_gb: u64,
+    ram_gb: u64,
+    w: u32,
+    h: u32,
+    v: &VideoSpec,
+) -> ImagePlan {
+    let installed = ram_gb * GB;
+    let budget = installed.saturating_sub(crate::system_reserve_bytes(installed));
+    let shortest = v.frame_step.max(1) + v.frame_base;
+    let floor = bytes.saturating_add(video_activation_bytes(w, h, shortest));
+    let need_gb = min_ram_gb.max((floor + 2 * GB).div_ceil(GB));
+    if ram_gb < min_ram_gb || floor > budget {
+        return ImagePlan {
+            usable: false,
+            reason: format!("needs about {need_gb} GB of memory and this Mac has {ram_gb} GB"),
+            max_side: 0,
+            recommended_steps: None,
+            need_gb,
+            max_frames: 0,
+            stream_layers: false,
+        };
+    }
+    // Walk the model's own grid downward from the longest clip this app
+    // offers: every candidate is a count the engine will not silently change.
+    let mut max_frames = shortest;
+    let mut f = align_frames(MAX_FRAMES, v);
+    while f >= shortest {
+        if bytes.saturating_add(video_activation_bytes(w, h, f)) <= budget {
+            max_frames = f;
+            break;
+        }
+        f = f.saturating_sub(v.frame_step.max(1));
+    }
+    // Streaming buys room and costs throughput, so it is on exactly when the
+    // room is needed: a machine whose budget holds the weights twice over
+    // gains nothing from evicting blocks it could have kept.
+    let stream_layers = v.offload_to_cpu && bytes * 2 > budget;
+    ImagePlan {
+        usable: true,
+        reason: format!("runs here up to {max_frames} frames at {w} x {h}"),
+        max_side: w.max(h),
+        recommended_steps: None,
+        need_gb,
+        max_frames,
+        stream_layers,
+    }
 }
 
 /// The per-machine verdict, pure so a test can hold any Mac in one integer.
@@ -404,6 +705,8 @@ pub fn image_plan(bytes: u64, min_ram_gb: u64, ram_gb: u64, default_steps: u32) 
             max_side: 0,
             recommended_steps: None,
             need_gb,
+            max_frames: 0,
+            stream_layers: false,
         };
     }
     let max_side = SIDE_LADDER
@@ -427,12 +730,31 @@ pub fn image_plan(bytes: u64, min_ram_gb: u64, ram_gb: u64, default_steps: u32) 
         max_side,
         recommended_steps,
         need_gb,
+        max_frames: 0,
+        stream_layers: false,
     }
 }
 
 /// The step count a model opens with, from its registry defaults.
 fn default_steps(m: &ImageModel) -> u32 {
     m.defaults["steps"].as_u64().unwrap_or(20) as u32
+}
+
+/// The one place that decides which arithmetic a model gets.
+///
+/// Everything the callers know about a model goes in, one plan comes out:
+/// `image_generate` and `image_models` were already calling `image_plan` from
+/// two places, and a video model dispatched in one but not the other would be
+/// gated on the wrong numbers in whichever forgot.
+pub fn plan_for(m: &ImageModel, ram_gb: u64) -> ImagePlan {
+    match m.video.as_ref() {
+        Some(v) => {
+            let w = m.defaults["width"].as_u64().unwrap_or(832) as u32;
+            let h = m.defaults["height"].as_u64().unwrap_or(480) as u32;
+            video_plan(m.bytes, m.min_ram_gb, ram_gb, w, h, v)
+        }
+        None => image_plan(m.bytes, m.min_ram_gb, ram_gb, default_steps(m)),
+    }
 }
 
 /// Installed GiB, read the way every `min_ram_gb` gate in lib.rs reads it:
@@ -565,12 +887,13 @@ pub async fn image_models() -> Result<Vec<ImageModel>, String> {
         // The per-machine verdict rides on the same answer as `installed`,
         // for the same reason: the view needs one call to paint a card, and
         // both facts are properties of this Mac rather than of the registry.
-        let plan = image_plan(m.bytes, m.min_ram_gb, ram_gb, default_steps(m));
+        let plan = plan_for(m, ram_gb);
         m.usable = plan.usable;
         m.reason = plan.reason;
         m.max_side = plan.max_side;
         m.recommended_steps = plan.recommended_steps;
         m.need_gb = plan.need_gb;
+        m.max_frames = plan.max_frames;
     }
     Ok(list)
 }
@@ -724,11 +1047,30 @@ pub async fn image_generate(
     // the view: the agent side of the app reaches this command directly and
     // never sees a disabled button, so a model too big for this Mac has to be
     // refused at the door instead of being discovered as a swap spiral.
-    let plan = image_plan(m.bytes, m.min_ram_gb, machine_ram_gb(), default_steps(&m));
+    let plan = plan_for(&m, machine_ram_gb());
     if !plan.usable {
         return Err(format!("{} {}", m.name, plan.reason));
     }
-    let req = clamp_request(req, plan.max_side);
+    let mut req = clamp_request(req, plan.max_side, m.video.as_ref());
+    if let Some(v) = m.video.as_ref() {
+        req.frames = req.frames.min(plan.max_frames.max(v.frame_step + v.frame_base));
+        // The starting picture, for the models that take one. Checked as a
+        // real file here, where the sentence can still name it: the engine's
+        // own failure is a stat error deep in a log.
+        if !req.init_image.is_empty() && !Path::new(&req.init_image).is_file() {
+            return Err(format!("there is no picture at {}", req.init_image));
+        }
+        if v.needs_init_image && req.init_image.is_empty() {
+            return Err(format!("{} needs a starting picture", m.name));
+        }
+        if !v.needs_init_image && !v.accepts_init_image {
+            // A model that was not trained to start from a picture ignores or
+            // mangles one; dropping it silently would be worse than saying so.
+            req.init_image.clear();
+        }
+    } else {
+        req.init_image.clear();
+    }
     let dir = model_root();
     if !model_installed(&dir, &m) {
         return Err(format!("{} is not installed yet", m.name));
@@ -742,8 +1084,12 @@ pub async fn image_generate(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    let out = out_dir.join(format!("galactus-{stamp}.png"));
-    let args = generate_argv(&dir, &m, &req, &out);
+    // WebM for video, and this choice is why the engine was rebuilt with
+    // SD_WEBM: its default container is MJPEG in AVI, which WKWebView cannot
+    // play, so the gallery would have shown tiles the app cannot open.
+    let ext = if m.is_video() { "webm" } else { "png" };
+    let out = out_dir.join(format!("galactus-{stamp}.{ext}"));
+    let args = generate_argv(&dir, &m, &req, &out, plan.stream_layers);
     // One at a time, decided in Rust. The view has a `busy` flag, but the model
     // calls the same command through generate_image and cannot see it: two SDXL
     // runs at ten gigabytes each is a machine that stops responding.
@@ -851,6 +1197,20 @@ fn run_generation(
             "the engine finished but wrote no image{}",
             with_reason(&lines)
         ));
+    }
+    // H3's clips carry PCM audio the WebM spec forbids, and WKWebView refuses
+    // the whole file for it (MEDIA_ERR_SRC_NOT_SUPPORTED, measured). The clip
+    // is split here, while it is still ours: a spec-clean video-only WebM
+    // back onto the same path, the sound as a WAV beside it. A file the
+    // splitter cannot parse is left exactly as the engine wrote it.
+    if out.extension().map(|e| e == "webm").unwrap_or(false) {
+        if let Some(split) = crate::webm::split_audio(&written) {
+            if let Some(wav) = split.wav {
+                if std::fs::write(&out, &split.webm).is_ok() {
+                    let _ = std::fs::write(out.with_extension("wav"), &wav);
+                }
+            }
+        }
     }
     if looks_blank(&written) {
         // A flat square, which is what a decode that failed on this backend
@@ -1023,7 +1383,17 @@ pub(crate) fn kill_child() {
 pub fn image_read(path: String) -> Result<String, String> {
     let full = ours(&path)?;
     let bytes = std::fs::read(&full).map_err(|e| e.to_string())?;
-    Ok(format!("data:image/png;base64,{}", b64(&bytes)))
+    // A clip is minutes of work and tens of megabytes; base64 through a
+    // command is the same policy decision as for a PNG, only bigger. The
+    // webview's data: allowance already covers video elements.
+    let mime = match full.extension().and_then(|e| e.to_str()) {
+        Some("webm") => "video/webm",
+        // The soundtrack a clip's PCM was carried off into; WebKit decodes
+        // WAV natively, which is the whole reason it exists.
+        Some("wav") => "audio/wav",
+        _ => "image/png",
+    };
+    Ok(format!("data:{mime};base64,{}", b64(&bytes)))
 }
 
 /// A path inside the images folder, canonicalised, or an error.
@@ -1035,8 +1405,12 @@ fn ours(path: &str) -> Result<PathBuf, String> {
     if !full.starts_with(&root) {
         return Err("that image is not one of ours".into());
     }
-    if full.extension().map(|e| e != "png").unwrap_or(true) {
-        return Err("that is not a png".into());
+    let ok = full
+        .extension()
+        .map(|e| e == "png" || e == "webm" || e == "wav")
+        .unwrap_or(false);
+    if !ok {
+        return Err("that is not one of our images or clips".into());
     }
     Ok(full)
 }
@@ -1056,10 +1430,15 @@ fn b64(bytes: &[u8]) -> String {
     out
 }
 
-/// Delete one generated image.
+/// Delete one generated image, and a clip's soundtrack with it: a WAV whose
+/// WebM is gone is noise on disk nobody can reach from the gallery.
 #[tauri::command(async)]
 pub fn image_forget(path: String) -> Result<(), String> {
-    std::fs::remove_file(ours(&path)?).map_err(|e| e.to_string())
+    let full = ours(&path)?;
+    if full.extension().map(|e| e == "webm").unwrap_or(false) {
+        let _ = std::fs::remove_file(full.with_extension("wav"));
+    }
+    std::fs::remove_file(full).map_err(|e| e.to_string())
 }
 
 /// Everything generated so far, newest first.
@@ -1068,7 +1447,12 @@ pub fn image_gallery() -> Vec<String> {
     let mut files: Vec<(std::time::SystemTime, String)> = std::fs::read_dir(image_root())
         .map(|rd| {
             rd.flatten()
-                .filter(|e| e.path().extension().map(|x| x == "png").unwrap_or(false))
+                .filter(|e| {
+                    e.path()
+                        .extension()
+                        .map(|x| x == "png" || x == "webm")
+                        .unwrap_or(false)
+                })
                 .filter_map(|e| {
                     let when = e.metadata().and_then(|m| m.modified()).ok()?;
                     Some((when, e.path().to_string_lossy().to_string()))
@@ -1095,13 +1479,16 @@ mod tests {
         ImageModel {
             id: "m".into(),
             name: "M".into(),
+            kind: "image".into(),
+            video: None,
+            licence: json!(""),
             bytes: 1,
             roles: map,
             download: json!({}),
             defaults: json!({}),
             min_ram_gb: 8,
             measured: vec![],
-            note: String::new(),
+            note: json!(""),
             installed: false,
             vae_on_cpu: false,
             usable: false,
@@ -1109,6 +1496,33 @@ mod tests {
             max_side: 0,
             recommended_steps: None,
             need_gb: 0,
+            max_frames: 0,
+        }
+    }
+
+    /// A video model shaped like Wan 2.2 TI2V: one diffusion file, a frame
+    /// grid of 4k + 1, and a starting picture accepted but not required.
+    fn video_model() -> ImageModel {
+        let mut m = model(&[("diffusion", "wan.gguf"), ("t5xxl", "t5.gguf"), ("vae", "vae.st")]);
+        m.kind = "video".into();
+        m.defaults = json!({"steps": 20, "cfg": 6.0, "width": 832, "height": 480});
+        m.video = Some(spec());
+        m
+    }
+
+    fn spec() -> super::VideoSpec {
+        super::VideoSpec {
+            frames: 81,
+            frame_step: 4,
+            frame_base: 1,
+            fps: 24,
+            flow_shift: Some(3.0),
+            sampling_method: Some("euler".into()),
+            rng: None,
+            high_noise_steps: None,
+            offload_to_cpu: true,
+            needs_init_image: false,
+            accepts_init_image: true,
         }
     }
 
@@ -1122,6 +1536,8 @@ mod tests {
             width: 512,
             height: 512,
             seed: 42,
+            frames: 0,
+            init_image: String::new(),
         }
     }
 
@@ -1135,7 +1551,7 @@ mod tests {
             ("clip_l", "clip.gguf"),
             ("vae", "ae.gguf"),
         ]);
-        let argv = generate_argv(Path::new("/models"), &m, &req("a cat"), Path::new("/out/x.png"));
+        let argv = generate_argv(Path::new("/models"), &m, &req("a cat"), Path::new("/out/x.png"), false);
         for (flag, file) in [
             ("--diffusion-model", "/models/flux.gguf"),
             ("--t5xxl", "/models/t5.gguf"),
@@ -1154,11 +1570,11 @@ mod tests {
         // of the model, so it appears for a model that sets it and for no other.
         let mut flux = model(&[("diffusion", "flux.gguf"), ("vae", "ae.gguf")]);
         flux.vae_on_cpu = true;
-        let argv = generate_argv(Path::new("/models"), &flux, &req("a cat"), Path::new("/out/x.png"));
+        let argv = generate_argv(Path::new("/models"), &flux, &req("a cat"), Path::new("/out/x.png"), false);
         assert!(argv.iter().any(|a| a == "--vae-on-cpu"), "Flux must decode its VAE on the CPU");
 
         let sdxl = model(&[("model", "sdxl.gguf")]);
-        let argv = generate_argv(Path::new("/models"), &sdxl, &req("a cat"), Path::new("/out/x.png"));
+        let argv = generate_argv(Path::new("/models"), &sdxl, &req("a cat"), Path::new("/out/x.png"), false);
         assert!(!argv.iter().any(|a| a == "--vae-on-cpu"), "every other model decodes on the GPU");
     }
 
@@ -1172,6 +1588,7 @@ mod tests {
             &model(&[("model", "sd.gguf")]),
             &req(nasty),
             Path::new("/out/x.png"),
+            false,
         );
         let at = argv.iter().position(|a| a == "-p").expect("-p present");
         assert_eq!(argv[at + 1], nasty, "the prompt is one argument, verbatim");
@@ -1189,7 +1606,7 @@ mod tests {
         r.height = 700;
         r.steps = 5000;
         r.cfg = f32::INFINITY;
-        let c = clamp_request(r, 0);
+        let c = clamp_request(r, 0, None);
         assert_eq!(c.width, 2048);
         assert_eq!(c.height, 704);
         assert_eq!(c.steps, 100);
@@ -1203,19 +1620,19 @@ mod tests {
         let mut r = req("x");
         r.width = 2048;
         r.height = 1536;
-        let c = clamp_request(r, 1024);
+        let c = clamp_request(r, 1024, None);
         assert_eq!(c.width, 1024);
         assert_eq!(c.height, 1024);
         // A ceiling that is not a multiple of 64 is floored to one, so the
         // latent still divides cleanly.
         let mut odd = req("x");
         odd.width = 2048;
-        let c = clamp_request(odd, 1000);
+        let c = clamp_request(odd, 1000, None);
         assert_eq!(c.width, 960);
         // Zero means no plan was consulted and keeps the engine-wide bound.
         let mut free = req("x");
         free.width = 2048;
-        assert_eq!(clamp_request(free, 0).width, 2048);
+        assert_eq!(clamp_request(free, 0, None).width, 2048);
     }
 
     #[test]
@@ -1416,6 +1833,7 @@ mod tests {
             &model(&[("model", "sdxl.safetensors")]),
             &req("x"),
             Path::new("/out/x.png"),
+            false,
         );
         assert!(!argv.iter().any(|a| a == "--mmap"));
     }
@@ -1448,7 +1866,149 @@ mod tests {
         // Never taken from the webview: a caller-supplied path is a write
         // anywhere on the disk with no permission dialog.
         let out = PathBuf::from("/tmp/whatever.png");
-        let argv = generate_argv(Path::new("/m"), &model(&[("model", "s.gguf")]), &req("x"), &out);
+        let argv = generate_argv(Path::new("/m"), &model(&[("model", "s.gguf")]), &req("x"), &out, false);
         assert_eq!(argv.iter().filter(|a| a.ends_with(".png")).count(), 1);
+    }
+
+    // ------------------------------------------------------------- video
+
+    #[test]
+    fn a_video_model_switches_the_engine_into_vid_gen() {
+        let m = video_model();
+        let argv = generate_argv(Path::new("/m"), &m, &req("a cat"), Path::new("/out/x.webm"), false);
+        assert_eq!(argv[0], "-M", "the mode is the first thing a reader sees");
+        assert_eq!(argv[1], "vid_gen");
+        for flag in ["--video-frames", "--fps", "--diffusion-fa", "--flow-shift", "--sampling-method"] {
+            assert!(argv.iter().any(|a| a == flag), "{flag} missing");
+        }
+        assert!(argv.iter().any(|a| a == "--offload-to-cpu"));
+        // An image model emits none of it.
+        let argv = generate_argv(
+            Path::new("/m"),
+            &model(&[("model", "s.gguf")]),
+            &req("a cat"),
+            Path::new("/out/x.png"),
+            false,
+        );
+        assert!(!argv.iter().any(|a| a == "-M" || a == "--video-frames"));
+    }
+
+    #[test]
+    fn streaming_rides_on_its_budget_or_not_at_all() {
+        // --stream-layers is documented as a no-op without --max-vram, so the
+        // pair travels together. A plan that says no emits neither.
+        let m = video_model();
+        let on = generate_argv(Path::new("/m"), &m, &req("x"), Path::new("/o/x.webm"), true);
+        let at = on.iter().position(|a| a == "--max-vram").expect("--max-vram");
+        assert_eq!(on[at + 1], "-1");
+        assert!(on.iter().any(|a| a == "--stream-layers"));
+        let off = generate_argv(Path::new("/m"), &m, &req("x"), Path::new("/o/x.webm"), false);
+        assert!(!off.iter().any(|a| a == "--max-vram" || a == "--stream-layers"));
+    }
+
+    #[test]
+    fn frame_counts_land_on_the_models_grid() {
+        use super::align_frames;
+        let v = spec(); // 4k + 1
+        assert_eq!(align_frames(0, &v), 81, "zero means the model's default");
+        assert_eq!(align_frames(81, &v), 81, "a count already on the grid stays");
+        assert_eq!(align_frames(82, &v), 85, "rounded UP, the way the engine rounds");
+        assert_eq!(align_frames(1, &v), 1, "the shortest legal clip");
+        // H3's grid: 17k + 5.
+        let h3 = super::VideoSpec { frames: 56, frame_step: 17, frame_base: 5, ..spec() };
+        assert_eq!(align_frames(56, &h3), 56);
+        assert_eq!(align_frames(57, &h3), 73);
+        assert_eq!(align_frames(2, &h3), 5, "never below the base");
+    }
+
+    #[test]
+    fn video_sizes_round_to_32_because_the_trained_shapes_demand_it() {
+        // 864 x 480 and 832 x 480 are the shapes these models were trained
+        // at, and neither side divides by 64: the image rounding would move
+        // every single run off the trained shape.
+        let mut r = req("x");
+        r.width = 864;
+        r.height = 480;
+        let v = spec();
+        let c = clamp_request(r, 0, Some(&v));
+        assert_eq!((c.width, c.height), (864, 480), "the trained shape survives");
+        let mut odd = req("x");
+        odd.width = 850;
+        odd.height = 470;
+        let c = clamp_request(odd, 0, Some(&v));
+        assert_eq!((c.width, c.height), (864, 480), "nearby oddities land on it");
+    }
+
+    #[test]
+    fn the_machine_verdict_scales_with_the_clip_not_the_square() {
+        use super::video_plan;
+        let v = spec();
+        // TI2V-5B's real figures: 12.9 GB of files, 832 x 480. A 16 GB Mac
+        // is refused by its registry floor; 32 GB runs a real clip; 128 GB
+        // reaches this app's longest offer.
+        let small = video_plan(12_852_648_256, 24, 16, 832, 480, &v);
+        assert!(!small.usable);
+        assert_eq!(small.max_frames, 0);
+        let mid = video_plan(12_852_648_256, 24, 32, 832, 480, &v);
+        assert!(mid.usable, "{}", mid.reason);
+        assert!(mid.max_frames >= 33, "a real clip, not a slideshow: {}", mid.max_frames);
+        assert_eq!(mid.max_frames % 4, 1, "the answer sits on the model's grid");
+        let big = video_plan(12_852_648_256, 24, 128, 832, 480, &v);
+        assert_eq!(big.max_frames, 241, "the cap is patience, not memory");
+        // H3 against the machines that matter: refused at 32, runs at 64.
+        let h3 = super::VideoSpec { frames: 56, frame_step: 17, frame_base: 5, ..spec() };
+        assert!(!video_plan(42_810_976_776, 64, 32, 864, 480, &h3).usable);
+        let h3_plan = video_plan(42_810_976_776, 64, 64, 864, 480, &h3);
+        assert!(h3_plan.usable, "{}", h3_plan.reason);
+        assert!(h3_plan.max_frames >= 22, "at least a second of clip: {}", h3_plan.max_frames);
+    }
+
+    #[test]
+    fn streaming_is_decided_by_the_room_not_the_registry() {
+        use super::video_plan;
+        let v = spec();
+        // H3 on a 64 GB Mac: the weights are more than half the budget, so
+        // the plan buys room with streaming. On 128 GB they are not, and the
+        // few percent of throughput are kept.
+        assert!(video_plan(42_810_976_776, 64, 64, 864, 480, &v).stream_layers);
+        assert!(!video_plan(42_810_976_776, 64, 128, 864, 480, &v).stream_layers);
+    }
+
+    #[test]
+    fn the_starting_picture_travels_only_where_it_can_mean_something() {
+        let m = video_model();
+        let mut r = req("x");
+        r.init_image = "/tmp/start.png".into();
+        let argv = generate_argv(Path::new("/m"), &m, &r, Path::new("/o/x.webm"), false);
+        let at = argv.iter().position(|a| a == "-i").expect("-i present");
+        assert_eq!(argv[at + 1], "/tmp/start.png");
+        // And an empty one emits nothing rather than an empty argument.
+        let argv = generate_argv(Path::new("/m"), &m, &req("x"), Path::new("/o/x.webm"), false);
+        assert!(!argv.iter().any(|a| a == "-i"));
+    }
+
+    #[test]
+    fn the_two_wan_experts_share_their_settings_and_split_their_steps() {
+        let mut m = video_model();
+        m.roles.insert("high_noise_diffusion".into(), "high.gguf".into());
+        if let Some(v) = m.video.as_mut() {
+            v.high_noise_steps = Some(8);
+        }
+        let argv = generate_argv(Path::new("/m"), &m, &req("x"), Path::new("/o/x.webm"), false);
+        let flag = argv.iter().position(|a| a == "--high-noise-diffusion-model").expect("expert file");
+        assert_eq!(argv[flag + 1], "/m/high.gguf");
+        let steps = argv.iter().position(|a| a == "--high-noise-steps").expect("expert steps");
+        assert_eq!(argv[steps + 1], "8");
+        // The cfg follows the request, as the published invocations do.
+        let cfg = argv.iter().position(|a| a == "--high-noise-cfg-scale").expect("expert cfg");
+        assert_eq!(argv[cfg + 1], "7.00");
+        // A model without the second file gets none of these flags, even if a
+        // registry entry carries the step count by mistake.
+        let mut single = video_model();
+        if let Some(v) = single.video.as_mut() {
+            v.high_noise_steps = Some(8);
+        }
+        let argv = generate_argv(Path::new("/m"), &single, &req("x"), Path::new("/o/x.webm"), false);
+        assert!(!argv.iter().any(|a| a.starts_with("--high-noise")));
     }
 }

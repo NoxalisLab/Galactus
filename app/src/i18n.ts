@@ -702,7 +702,7 @@ const dict: Record<string, { en: string; fr: string }> = {
     fr: "Galactus a noté quelque chose pendant que c'était ouvert. Les deux versions sont là : vérifiez le texte, puis enregistrez à nouveau.",
   },
   "perm.image": { en: "draw a picture", fr: "dessiner une image" },
-  "nav.images": { en: "Images", fr: "Images" },
+  "nav.images": { en: "Images & video", fr: "Images & vidéos" },
   "nav.security": { en: "Security", fr: "Sécurité" },
   "sec.subtitle": {
     en: "Audit your own apps and machines. Read only, nothing is attacked.",
@@ -740,7 +740,7 @@ const dict: Record<string, { en: string; fr: string }> = {
     en: "Made on this Mac, offline",
     fr: "Fabriquées sur ce Mac, hors ligne",
   },
-  "img.sect": { en: "Image models", fr: "Modèles d'image" },
+  "img.sect": { en: "Image & video models", fr: "Modèles d'image & de vidéo" },
   "img.sectHint": {
     en: "Downloaded once, then run entirely on this machine. Nothing is sent anywhere.",
     fr: "Téléchargés une fois, puis exécutés entièrement sur cette machine. Rien n'est envoyé nulle part.",
@@ -803,6 +803,30 @@ const dict: Record<string, { en: string; fr: string }> = {
   "img.noEngineHint": {
     en: "Nothing to download here: this copy of Galactus was built without it.",
     fr: "Rien à télécharger ici : cette version de Galactus a été construite sans lui.",
+  },
+  "img.videoChip": { en: "Video", fr: "Vidéo" },
+  "img.fitsClip": { en: "up to %s of clip here", fr: "jusqu'à %s de clip ici" },
+  "img.duration": { en: "Length", fr: "Durée" },
+  "img.startPick": { en: "Choose a starting picture", fr: "Choisir une image de départ" },
+  "img.startChange": { en: "Change the picture", fr: "Changer l'image" },
+  "img.startNeeded": {
+    en: "This model animates a picture: it needs one to start from.",
+    fr: "Ce modèle anime une image : il lui en faut une pour démarrer.",
+  },
+  "img.startOptional": {
+    en: "Optional: give it a picture to start from, or just describe the scene.",
+    fr: "Optionnel : donne-lui une image de départ, ou décris simplement la scène.",
+  },
+  "img.needStart": {
+    en: "Choose a starting picture first: this model animates one.",
+    fr: "Choisis d'abord une image de départ : ce modèle en anime une.",
+  },
+  "img.licenceLine": { en: "Licence:", fr: "Licence :" },
+  "img.licenceTitle": { en: "The %s licence", fr: "La licence de %s" },
+  "img.licenceAccept": { en: "I read it, download", fr: "J'ai lu, télécharger" },
+  "img.workingVideo": {
+    en: "Rendering the clip. This takes a while: minutes at best, longer on a smaller Mac.",
+    fr: "Le clip se fabrique. C'est long : des minutes au mieux, plus sur un petit Mac.",
   },
   "img.noRoot": { en: "Choose the Galactus folder first", fr: "Choisissez d'abord le dossier Galactus" },
   "img.noRegistry": { en: "The image model list could not be read", fr: "La liste des modèles d'image n'a pas pu être lue" },

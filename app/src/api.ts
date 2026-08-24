@@ -295,16 +295,35 @@ export interface GitChange {
 // about git, and it learns that from `GitInfo.available` below. A typed client
 // for a command nobody calls is dead weight that looks live.
 
+/** The video half of a registry entry, absent on image models. */
+export interface VideoSpecInfo {
+  frames: number;
+  frame_step: number;
+  frame_base: number;
+  fps: number;
+  needs_init_image?: boolean;
+  accepts_init_image?: boolean;
+}
+
 export interface ImageModelInfo {
   id: string;
   name: string;
+  /** "image" or "video"; every entry that predates video says image. */
+  kind: string;
+  video: VideoSpecInfo | null;
+  /**
+   * What the licence restricts, shown before the download. An `{en, fr}`
+   * object like `note`; a bare string is tolerated for older registries.
+   * Empty when nothing worth saying.
+   */
+  licence: string | { en: string; fr: string };
   bytes: number;
   roles: Record<string, string>;
   download: unknown;
   defaults: { steps?: number; cfg?: number; width?: number; height?: number };
   min_ram_gb: number;
   measured: Array<{ mac_gb?: number; width?: number; height?: number; steps?: number; seconds?: number }>;
-  note: string;
+  note: string | { en: string; fr: string };
   installed: boolean;
   /** The verdict for THIS machine, computed by image_models like `installed`. */
   usable: boolean;
@@ -316,6 +335,8 @@ export interface ImageModelInfo {
   recommended_steps: number | null;
   /** Installed GB a Mac needs to run this model at all. */
   need_gb: number;
+  /** Longest clip this Mac can decode, 0 for image models. */
+  max_frames: number;
 }
 
 export interface ImageRequest {
@@ -328,6 +349,10 @@ export interface ImageRequest {
   height: number;
   /** Negative asks the engine for a random one. */
   seed: number;
+  /** Frames for a video model; 0 means the model's default. */
+  frames?: number;
+  /** Starting picture for the models that animate one. */
+  init_image?: string;
 }
 
 /** Wire shape of `SearchOpts` in search.rs: snake_case, not the UI's camel. */
@@ -418,6 +443,8 @@ export const api = {
   registry: () => invoke<ModelEntry[]>("load_registry"),
   detectRoot: () => invoke<string | null>("detect_root"),
   pickFolder: () => invoke<string | null>("pick_folder"),
+  /** One image file, for the video models that animate a starting picture. */
+  pickImage: () => invoke<string | null>("pick_image"),
   serverStatus: () => invoke<ServerStatus>("server_status"),
   serverStart: (modelId: string, cacheGb: number | null) =>
     invoke<void>("server_start", { modelId, cacheGb }),

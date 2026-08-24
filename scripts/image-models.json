@@ -12,7 +12,17 @@
     "",
     "Flux.1-schnell is deliberately absent. Its published GGUF weights denoise to noise on the current",
     "engine and its VAE fails to allocate on Metal, so it would ship as a grey square. It goes in when",
-    "it works, not before."
+    "it works, not before.",
+    "",
+    "VIDEO MODELS live here too, under `kind: video`. Same install, same per-machine gate, same cancel:",
+    "only the engine mode changes, from -M img_gen to -M vid_gen. What they add is a frame count, which",
+    "is not free-form: each model accepts frames on a grid of `frame_step * k + frame_base` and rounds up",
+    "silently otherwise, so the grid is written down and the app rounds where the user can see it rather",
+    "than letting the clip come back a third of a second longer than asked.",
+    "",
+    "They also carry `licence` when the weights are not simply open. It is shown on the card and again",
+    "before the download starts, because forty gigabytes is a poor moment to discover a territorial",
+    "restriction."
   ],
   "models": [
     {
@@ -42,7 +52,10 @@
         "height": 1024
       },
       "min_ram_gb": 16,
-      "note": "1024 square, the quality option. The separate VAE is the fp16-fix one: the original produces black images in half precision.",
+      "note": {
+        "en": "1024 square, the quality option. The separate VAE is the fp16-fix one: the original produces black images in half precision.",
+        "fr": "1024 carré, l'option qualité. Le VAE séparé est le fp16-fix : l'original produit des images noires en demi-précision."
+      },
       "measured": [
         {
           "mac_gb": 128,
@@ -75,7 +88,10 @@
         "height": 512
       },
       "min_ram_gb": 8,
-      "note": "512 square, under two gigabytes, and quick. The one to start with on a smaller Mac.",
+      "note": {
+        "en": "512 square, under two gigabytes, and quick. The one to start with on a smaller Mac.",
+        "fr": "512 carré, moins de deux gigaoctets, et rapide. Celui par lequel commencer sur un petit Mac."
+      },
       "measured": [
         {
           "mac_gb": 128,
@@ -123,7 +139,10 @@
         "height": 1024
       },
       "min_ram_gb": 32,
-      "note": "MMDiT 8B en Q8_0, converti depuis le checkpoint complet, VAE inclus. Trois encodeurs de texte a part, dont T5-XXL en fp16 qui pese 9.8 Go a lui seul. Licence Stability AI Community. A tester en Metal avant de s'y fier.",
+      "note": {
+        "en": "8B MMDiT in Q8_0, converted from the full checkpoint, VAE included. Three separate text encoders, T5-XXL alone weighing 9.8 GB in fp16. Stability AI Community licence. To be tried on Metal before relying on it.",
+        "fr": "MMDiT 8B en Q8_0, converti depuis le checkpoint complet, VAE inclus. Trois encodeurs de texte à part, dont T5-XXL en fp16 qui pèse 9,8 Go à lui seul. Licence Stability AI Community. À essayer en Metal avant de s'y fier."
+      },
       "measured": [
         {
           "mac_gb": 128,
@@ -166,7 +185,10 @@
         "height": 1024
       },
       "min_ram_gb": 32,
-      "note": "MMDiT 20B en Q4_K_M, le meilleur rendu de texte dans l'image, chinois compris. L'encodeur est Qwen2.5-VL 7B en Q8_0, passe par le role llm. Sampler euler et flow shift choisis par le moteur. A tester en Metal.",
+      "note": {
+        "en": "20B MMDiT in Q4_K_M, the best text rendering in images, Chinese included. The encoder is Qwen2.5-VL 7B in Q8_0, passed through the llm role. Euler sampler and flow shift chosen by the engine. Measured: 338 s at 1024 square on the 128 GB Mac.",
+        "fr": "MMDiT 20B en Q4_K_M, le meilleur rendu de texte dans l'image, chinois compris. L'encodeur est Qwen2.5-VL 7B en Q8_0, passé par le rôle llm. Sampler euler et flow shift choisis par le moteur. Mesuré : 338 s en 1024 carré sur le Mac 128 Go."
+      },
       "measured": [
         {
           "mac_gb": 128,
@@ -214,7 +236,10 @@
         "height": 1024
       },
       "min_ram_gb": 32,
-      "note": "Quatre pas suffisent, le cfg reste a 1.0 (modele distille avec sa guidance). Le VAE est le vrai ae.safetensors, miroir non restreint, taille identique a l'octet pres. L'echec Metal d'avant venait du sampler ancestral de l'ancien moteur et du mauvais VAE, tous deux corriges. Le VAE se decode sur CPU (obligatoire sur Metal, sinon image blanche), ce qui explique le temps malgre seulement 4 pas.",
+      "note": {
+        "en": "Four steps are enough, cfg stays at 1.0 (distilled model, guidance baked in). The VAE is the real ae.safetensors, unrestricted mirror, byte-identical size. The earlier Metal failure came from the old engine's ancestral sampler and the wrong VAE, both fixed. The VAE decodes on the CPU (mandatory on Metal, white image otherwise), which explains the time despite only 4 steps.",
+        "fr": "Quatre pas suffisent, le cfg reste à 1.0 (modèle distillé, guidance incluse). Le VAE est le vrai ae.safetensors, miroir non restreint, taille identique à l'octet près. L'échec Metal d'avant venait du sampler ancestral de l'ancien moteur et du mauvais VAE, tous deux corrigés. Le VAE se décode sur CPU (obligatoire sur Metal, sinon image blanche), ce qui explique le temps malgré seulement 4 pas."
+      },
       "measured": [
         {
           "mac_gb": 128,
@@ -225,6 +250,256 @@
         }
       ],
       "vae_on_cpu": true
+    },
+    {
+      "id": "minimax-h3",
+      "name": "MiniMax-H3",
+      "kind": "video",
+      "bytes": 42810976776,
+      "roles": {
+        "diffusion": "minimax_h3_fl2va-Q4_K_M.gguf",
+        "llm": "qwen3vl_32b_minimax_h3-Q4_K_M.gguf",
+        "vae": "minimax_h3_video_vae_fp16.safetensors",
+        "audio_vae": "minimax_h3_audio_vae_fp32.safetensors"
+      },
+      "download": {
+        "files": [
+          {
+            "url": "https://huggingface.co/leejet/MiniMax-H3-GGUF/resolve/main/minimax_h3_fl2va-Q4_K_M.gguf",
+            "as": "minimax_h3_fl2va-Q4_K_M.gguf"
+          },
+          {
+            "url": "https://huggingface.co/leejet/MiniMax-H3-GGUF/resolve/main/qwen3vl_32b_minimax_h3-Q4_K_M.gguf",
+            "as": "qwen3vl_32b_minimax_h3-Q4_K_M.gguf"
+          },
+          {
+            "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_video_vae_fp16.safetensors",
+            "as": "minimax_h3_video_vae_fp16.safetensors"
+          },
+          {
+            "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_audio_vae_fp32.safetensors",
+            "as": "minimax_h3_audio_vae_fp32.safetensors"
+          }
+        ]
+      },
+      "defaults": {
+        "steps": 20,
+        "cfg": 1.0,
+        "width": 864,
+        "height": 480
+      },
+      "video": {
+        "frames": 56,
+        "frame_step": 17,
+        "frame_base": 5,
+        "fps": 24,
+        "rng": "cpu",
+        "offload_to_cpu": true
+      },
+      "min_ram_gb": 64,
+      "licence": {
+        "en": "MiniMax H3 Community License. The text defines the European Union, the United Kingdom, South Korea and the United States as excluded territories, and forbids using the model there as well as the videos it produces. Written authorization is additionally required above 20 million dollars of yearly revenue. Copyright 2026 MiniMax.",
+        "fr": "MiniMax H3 Community License. Le texte définit comme territoires exclus l'Union européenne, le Royaume-Uni, la Corée du Sud et les États-Unis, et interdit d'y utiliser le modèle ainsi que les vidéos qu'il produit. Une autorisation écrite est en plus requise au-delà de 20 millions de dollars de revenu annuel. Copyright 2026 MiniMax."
+      },
+      "note": {
+        "en": "33B DiT in Q4_K_M, picture and 32 kHz stereo sound generated in the same pass. The encoder is Qwen3-VL 32B truncated to 50 layers, Q4_K_M as well, passed through the llm role. The second VAE decodes the audio: without it the engine still runs and renders a silent clip. 24 frames per second, duration steps of 17 frames. Measured: 234 s for 22 frames on the 128 GB Mac, 55 GB resident, video VAE in 16 s where Wan's takes 784. The engine muxes the audio as PCM inside the WebM, off-spec, and WebKit then refuses the whole file: the app therefore splits every clip on write, video-only WebM plus a WAV beside it, and the viewer plays the pair together.",
+        "fr": "DiT 33B en Q4_K_M, image et son stéréo 32 kHz générés dans la même passe. L'encodeur est Qwen3-VL 32B tronqué à 50 couches, en Q4_K_M lui aussi, passé par le rôle llm. Le second VAE décode l'audio : sans lui le moteur tourne quand même et rend un clip muet. 24 images par seconde, durée par pas de 17 images. Mesuré : 234 s pour 22 images sur le Mac 128 Go, 55 Go résidents, VAE vidéo en 16 s là où celui de Wan en prend 784. Le moteur muxe l'audio en PCM dans le WebM, hors spec, et WebKit refuse alors le fichier entier : l'app sépare donc chaque clip à l'écriture, WebM vidéo seule plus WAV à côté, et la visionneuse joue la paire ensemble."
+      },
+      "measured": [
+        {
+          "mac_gb": 128,
+          "width": 864,
+          "height": 480,
+          "steps": 20,
+          "frames": 22,
+          "seconds": 234.0
+        }
+      ]
+    },
+    {
+      "id": "wan22-t2v-a14b",
+      "name": "Wan 2.2 T2V A14B",
+      "kind": "video",
+      "bytes": 37106824566,
+      "roles": {
+        "diffusion": "Wan2.2-T2V-A14B-LowNoise-Q8_0.gguf",
+        "high_noise_diffusion": "Wan2.2-T2V-A14B-HighNoise-Q8_0.gguf",
+        "t5xxl": "umt5-xxl-encoder-Q8_0.gguf",
+        "vae": "wan_2.1_vae.safetensors"
+      },
+      "download": {
+        "files": [
+          {
+            "url": "https://huggingface.co/QuantStack/Wan2.2-T2V-A14B-GGUF/resolve/main/LowNoise/Wan2.2-T2V-A14B-LowNoise-Q8_0.gguf",
+            "as": "Wan2.2-T2V-A14B-LowNoise-Q8_0.gguf"
+          },
+          {
+            "url": "https://huggingface.co/QuantStack/Wan2.2-T2V-A14B-GGUF/resolve/main/HighNoise/Wan2.2-T2V-A14B-HighNoise-Q8_0.gguf",
+            "as": "Wan2.2-T2V-A14B-HighNoise-Q8_0.gguf"
+          },
+          {
+            "url": "https://huggingface.co/city96/umt5-xxl-encoder-gguf/resolve/main/umt5-xxl-encoder-Q8_0.gguf",
+            "as": "umt5-xxl-encoder-Q8_0.gguf"
+          },
+          {
+            "url": "https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/vae/wan_2.1_vae.safetensors",
+            "as": "wan_2.1_vae.safetensors"
+          }
+        ]
+      },
+      "defaults": {
+        "steps": 10,
+        "cfg": 3.5,
+        "width": 832,
+        "height": 480
+      },
+      "video": {
+        "frames": 81,
+        "frame_step": 4,
+        "frame_base": 1,
+        "fps": 16,
+        "flow_shift": 3.0,
+        "sampling_method": "euler",
+        "high_noise_steps": 8,
+        "offload_to_cpu": true
+      },
+      "min_ram_gb": 48,
+      "note": {
+        "en": "Wan 2.2's MoE: two 14B experts in Q8_0, one for the noisy half of the schedule, one for the clean half, both loaded together. umT5-XXL encoder in Q8_0. Apache 2.0, no territory restriction. 16 frames per second, duration steps of 4 frames. Measured: 1121 s for 17 frames on the 128 GB Mac, 834 s of diffusion and 280 s of VAE decode.",
+        "fr": "Le MoE de Wan 2.2 : deux experts 14B en Q8_0, un pour la moitié bruitée du planning, un pour la moitié propre, les deux chargés ensemble. Encodeur umT5-XXL en Q8_0. Apache 2.0, aucune restriction de territoire. 16 images par seconde, durée par pas de 4 images. Mesuré : 1121 s pour 17 images sur le Mac 128 Go, 834 s de diffusion et 280 s de décodage VAE."
+      },
+      "measured": [
+        {
+          "mac_gb": 128,
+          "width": 832,
+          "height": 480,
+          "steps": 10,
+          "frames": 17,
+          "seconds": 1121.0
+        }
+      ]
+    },
+    {
+      "id": "wan22-i2v-a14b",
+      "name": "Wan 2.2 I2V A14B",
+      "kind": "video",
+      "bytes": 37110101366,
+      "roles": {
+        "diffusion": "Wan2.2-I2V-A14B-LowNoise-Q8_0.gguf",
+        "high_noise_diffusion": "Wan2.2-I2V-A14B-HighNoise-Q8_0.gguf",
+        "t5xxl": "umt5-xxl-encoder-Q8_0.gguf",
+        "vae": "wan_2.1_vae.safetensors"
+      },
+      "download": {
+        "files": [
+          {
+            "url": "https://huggingface.co/QuantStack/Wan2.2-I2V-A14B-GGUF/resolve/main/LowNoise/Wan2.2-I2V-A14B-LowNoise-Q8_0.gguf",
+            "as": "Wan2.2-I2V-A14B-LowNoise-Q8_0.gguf"
+          },
+          {
+            "url": "https://huggingface.co/QuantStack/Wan2.2-I2V-A14B-GGUF/resolve/main/HighNoise/Wan2.2-I2V-A14B-HighNoise-Q8_0.gguf",
+            "as": "Wan2.2-I2V-A14B-HighNoise-Q8_0.gguf"
+          },
+          {
+            "url": "https://huggingface.co/city96/umt5-xxl-encoder-gguf/resolve/main/umt5-xxl-encoder-Q8_0.gguf",
+            "as": "umt5-xxl-encoder-Q8_0.gguf"
+          },
+          {
+            "url": "https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/vae/wan_2.1_vae.safetensors",
+            "as": "wan_2.1_vae.safetensors"
+          }
+        ]
+      },
+      "defaults": {
+        "steps": 10,
+        "cfg": 3.5,
+        "width": 832,
+        "height": 480
+      },
+      "video": {
+        "frames": 81,
+        "frame_step": 4,
+        "frame_base": 1,
+        "fps": 16,
+        "flow_shift": 3.0,
+        "sampling_method": "euler",
+        "high_noise_steps": 8,
+        "offload_to_cpu": true,
+        "needs_init_image": true
+      },
+      "min_ram_gb": 48,
+      "note": {
+        "en": "The same two-expert MoE as the T2V, trained to animate a starting picture: it needs one, the image field is not optional here. The encoder and VAE are shared with the T2V, already on disk if the other is installed. Apache 2.0. Measured: 1340 s for 17 frames on the 128 GB Mac, faithful to the starting picture.",
+        "fr": "Le même MoE à deux experts que le T2V, entraîné à animer une image de départ : il lui en faut une, le champ image n'est pas optionnel ici. L'encodeur et le VAE sont partagés avec le T2V, déjà sur disque si l'autre est installé. Apache 2.0. Mesuré : 1340 s pour 17 images sur le Mac 128 Go, fidèle à l'image de départ."
+      },
+      "measured": [
+        {
+          "mac_gb": 128,
+          "width": 832,
+          "height": 480,
+          "steps": 10,
+          "frames": 17,
+          "seconds": 1340.0
+        }
+      ]
+    },
+    {
+      "id": "wan22-ti2v-5b",
+      "name": "Wan 2.2 TI2V 5B",
+      "kind": "video",
+      "bytes": 12852648256,
+      "roles": {
+        "diffusion": "Wan2.2-TI2V-5B-Q8_0.gguf",
+        "t5xxl": "umt5-xxl-encoder-Q8_0.gguf",
+        "vae": "wan2.2_vae.safetensors"
+      },
+      "download": {
+        "files": [
+          {
+            "url": "https://huggingface.co/QuantStack/Wan2.2-TI2V-5B-GGUF/resolve/main/Wan2.2-TI2V-5B-Q8_0.gguf",
+            "as": "Wan2.2-TI2V-5B-Q8_0.gguf"
+          },
+          {
+            "url": "https://huggingface.co/city96/umt5-xxl-encoder-gguf/resolve/main/umt5-xxl-encoder-Q8_0.gguf",
+            "as": "umt5-xxl-encoder-Q8_0.gguf"
+          },
+          {
+            "url": "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/vae/wan2.2_vae.safetensors",
+            "as": "wan2.2_vae.safetensors"
+          }
+        ]
+      },
+      "defaults": {
+        "steps": 20,
+        "cfg": 6.0,
+        "width": 832,
+        "height": 480
+      },
+      "video": {
+        "frames": 81,
+        "frame_step": 4,
+        "frame_base": 1,
+        "fps": 24,
+        "flow_shift": 3.0,
+        "sampling_method": "euler",
+        "offload_to_cpu": true,
+        "accepts_init_image": true
+      },
+      "min_ram_gb": 24,
+      "note": {
+        "en": "The small one of the family: 5B dense, its own high-compression VAE, text or picture as input, the same command does both. The first to install to see a video come out of this machine. Apache 2.0. 24 frames per second. Measured: 873 s for 25 frames on the 128 GB Mac, 784 s of which were the VAE decode alone, which grows with the clip length.",
+        "fr": "Le petit de la famille : 5B dense, VAE haute compression qui lui est propre, texte ou image en entrée, la même commande fait les deux. Le premier à installer pour voir une vidéo sortir de cette machine. Apache 2.0. 24 images par seconde. Mesuré : 873 s pour 25 images sur le Mac 128 Go, dont 784 s dans le décodage VAE seul, qui grandit avec la durée du clip."
+      },
+      "measured": [
+        {
+          "mac_gb": 128,
+          "width": 832,
+          "height": 480,
+          "steps": 20,
+          "frames": 25,
+          "seconds": 873.0
+        }
+      ]
     }
   ]
 }

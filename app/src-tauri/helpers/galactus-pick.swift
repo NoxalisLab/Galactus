@@ -13,6 +13,7 @@
 // panel that opened behind the window and looked like nothing at all.
 //
 //   galactus-pick folder [start-path]     prints the chosen POSIX path
+//   galactus-pick image  [start-path]     same panel, one image file
 //
 // Exit codes are the contract, because a path is not the only outcome:
 //   0  a folder was chosen, its path is on stdout
@@ -21,10 +22,12 @@
 
 import AppKit
 import Foundation
+import UniformTypeIdentifiers
 
 let args = Array(CommandLine.arguments.dropFirst())
-guard args.first == "folder" else {
-    FileHandle.standardError.write("usage: galactus-pick folder [start-path]\n".data(using: .utf8)!)
+let mode = args.first ?? ""
+guard mode == "folder" || mode == "image" else {
+    FileHandle.standardError.write("usage: galactus-pick folder|image [start-path]\n".data(using: .utf8)!)
     exit(1)
 }
 
@@ -34,10 +37,19 @@ let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 
 let panel = NSOpenPanel()
-panel.canChooseDirectories = true
-panel.canChooseFiles = false
+if mode == "image" {
+    // One image, for the video models that animate a starting picture. The
+    // engine reads PNG and JPEG through stb; the panel offers exactly those
+    // rather than letting a .heic through to fail inside a log.
+    panel.canChooseDirectories = false
+    panel.canChooseFiles = true
+    panel.allowedContentTypes = [UTType.png, UTType.jpeg]
+} else {
+    panel.canChooseDirectories = true
+    panel.canChooseFiles = false
+    panel.canCreateDirectories = true
+}
 panel.allowsMultipleSelection = false
-panel.canCreateDirectories = true
 panel.prompt = "Choose"
 
 // Where it opens. A path that no longer exists is dropped rather than passed

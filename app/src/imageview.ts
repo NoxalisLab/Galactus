@@ -10,7 +10,19 @@
  */
 
 import { api, onEvent, type HwInfo, type ImageModelInfo, type ImageRequest } from "./api";
-import { t } from "./i18n";
+import { getLang, t } from "./i18n";
+
+/**
+ * A registry text in the user's language. Notes and licences ship as
+ * `{en, fr}` because the card shows them verbatim; the bare-string form is
+ * kept working so an older registry file degrades to itself rather than to
+ * "[object Object]".
+ */
+function inLang(v: string | { en: string; fr: string } | null | undefined): string {
+  if (!v) return "";
+  if (typeof v === "string") return v;
+  return v[getLang() as "en" | "fr"] ?? v.en ?? "";
+}
 /**
  * Same two helpers as every other view in this app. Duplicated rather than
  * shared, exactly as runsview and learnedview do it: a module of two functions
@@ -26,7 +38,8 @@ function esc(s: string): string {
   // Quotes too: this output lands inside attributes as well as in text.
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
-import { defaultsFor, fmtSeconds, sizeLabel, sizePresets } from "./image-plan";
+import { confirmDestructive } from "./confirm";
+import { clipLabel, defaultsFor, fmtSeconds, framePresets, sizeLabel, sizePresets } from "./image-plan";
 
 export interface ImageDeps {
   root: () => string | null;
@@ -54,6 +67,8 @@ let progress: { done: number; total: number } | null = null;
 let installing: string | null = null;
 let deps: ImageDeps | null = null;
 let unlisten: (() => void) | null = null;
+/** Starting picture for the video models that animate one. Per session. */
+let initImage = "";
 
 export function setImageDeps(d: ImageDeps): void {
   deps = d;
@@ -176,16 +191,21 @@ function modelCard(m: ImageModelInfo): string {
     : t("img.notMeasured");
   // The same verdict the LLM cards carry: what this MACHINE can do with the
   // model, next to what the model is. A usable model says how far it goes
-  // here; a blocked one wears the chip and says why underneath.
-  const fit = m.usable
-    ? ` · ${esc(t("img.fitsUpTo").replace("%s", sizeLabel(m.max_side, m.max_side)))}`
-    : "";
+  // here; a blocked one wears the chip and says why underneath. For a video
+  // model the useful half of the verdict is time, not pixels.
+  const fit = !m.usable
+    ? ""
+    : m.video
+      ? ` · ${esc(t("img.fitsClip").replace("%s", clipLabel(m.max_frames, m.video.fps)))}`
+      : ` · ${esc(t("img.fitsUpTo").replace("%s", sizeLabel(m.max_side, m.max_side)))}`;
+  const videoChip = m.video ? `<span class="chip-cert">▸ ${esc(t("img.videoChip"))}</span>` : "";
   return `<div class="mcard ${m.id === chosen ? "on" : ""}" data-pick="${esc(m.id)}">
     <div class="top"><div class="info">
-      <div class="nm"><b>${esc(m.name)}</b>${m.usable ? "" : `<span class="chip-cert pending">✕ ${esc(t("img.blockedChip"))}</span>`}${m.installed ? "" : `<span class="chip-cert pending">◷ ${esc(t("img.notInstalled"))}</span>`}</div>
+      <div class="nm"><b>${esc(m.name)}</b>${videoChip}${m.usable ? "" : `<span class="chip-cert pending">✕ ${esc(t("img.blockedChip"))}</span>`}${m.installed ? "" : `<span class="chip-cert pending">◷ ${esc(t("img.notInstalled"))}</span>`}</div>
       <span class="meta">${gb} GB · ${esc(speed)}${fit}</span>
     </div><span data-a></span></div>
-    <div class="brief">${esc(m.note)}</div>
+    <div class="brief">${esc(inLang(m.note))}</div>
+    ${inLang(m.licence) ? `<div class="brief blocked">${esc(t("img.licenceLine"))} ${esc(inLang(m.licence))}</div>` : ""}
     ${m.usable ? "" : `<div class="brief blocked">${esc(blockedLine(m))}</div>`}
   </div>`;
 }
@@ -226,15 +246,50 @@ function bodyHtml(): string {
       <label>${esc(t("img.negative"))}<input id="imgneg" ${canRun ? "" : "disabled"} placeholder="${esc(t("img.negativePlaceholder"))}"/></label>
     </div>
     <div class="imgrow">
-      <label>${esc(t("img.size"))}<select id="imgsize" ${canRun ? "" : "disabled"}>${sizePresets(dw, dh, cap)
-        .map((p) => `<option value="${p.w}x${p.h}" ${p.w === dw && p.h === dh ? "selected" : ""}>${esc(sizeLabel(p.w, p.h))}</option>`)
-        .join("")}</select></label>
+      ${
+        m?.video
+          ? // A video model was trained at one shape and diverges away from
+            // it, so the shape is stated rather than offered, and the choice
+            // that matters, how LONG, takes the row instead. The list opens
+            // on about a second, not on the trained length: the VAE decode
+            // grows with the frame count (784 of TI2V's measured 873 seconds
+            // were the decode alone), and a first click that runs most of an
+            // hour reads as a hang, exactly the recommended_steps reasoning.
+            (() => {
+              const presets = framePresets(m.video, m.max_frames || m.video.frames);
+              const first = presets.find((f) => f >= m.video!.fps) ?? presets[0];
+              return `<label>${esc(t("img.duration"))}<select id="imgframes" ${canRun ? "" : "disabled"}>${presets
+                .map((f) => `<option value="${f}" ${f === first ? "selected" : ""}>${esc(clipLabel(f, m.video!.fps))} · ${f}</option>`)
+                .join("")}</select></label>
+              <span class="d">${esc(sizeLabel(dw, dh))} · ${m.video!.fps} fps</span>`;
+            })()
+          : `<label>${esc(t("img.size"))}<select id="imgsize" ${canRun ? "" : "disabled"}>${sizePresets(dw, dh, cap)
+              .map((p) => `<option value="${p.w}x${p.h}" ${p.w === dw && p.h === dh ? "selected" : ""}>${esc(sizeLabel(p.w, p.h))}</option>`)
+              .join("")}</select></label>`
+      }
       <label>${esc(t("img.steps"))}<input id="imgsteps" type="number" min="1" max="100" value="${steps}" ${canRun ? "" : "disabled"}/></label>
       <label>${esc(t("img.cfg"))}<input id="imgcfg" type="number" min="0" max="30" step="0.5" value="${d.cfg}" ${canRun ? "" : "disabled"}/></label>
       <label>${esc(t("img.seed"))}<input id="imgseed" type="number" value="-1" ${canRun ? "" : "disabled"}/></label>
     </div>
+    ${
+      m?.video && (m.video.needs_init_image || m.video.accepts_init_image)
+        ? `<div class="imgrow">
+            <span class="d">${esc(m.video.needs_init_image ? t("img.startNeeded") : t("img.startOptional"))}</span>
+            <button class="bs" id="imgpickstart" ${canRun ? "" : "disabled"}>${esc(initImage ? t("img.startChange") : t("img.startPick"))}</button>
+            ${initImage ? `<span class="d mono" id="imgstartpath">${esc(initImage.split("/").pop() ?? "")}</span><button class="bs" id="imgstartclear">✕</button>` : ""}
+          </div>`
+        : ""
+    }
     <div class="imgacts">
-      <span class="d" id="imgstatus">${esc(canRun ? t("img.ready") : m && !m.usable ? blockedLine(m) : t("img.pickInstalled"))}</span>
+      <span class="d" id="imgstatus">${esc(
+        busy && m?.video
+          ? t("img.workingVideo")
+          : canRun
+            ? t("img.ready")
+            : m && !m.usable
+              ? blockedLine(m)
+              : t("img.pickInstalled"),
+      )}</span>
       <span class="grow"></span>
       ${busy ? `<button class="bs" id="imgstop">${esc(t("img.stop"))}</button>` : ""}
       <button class="bp" id="imggo" ${canRun && !busy ? "" : "disabled"}>${esc(busy ? t("img.working") : t("img.generate"))}</button>
@@ -287,6 +342,23 @@ function wire(wrap: HTMLElement): void {
     }
     if (target.closest("#imginstall")) {
       void install();
+      return;
+    }
+    if (target.closest("#imgpickstart")) {
+      void api
+        .pickImage()
+        .then((p) => {
+          if (p) {
+            initImage = p;
+            repaint();
+          }
+        })
+        .catch((e: any) => deps?.toast(String(e?.message ?? e)));
+      return;
+    }
+    if (target.closest("#imgstartclear")) {
+      initImage = "";
+      repaint();
       return;
     }
     if (target.closest("#imggo")) {
@@ -350,11 +422,11 @@ function openLightbox(startAt: number): void {
       <button class="lb-btn" data-lb="close" title="${esc(t("img.lbClose"))}" aria-label="${esc(t("img.lbClose"))}">✕</button>
     </div>
     <button class="lb-nav prev" data-lb="prev" aria-label="${esc(t("img.lbPrev"))}">‹</button>
-    <figure class="lb-stage"><img alt=""/></figure>
+    <figure class="lb-stage"></figure>
     <button class="lb-nav next" data-lb="next" aria-label="${esc(t("img.lbNext"))}">›</button>
   </div>`);
 
-  const img = back.querySelector("img")!;
+  const stage = back.querySelector<HTMLElement>(".lb-stage")!;
   const count = back.querySelector<HTMLElement>(".lb-count")!;
   const prev = back.querySelector<HTMLElement>('[data-lb="prev"]')!;
   const next = back.querySelector<HTMLElement>('[data-lb="next"]')!;
@@ -373,7 +445,57 @@ function openLightbox(startAt: number): void {
     try {
       const url = await api.imageRead(gallery[at]);
       if (mine !== token) return;
-      img.src = url;
+      if (gallery[at].endsWith(".webm")) {
+        // Full controls and sound here: the lightbox is the one place a clip
+        // is actually watched rather than glanced at.
+        const vid = document.createElement("video");
+        vid.src = url;
+        vid.controls = true;
+        vid.autoplay = true;
+        vid.playsInline = true;
+        stage.replaceChildren(vid);
+        // The soundtrack, when the clip has one. H3's audio arrives as a WAV
+        // beside the WebM because WKWebView refuses PCM inside it (measured:
+        // MEDIA_ERR_SRC_NOT_SUPPORTED on the muxed file). The pair is kept in
+        // step through the video's own transport events, so the controls the
+        // user sees drive both.
+        void api
+          .imageRead(gallery[at].replace(/\.webm$/, ".wav"))
+          .then((wavUrl) => {
+            if (mine !== token) return;
+            const snd = new Audio(wavUrl);
+            const align = (): void => {
+              if (Math.abs(snd.currentTime - vid.currentTime) > 0.25) {
+                snd.currentTime = vid.currentTime;
+              }
+            };
+            vid.addEventListener("play", () => { align(); void snd.play().catch(() => undefined); });
+            vid.addEventListener("pause", () => snd.pause());
+            vid.addEventListener("seeked", align);
+            vid.addEventListener("ratechange", () => { snd.playbackRate = vid.playbackRate; });
+            // The stage owns the audio's lifetime: navigating or closing
+            // replaces the stage children, and this keeps a handle so the
+            // replaced clip does not keep singing underneath the next one.
+            vid.addEventListener("emptied", () => snd.pause());
+            const stop = new MutationObserver(() => {
+              if (!vid.isConnected) {
+                snd.pause();
+                stop.disconnect();
+              }
+            });
+            stop.observe(stage, { childList: true });
+            if (!vid.paused) {
+              align();
+              void snd.play().catch(() => undefined);
+            }
+          })
+          .catch(() => undefined); // a clip with no soundtrack is every Wan clip
+      } else {
+        const img = document.createElement("img");
+        img.src = url;
+        img.alt = "";
+        stage.replaceChildren(img);
+      }
     } catch {
       // Removed under us. Close rather than show a broken frame.
       if (mine === token) close();
@@ -445,17 +567,29 @@ function openLightbox(startAt: number): void {
 /** Decode the visible tiles. One command per image, newest first. */
 async function decodeVisible(wrap: HTMLElement): Promise<void> {
   for (const cell of Array.from(wrap.querySelectorAll<HTMLElement>("[data-img]"))) {
-    if (cell.querySelector("img")) continue;
+    if (cell.querySelector("img,video")) continue;
     try {
       const url = await api.imageRead(cell.dataset.img!);
       // The src is assigned as a property, not interpolated into markup. It is
       // our own base64 either way, but a data URL in a template is the kind of
       // line that gets copied somewhere it is not.
-      const img = document.createElement("img");
-      img.src = url;
-      img.alt = "";
-      img.loading = "lazy";
-      cell.replaceChildren(img);
+      if (cell.dataset.img!.endsWith(".webm")) {
+        // Muted and looping in the grid: a dozen tiles all playing sound
+        // would be chaos, and the lightbox is where the audio belongs.
+        const vid = document.createElement("video");
+        vid.src = url;
+        vid.muted = true;
+        vid.loop = true;
+        vid.autoplay = true;
+        vid.playsInline = true;
+        cell.replaceChildren(vid);
+      } else {
+        const img = document.createElement("img");
+        img.src = url;
+        img.alt = "";
+        img.loading = "lazy";
+        cell.replaceChildren(img);
+      }
     } catch {
       // A file removed under us is not worth a dialog: the tile stays blank and
       // the next refresh drops it.
@@ -466,6 +600,19 @@ async function decodeVisible(wrap: HTMLElement): Promise<void> {
 async function install(): Promise<void> {
   const m = current();
   if (!m || installing) return;
+  // The licence, shown while the choice still costs nothing. H3's territory
+  // clause restricts USE, not just distribution, so discovering it after a
+  // forty gigabyte download would be finding out too late.
+  const licence = inLang(m.licence);
+  if (licence) {
+    const ok = await confirmDestructive({
+      title: t("img.licenceTitle").replace("%s", m.name),
+      detail: licence,
+      confirmLabel: t("img.licenceAccept"),
+      danger: false,
+    });
+    if (!ok) return;
+  }
   installing = m.id;
   installPct = null;
   repaint();
@@ -504,9 +651,14 @@ async function generate(): Promise<void> {
     const v = Number(raw);
     return Number.isFinite(v) ? v : fallback;
   };
-  const [w, h] = (wrap.querySelector<HTMLSelectElement>("#imgsize")?.value ?? "512x512")
-    .split("x")
-    .map((n) => Number(n) || 512);
+  // A video model renders at its trained shape; only an image one offers the
+  // size select, so its absence falls back to the model's own defaults.
+  const d = defaultsFor(m);
+  const [w, h] = m.video
+    ? [d.width, d.height]
+    : (wrap.querySelector<HTMLSelectElement>("#imgsize")?.value ?? "512x512")
+        .split("x")
+        .map((n) => Number(n) || 512);
   const req: ImageRequest = {
     model: m.id,
     prompt: wrap.querySelector<HTMLTextAreaElement>("#imgprompt")?.value ?? "",
@@ -516,9 +668,17 @@ async function generate(): Promise<void> {
     width: w,
     height: h,
     seed: num("#imgseed", -1),
+    frames: m.video ? num("#imgframes", m.video.frames) : 0,
+    init_image: m.video ? initImage : "",
   };
   if (!req.prompt.trim()) {
     deps?.toast(t("img.needPrompt"));
+    return;
+  }
+  if (m.video?.needs_init_image && !initImage) {
+    // The same sentence the backend would answer with, said before minutes
+    // of model loading rather than after.
+    deps?.toast(t("img.needStart"));
     return;
   }
   busy = true;
