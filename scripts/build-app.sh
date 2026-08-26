@@ -201,3 +201,14 @@ case "$verdict" in
     echo "        the notarized artifact. See docs/RELEASE-SIGNING.md."
     ;;
 esac
+
+# --------------------------------------------------------- lancement a blanc
+# Tout ce qui precede verifie que le bundle est bien FORME : contenu present,
+# signature intacte, verdict Gatekeeper connu. Rien n'y verifie qu'il DEMARRE.
+# smoke-launch.sh lance le binaire du bundle avec un HOME jetable et surveille
+# ce qu'aucun test unitaire ne voit : une panique dans le hook setup de Tauri,
+# une arborescence Application Support jamais semee, un arret qui ne vient
+# pas. Son code de sortie devient celui de ce script : un bundle qui ne
+# s'ouvre pas n'est pas un build reussi.
+echo
+"$HERE/smoke-launch.sh" --app "$APP"

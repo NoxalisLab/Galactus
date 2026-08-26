@@ -233,10 +233,26 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/app-v') || inputs.tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag != '' && inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
           # Fetches what the world can actually see and checks the asset
-          # responds. A draft release has no public assets, so this is expected
-          # to fail there and is not fatal.
-          scripts/release-manifest.sh --verify-remote || \
-            echo "note: the published manifest could not be verified (a draft release has no public assets)"
+          # responds. A draft release has no public assets, so a failure there
+          # is expected and tolerated. Anywhere else it means the updater is
+          # broken for every user, so the tolerance is granted only after the
+          # release has been asked what it actually is. Swallowing the failure
+          # unconditionally, as this step used to, turned the one end to end
+          # check of the published manifest into a green light that verified
+          # nothing.
+          if scripts/release-manifest.sh --verify-remote; then
+            exit 0
+          fi
+          DRAFT="$(gh release view "$TAG" --json isDraft -q .isDraft)"
+          if [ "$DRAFT" = "true" ]; then
+            echo "note: release $TAG is a draft, so it has no public assets yet."
+            echo "      the manifest will be verifiable once the release is published."
+            exit 0
+          fi
+          echo "FAIL: release $TAG is published and its manifest does not verify." >&2
+          echo "      every updater client reads this manifest. Do not ship it." >&2
+          exit 1

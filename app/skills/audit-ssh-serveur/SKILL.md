@@ -49,14 +49,14 @@ run_command("command -v nmap >/dev/null && nmap -Pn -p 22 --script ssh2-enum-alg
 ```
 ssh -o BatchMode=yes -o ConnectTimeout=8 ALIAS 'ls -ld ~/.ssh ~/.ssh/authorized_keys 2>/dev/null; echo "== cles =="; awk "{print \\$1, \\$2, substr(\\$3,1,20)}" ~/.ssh/authorized_keys 2>/dev/null; echo "== options en tete de ligne =="; grep -oE "^[^ ]*(command|no-pty|from|permitopen)[^ ]*" ~/.ssh/authorized_keys 2>/dev/null'
 ```
-Analyse : type et taille de chaque clé (`ssh-rsa` de moins de 3072 bits est faible, `ssh-dss` est à retirer, préfère `ssh-ed25519`), présence de restrictions (`from=`, `command=`, `no-pty`) sur les clés de service, et surtout les permissions : `~/.ssh` doit être `700`, `authorized_keys` `600`. Un dossier `755` fait rejeter les clés en mode strict et signale un relâchement. **Ne recopie jamais une clé privée** ; si tu en croises une hors de `~/.ssh` (dans un home, un dépôt), c'est un constat à remonter, pas à afficher.
+Analyse : type et taille de chaque clé (`ssh-rsa` de moins de 3072 bits est faible, `ssh-dss` est à retirer, préfère `ssh-ed25519`), présence de restrictions (`from=`, `command=`, `no-pty`) sur les clés de service, et surtout les permissions : `~/.ssh` doit être `700`, `~/.ssh/authorized_keys` `600`. Un dossier `755` fait rejeter les clés en mode strict et signale un relâchement. **Ne recopie jamais une clé privée** ; si tu en croises une hors de `~/.ssh` (dans un home, un dépôt), c'est un constat à remonter, pas à afficher.
 
 ## Restitution
-Pour chaque faiblesse : le constat, la ligne exacte de `sshd_config` à changer (ancienne puis nouvelle valeur), et l'impact du changement. Rassemble les modifications en un bloc unique que l'utilisateur appliquera, suivi de la séquence sûre : éditer, `sudo sshd -t` pour valider la syntaxe, puis recharger seulement après confirmation et avec la session de secours ouverte.
+Pour chaque faiblesse : le constat, la ligne exacte de `/etc/ssh/sshd_config` à changer (ancienne puis nouvelle valeur), et l'impact du changement. Rassemble les modifications en un bloc unique que l'utilisateur appliquera, suivi de la séquence sûre : éditer, `sudo sshd -t` pour valider la syntaxe, puis recharger seulement après confirmation et avec la session de secours ouverte.
 
 ## Garde-fous
 - Uniquement les serveurs de l'utilisateur, via son alias. Confirme l'hôte à l'étape 0.
-- Lecture d'abord, toujours. Toute modification de `sshd_config` est proposée, jamais appliquée en autonomie.
+- Lecture d'abord, toujours. Toute modification de `/etc/ssh/sshd_config` est proposée, jamais appliquée en autonomie.
 - Ne recharge ni ne redémarre jamais `sshd` toi-même. Ne coupe jamais l'accès : garde la session ouverte, valide par `sshd -t` avant tout rechargement humain.
 - Ne recopie aucune clé privée ni aucun secret dans le fil.
 - `nmap` sert au constat local seulement, sur l'hôte de l'utilisateur, et uniquement s'il est déjà installé.

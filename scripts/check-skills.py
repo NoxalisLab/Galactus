@@ -16,13 +16,38 @@ import re
 import sys
 
 # The complete tool surface of the Galactus agent. Nothing else may be named.
-TOOLS = {
-    "ask_agent", "fetch_url", "find_files", "list_agents", "list_directory",
-    "obsidian_append", "obsidian_read", "obsidian_search", "obsidian_update",
-    "read_conversation", "read_document", "read_file", "remember",
-    "run_command", "search_conversations", "search_knowledge",
-    "search_workspace", "spawn_agent", "update_plan", "use_skill", "write_file",
-}
+#
+# It is READ from app/src/agent.ts, which is where the surface is actually
+# declared, and not transcribed here. A hand kept copy drifts silently and had
+# already drifted: `generate_image` and `retrieve` shipped in agent.ts while
+# this list still denied they existed, so every skill that named them was
+# reported as naming an unknown tool.
+AGENT_TS = pathlib.Path(__file__).resolve().parent.parent / "app/src/agent.ts"
+TOOL_DECL = re.compile(r'^\s*name:\s*"([a-z][a-z0-9_]*)"', re.M)
+
+
+def load_tools(source=AGENT_TS):
+    """Return the tool names declared in agent.ts.
+
+    Raises rather than returns an empty set: a check whose reference list is
+    empty accepts every name it is shown, which is the failure mode this
+    function exists to prevent.
+    """
+    try:
+        text = source.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise SystemExit(f"cannot read the tool surface from {source}: {exc}")
+    names = set(TOOL_DECL.findall(text))
+    if not names:
+        raise SystemExit(
+            f"no tool declaration matched in {source}.\n"
+            "The `name: \"...\"` shape this check relies on has changed. Fix the\n"
+            "pattern in scripts/check-skills.py; do not let it pass empty."
+        )
+    return names
+
+
+TOOLS = load_tools()
 
 # Underscore-bearing identifiers that sit in a tool-shaped position but are NOT
 # agent tools: JSON keys, HCL meta-arguments, example test names, column names.
@@ -101,7 +126,10 @@ def frontmatter(text):
 
 def main():
     root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "app/skills")
-    files = sorted(root.glob("*/SKILL.md"))
+    # rglob, not glob: the docstring promises **/SKILL.md, and `*/SKILL.md`
+    # walks exactly one level. A skill filed in a subdirectory was not checked
+    # at all, and its absence from the report read as a pass.
+    files = sorted(root.rglob("SKILL.md"))
     if not files:
         print(f"no SKILL.md found under {root}")
         return 1

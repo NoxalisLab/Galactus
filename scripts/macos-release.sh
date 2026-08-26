@@ -217,5 +217,16 @@ esac
 echo
 "$HERE/macos-notarize.sh" "$APP" "$DMG"
 
+# --------------------------------------------------------------- smoke launch
+# Everything above proves the artifact is well formed, signed and accepted by
+# Apple. None of it proves the app opens. The bundle is launched here, against
+# a throwaway HOME, and watched: a panic in the Tauri setup hook, an app
+# support tree that was never seeded, or a shutdown that hangs all fail the
+# release rather than being discovered by the first person to download it.
+# Notarization comes first on purpose, so what is launched is exactly what
+# ships, stapled ticket included.
+echo
+"$HERE/smoke-launch.sh" --app "$APP"
+
 echo
 echo "artifact: $DMG"
