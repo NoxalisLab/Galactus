@@ -45,7 +45,31 @@ MISSING_ACCENTS = {
 # The product addresses one person it knows, on their own machine, so it says
 # tu. Every string agreed on that except fifteen, which had drifted to vous and
 # read like a bank. This catches the drift back.
-VOUVOIEMENT = re.compile(r"\b(?:votre|vos)\b|\bvous\b")
+#
+# Case-insensitive, because the two survivors of the previous pass were "Vous"
+# and "Votre Mac", capitalised at the head of a sentence, and this pattern had
+# no re.I. The label on every message the user sends read "Vous" for a year.
+VOUVOIEMENT = re.compile(r"\b(?:votre|vos)\b|\bvous\b", re.I)
+
+# The register did not drift on the pronoun, it drifted on the verb. Almost
+# nothing said "vous"; twenty-five strings said "Redémarrez le modèle" and
+# "Quittez une application", and they were the failure messages, so the app
+# tutoyait while it worked and vouvoyait the moment it broke. A second-person
+# plural imperative is vouvoiement whether or not the pronoun is written.
+#
+# The floor of three characters before -ez already excludes chez, nez, rez and
+# fez. What it does not exclude is a genuine word of five letters or more that
+# happens to end that way, so those are named here one by one, as they turn up.
+# A false positive stops the build on a correct string, which is worse than the
+# rule not existing; nothing goes in this set on suspicion.
+IMPERATIVE_EZ = re.compile(r"\b\w{3,}ez\b", re.I)
+NOT_SECOND_PERSON = {
+    "assez",  # adverb
+}
+# Nouns that carry a conjugated form inside a hyphenated compound. "aidez" on
+# its own is an imperative; in aidez-mémoire it is part of a noun. Removed from
+# the string before the imperative rule reads it.
+COMPOUND_NOUNS = re.compile(r"\baidez-mémoire\b", re.I)
 
 # The borrowed nouns, which the product treats as masculine.
 WRONG_GENDER = re.compile(r"\b(?:une|cette|la)\s+(?:run|skill)\b|\brun\s+autonome\b.{0,40}\belle\b")
@@ -54,6 +78,13 @@ WRONG_GENDER = re.compile(r"\b(?:une|cette|la)\s+(?:run|skill)\b|\brun\s+autonom
 def french_strings(text: str):
     for match in re.finditer(r'"([\w.]+)":\s*\{[^}]*?fr:\s*"((?:[^"\\]|\\.)*)"', text, re.S):
         yield match.group(1), match.group(2), text[: match.start()].count("\n") + 1
+
+
+def second_person_plural(value: str):
+    """The -ez verbs in one string, minus the words that only look like verbs."""
+    readable = COMPOUND_NOUNS.sub(" ", value)
+    seen = {m.group(0).lower() for m in IMPERATIVE_EZ.finditer(readable)}
+    return sorted(seen - NOT_SECOND_PERSON)
 
 
 def main() -> int:
@@ -67,6 +98,8 @@ def main() -> int:
                 problems.append((line, key, f"{wrong} should be {right}", value))
         if VOUVOIEMENT.search(value):
             problems.append((line, key, "vous; this product says tu", value))
+        for verb in second_person_plural(value):
+            problems.append((line, key, f"{verb} is vouvoiement; this product says tu", value))
         if WRONG_GENDER.search(value):
             problems.append((line, key, "run and skill are masculine here", value))
 

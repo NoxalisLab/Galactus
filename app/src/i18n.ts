@@ -10,7 +10,7 @@ const dict: Record<string, { en: string; fr: string }> = {
   "brand.by": { en: "by Noxalis Lab", fr: "par Noxalis Lab" },
   "tools.blocked": {
     en: "This model does not emit tool calls, so the agent cannot read files or run commands. Start a model that does.",
-    fr: "Ce modèle n'émet pas d'appels d'outils : l'agent ne peut ni lire de fichier ni lancer de commande. Démarrez un modèle qui le fait.",
+    fr: "Ce modèle n'émet pas d'appels d'outils : l'agent ne peut ni lire de fichier ni lancer de commande. Démarre un modèle qui le fait.",
   },
   "tools.blockedShort": { en: "no tool calls", fr: "pas d'appels d'outils" },
   "tools.forcedManual": {
@@ -85,12 +85,12 @@ const dict: Record<string, { en: string; fr: string }> = {
   "net.copied": { en: "copied", fr: "copiée" },
   "net.start": { en: "Open", fr: "Ouvrir" },
   "net.stop": { en: "Close", fr: "Fermer" },
-  "net.needModel": { en: "Start a model first.", fr: "Démarrez d'abord un modèle." },
+  "net.needModel": { en: "Start a model first.", fr: "Démarre d'abord un modèle." },
   "net.imagesOnly": {
     en: "Open, serving pictures and clips only: no text model is running.",
     fr: "Ouvert, images et vidéos seulement : aucun modèle de texte ne tourne.",
   },
-  "net.needKey": { en: "Generate a key first.", fr: "Générez d'abord une clé." },
+  "net.needKey": { en: "Generate a key first.", fr: "Génère d'abord une clé." },
   "net.open": { en: "open on", fr: "ouvert sur" },
   "net.closed": { en: "closed", fr: "fermé" },
   "net.snippets": { en: "Connect another tool", fr: "Brancher un autre outil" },
@@ -118,7 +118,7 @@ const dict: Record<string, { en: string; fr: string }> = {
   "chat.placeholder": { en: "Message Galactus… (⇧⏎ for a new line)", fr: "Écrire à Galactus… (⇧⏎ pour un saut de ligne)" },
   "chat.noserver": { en: "Start a model in Models to begin.", fr: "Démarre un modèle dans Modèles pour commencer." },
   "chat.queuedTag": { en: "waiting its turn", fr: "en attente de son tour" },
-  "chat.you": { en: "You", fr: "Vous" },
+  "chat.you": { en: "You", fr: "Toi" },
   "chat.localHint": { en: "100% local · your Mac", fr: "100% local · ton Mac" },
   "chat.plan": { en: "Plan", fr: "Plan" },
   "chat.running": { en: "running…", fr: "en cours…" },
@@ -276,11 +276,11 @@ const dict: Record<string, { en: string; fr: string }> = {
   },
   "brief.adjusted": {
     en: "Your Mac has %b GB free right now, not enough for %q, so Galactus will run this model in %m (about %r GB).",
-    fr: "Votre Mac a %b Go de libre en ce moment, pas assez pour %q, donc Galactus lancera ce modèle en %m (environ %r Go).",
+    fr: "Ton Mac a %b Go de libre en ce moment, pas assez pour %q, donc Galactus lancera ce modèle en %m (environ %r Go).",
   },
   "brief.blocked": {
     en: "Not enough free memory for this model right now: it needs about %r GB and your Mac can spare %b GB. Quit an application and try again.",
-    fr: "Pas assez de mémoire libre pour ce modèle en ce moment : il lui faut environ %r Go et ton Mac peut en libérer %b. Quittez une application puis réessayez.",
+    fr: "Pas assez de mémoire libre pour ce modèle en ce moment : il lui faut environ %r Go et ton Mac peut en libérer %b. Quitte une application puis réessaie.",
   },
   "brief.layoutSingle": {
     en: "It will be stored on one drive.",
@@ -292,7 +292,7 @@ const dict: Record<string, { en: string; fr: string }> = {
   },
   "brief.layoutNoRoom": {
     en: "No drive has room for it. Free some space, or connect another drive.",
-    fr: "Aucun disque n'a la place. Libérez de l'espace, ou branchez un autre disque.",
+    fr: "Aucun disque n'a la place. Libère de l'espace, ou branche un autre disque.",
   },
   "brief.override": { en: "Change", fr: "Modifier" },
   "brief.auto": { en: "Automatic", fr: "Automatique" },
@@ -484,22 +484,22 @@ const dict: Record<string, { en: string; fr: string }> = {
   },
   "srvfail.memoryBody": {
     en: "Quit a few applications to free memory, then start the model again. If it keeps happening, set the memory footprint to Eco in Settings.",
-    fr: "Quittez quelques applications pour libérer de la mémoire, puis redémarrez le modèle. Si cela se reproduit, réglez l'empreinte mémoire sur Éco dans les Réglages.",
+    fr: "Quitte quelques applications pour libérer de la mémoire, puis redémarre le modèle. Si cela se reproduit, règle l'empreinte mémoire sur Éco dans les Réglages.",
   },
 
   // What replaces the engine's own "Compute error.", which names no cause and
   // sends the user guessing. %s is the footprint mode the engine is running in.
   "engfail.memoryStepDown": {
     en: "The engine ran out of memory while answering. It is running in %s; other applications have taken the memory it needed. Free some memory, or set the memory footprint to Eco in Settings and start the model again.",
-    fr: "Le moteur a manqué de mémoire pendant la réponse. Il tourne en mode %s ; d'autres applications ont pris la mémoire dont il avait besoin. Libérez de la mémoire, ou réglez l'empreinte mémoire sur Éco dans les Réglages puis redémarrez le modèle.",
+    fr: "Le moteur a manqué de mémoire pendant la réponse. Il tourne en mode %s ; d'autres applications ont pris la mémoire dont il avait besoin. Libère de la mémoire, ou règle l'empreinte mémoire sur Éco dans les Réglages puis redémarre le modèle.",
   },
   "engfail.memoryAtFloor": {
     en: "The engine ran out of memory while answering, and it is already running in its smallest footprint. Quit a few applications to free memory, then start the model again.",
-    fr: "Le moteur a manqué de mémoire pendant la réponse, et il tourne déjà dans son empreinte la plus petite. Quittez quelques applications pour libérer de la mémoire, puis redémarrez le modèle.",
+    fr: "Le moteur a manqué de mémoire pendant la réponse, et il tourne déjà dans son empreinte la plus petite. Quitte quelques applications pour libérer de la mémoire, puis redémarre le modèle.",
   },
   "engfail.context": {
     en: "This conversation has outgrown the model's context window. Start a new conversation, or remove some of the files and long outputs it is carrying.",
-    fr: "Cette conversation a dépassé la fenêtre de contexte du modèle. Ouvrez une nouvelle conversation, ou retirez une partie des fichiers et des longues sorties qu'elle transporte.",
+    fr: "Cette conversation a dépassé la fenêtre de contexte du modèle. Ouvre une nouvelle conversation, ou retire une partie des fichiers et des longues sorties qu'elle transporte.",
   },
   "engfail.evidence": { en: "Engine log: %s", fr: "Journal du moteur : %s" },
 
@@ -694,7 +694,7 @@ const dict: Record<string, { en: string; fr: string }> = {
   // ---- Code view ----
   "code.rootUnreadable": {
     en: "Your workspace is still there but macOS is not letting Galactus read it. Open System Settings, Privacy and Security, Files and Folders, and allow Galactus. The folder is remembered and will reopen on its own.",
-    fr: "Votre dossier de travail existe toujours mais macOS empêche Galactus de le lire. Ouvrez Réglages Système, Confidentialité et sécurité, Fichiers et dossiers, et autorisez Galactus. Le dossier est mémorisé et se rouvrira tout seul.",
+    fr: "Ton dossier de travail existe toujours mais macOS empêche Galactus de le lire. Ouvre Réglages Système, Confidentialité et sécurité, Fichiers et dossiers, et autorise Galactus. Le dossier est mémorisé et se rouvrira tout seul.",
   },
   "code.search.regex": { en: "Regular expression", fr: "Expression régulière" },
   "store.saveFailed": {
@@ -703,7 +703,7 @@ const dict: Record<string, { en: string; fr: string }> = {
   },
   "mem.changedUnderYou": {
     en: "Galactus recorded something while this was open. Both versions are here: check the text, then save again.",
-    fr: "Galactus a noté quelque chose pendant que c'était ouvert. Les deux versions sont là : vérifiez le texte, puis enregistrez à nouveau.",
+    fr: "Galactus a noté quelque chose pendant que c'était ouvert. Les deux versions sont là : vérifie le texte, puis enregistre à nouveau.",
   },
   "perm.image": { en: "draw a picture", fr: "dessiner une image" },
   "nav.images": { en: "Images & video", fr: "Images & vidéos" },
@@ -769,7 +769,7 @@ const dict: Record<string, { en: string; fr: string }> = {
   },
   "img.promptPlaceholder": {
     en: "Describe the picture. Plain words work: what is in it, where, and what it looks like.",
-    fr: "Décrivez l'image. Des mots simples suffisent : ce qu'on y voit, où, et à quoi ça ressemble.",
+    fr: "Décris l'image. Des mots simples suffisent : ce qu'on y voit, où, et à quoi ça ressemble.",
   },
   "img.negative": { en: "Avoid", fr: "À éviter" },
   "img.negativePlaceholder": { en: "blurry, text, watermark", fr: "flou, texte, filigrane" },
@@ -786,7 +786,7 @@ const dict: Record<string, { en: string; fr: string }> = {
   "img.needPrompt": { en: "Write what you want to see first.", fr: "Écris d'abord ce que tu veux voir." },
   "img.pickInstalled": {
     en: "Download a model above to start.",
-    fr: "Téléchargez un modèle ci-dessus pour commencer.",
+    fr: "Télécharge un modèle ci-dessus pour commencer.",
   },
   "img.gallery": { en: "Made here", fr: "Fabriquées ici" },
   "img.open": { en: "Open larger", fr: "Ouvrir en grand" },
@@ -851,7 +851,7 @@ const dict: Record<string, { en: string; fr: string }> = {
     en: "Rendering the clip. This takes a while: minutes at best, longer on a smaller Mac.",
     fr: "Le clip se fabrique. C'est long : des minutes au mieux, plus sur un petit Mac.",
   },
-  "img.noRoot": { en: "Choose the Galactus folder first", fr: "Choisissez d'abord le dossier Galactus" },
+  "img.noRoot": { en: "Choose the Galactus folder first", fr: "Choisis d'abord le dossier Galactus" },
   "img.noRegistry": { en: "The image model list could not be read", fr: "La liste des modèles d'image n'a pas pu être lue" },
   "models.notInstalled": { en: "Not installed yet", fr: "Pas encore installé" },
   "models.expertsWord": { en: "experts", fr: "experts" },
@@ -881,21 +881,21 @@ const dict: Record<string, { en: string; fr: string }> = {
     fr: "Galactus n'a pas pu lire les caractéristiques de ce Mac. Les vitesses et les conseils sont indisponibles pour l'instant ; la liste ci-dessous n'est pas filtrée.",
   },
   "models.chooseFolder": { en: "Choose another folder", fr: "Choisir un autre dossier" },
-  "conn.needName": { en: "Give this connector a name.", fr: "Donnez un nom à ce connecteur." },
+  "conn.needName": { en: "Give this connector a name.", fr: "Donne un nom à ce connecteur." },
   "conn.needCommand": {
     en: "Enter the command that starts this connector.",
-    fr: "Indiquez la commande qui lance ce connecteur.",
+    fr: "Indique la commande qui lance ce connecteur.",
   },
   "net.copyKey": { en: "Copy the key", fr: "Copier la clé" },
   "common.copyFailed": {
     en: "The copy did not work. Select the text and copy it by hand.",
-    fr: "La copie n'a pas fonctionné. Sélectionnez le texte et copiez-le à la main.",
+    fr: "La copie n'a pas fonctionné. Sélectionne le texte et copie-le à la main.",
   },
   "models.benchNotReady": {
     en: "Available once the model has finished loading",
     fr: "Disponible une fois le modèle chargé",
   },
-  "models.reco": { en: "Start here", fr: "Commencez par celui-ci" },
+  "models.reco": { en: "Start here", fr: "Commence par celui-ci" },
   "models.recoWhy": {
     en: "The most capable model that still answers at reading speed on this Mac.",
     fr: "Le modèle le plus capable qui répond encore à la vitesse de lecture sur ce Mac.",
@@ -904,19 +904,19 @@ const dict: Record<string, { en: string; fr: string }> = {
   "srvfail.retrying": { en: "Starting...", fr: "Démarrage..." },
   "code.replace.proposed": {
     en: "%n files proposed. Review each one in the editor.",
-    fr: "%n fichiers proposés. Passez-les en revue dans l'éditeur.",
+    fr: "%n fichiers proposés. Passe-les en revue dans l'éditeur.",
   },
   "code.replace.partialSearch": {
     en: "This search hit its limit, so it does not list every occurrence. Narrow it with a filter before replacing.",
-    fr: "Cette recherche a atteint sa limite : elle ne liste pas toutes les occurrences. Restreignez-la avec un filtre avant de remplacer.",
+    fr: "Cette recherche a atteint sa limite : elle ne liste pas toutes les occurrences. Restreins-la avec un filtre avant de remplacer.",
   },
   "code.splitReview": {
     en: "This file is under review. Answer the proposal first, then move it.",
-    fr: "Ce fichier est en cours de revue. Répondez d'abord à la proposition, puis déplacez-le.",
+    fr: "Ce fichier est en cours de revue. Réponds d'abord à la proposition, puis déplace-le.",
   },
   "code.closeSaveFailed": {
     en: "It was not saved, so the tab stays open. Fix what the message above says, then close it again.",
-    fr: "Il n'a pas été enregistré : l'onglet reste ouvert. Corrigez ce que dit le message ci-dessus, puis refermez-le.",
+    fr: "Il n'a pas été enregistré : l'onglet reste ouvert. Corrige ce que dit le message ci-dessus, puis referme-le.",
   },
   "code.closeDirtyTitle": { en: "Save %s before closing?", fr: "Enregistrer %s avant de fermer ?" },
   "code.closeDirtyBody": {
@@ -941,7 +941,7 @@ const dict: Record<string, { en: string; fr: string }> = {
   "fop.deleteTitle": { en: "Move to Trash?", fr: "Mettre à la corbeille ?" },
   "fop.deleteBody": {
     en: "%s goes to the Trash. Nothing is erased: drag it back if this was a mistake.",
-    fr: "%s part à la corbeille. Rien n'est effacé : glissez-le pour le récupérer si c'était une erreur.",
+    fr: "%s part à la corbeille. Rien n'est effacé : glisse-le pour le récupérer si c'était une erreur.",
   },
   "clone.button": { en: "Clone a repository", fr: "Cloner un dépôt" },
   "clone.title": { en: "Clone a repository", fr: "Cloner un dépôt" },
@@ -1283,7 +1283,7 @@ const dict: Record<string, { en: string; fr: string }> = {
   },
   "update.busyJobs": {
     en: "A run is still working. Updating now would end it with no way back. Wait for it to finish, or stop it in Runs.",
-    fr: "Un run est encore en cours. Mettre à jour maintenant l'interromprait sans retour possible. Attends la fin, ou arrêtez-le dans Runs.",
+    fr: "Un run est encore en cours. Mettre à jour maintenant l'interromprait sans retour possible. Attends la fin, ou arrête-le dans Runs.",
   },
   "update.serverWarn": {
     en: "This machine serves a model and may run scheduled jobs. Restarting stops both until Galactus is back.",
@@ -1415,7 +1415,7 @@ const dict: Record<string, { en: string; fr: string }> = {
   "prev.toggle": { en: "Preview", fr: "Aperçu" },
   "prev.nothing": {
     en: "No page to preview yet. Open an .html file, or ask the agent to create index.html.",
-    fr: "Aucune page à prévisualiser. Ouvrez un fichier .html, ou demandez à l'agent de créer index.html.",
+    fr: "Aucune page à prévisualiser. Ouvre un fichier .html, ou demande à l'agent de créer index.html.",
   },
   "prev.pending": {
     en: "%n change(s) waiting for you. The preview shows the files on disk, so they are not in it yet.",
