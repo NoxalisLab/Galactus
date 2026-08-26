@@ -515,11 +515,11 @@
       "download": {
         "files": [
           {
-            "url": "https://huggingface.co/NoxalisLab/Wan2.2-S2V-14B-GGUF/resolve/main/wan2.2-s2v-14b-q8_0.gguf",
+            "url": "https://huggingface.co/dschaerer/Wan2.2-S2V-14B-GGUF/resolve/main/wan2.2-s2v-14b-q8_0.gguf",
             "as": "wan2.2-s2v-14b-q8_0.gguf"
           },
           {
-            "url": "https://huggingface.co/NoxalisLab/Wan2.2-S2V-14B-GGUF/resolve/main/wav2vec2-large-xlsr-53-f16.gguf",
+            "url": "https://huggingface.co/dschaerer/Wan2.2-S2V-14B-GGUF/resolve/main/wav2vec2-large-xlsr-53-f16.gguf",
             "as": "wav2vec2-large-xlsr-53-f16.gguf"
           },
           {
