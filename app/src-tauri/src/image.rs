@@ -1448,6 +1448,57 @@ pub fn image_read(path: String) -> Result<String, String> {
     Ok(format!("data:{mime};base64,{}", b64(&bytes)))
 }
 
+/// Copy a generated picture or clip into ~/Downloads, and say where it landed.
+///
+/// WHY A COPY AND NOT A SAVE PANEL. The file already exists, in a folder inside
+/// Application Support that nobody can be expected to navigate to: what is
+/// missing is a way OUT of the app, in one click, to the one place every Mac
+/// user knows how to find. A panel would be a second dialog on top of a
+/// decision that has no options worth making.
+///
+/// A clip's soundtrack travels with it. The pair is what the app produced (see
+/// webm.rs on why the PCM had to leave the container), and a WebM exported
+/// alone is a silent clip the user will believe is broken.
+#[tauri::command(async)]
+pub fn image_export(path: String) -> Result<String, String> {
+    let full = ours(&path)?;
+    let home = std::env::var("HOME").map_err(|_| "no home folder".to_string())?;
+    let downloads = PathBuf::from(home).join("Downloads");
+    std::fs::create_dir_all(&downloads).map_err(|e| e.to_string())?;
+    let name = full
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "galactus.png".to_string());
+    let dest = free_name(&downloads, &name);
+    std::fs::copy(&full, &dest).map_err(|e| format!("cannot save it: {e}"))?;
+    let wav = full.with_extension("wav");
+    if wav.is_file() {
+        let stem = dest.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let _ = std::fs::copy(&wav, downloads.join(format!("{stem}.wav")));
+    }
+    Ok(dest.to_string_lossy().to_string())
+}
+
+/// `name` in `dir`, or `name-2`, `name-3`... so an export never silently
+/// replaces a file the user already had there.
+fn free_name(dir: &Path, name: &str) -> PathBuf {
+    let first = dir.join(name);
+    if !first.exists() {
+        return first;
+    }
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((s, e)) => (s.to_string(), format!(".{e}")),
+        None => (name.to_string(), String::new()),
+    };
+    for n in 2..1000 {
+        let candidate = dir.join(format!("{stem}-{n}{ext}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    first
+}
+
 /// A path inside the images folder, canonicalised, or an error.
 fn ours(path: &str) -> Result<PathBuf, String> {
     let root = std::fs::canonicalize(image_root()).map_err(|e| e.to_string())?;

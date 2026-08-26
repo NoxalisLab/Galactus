@@ -8915,6 +8915,7 @@ pub fn run() {
             image::image_gallery,
             image::image_read,
             image::image_forget,
+            image::image_export,
             code::code_create,
             code::code_rename,
             code::code_delete,

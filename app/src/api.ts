@@ -637,6 +637,8 @@ export const api = {
   /** A generated image as a data URL: the page's policy allows data:, not files. */
   imageRead: (path: string) => invoke<string>("image_read", { path }),
   imageForget: (path: string) => invoke<void>("image_forget", { path }),
+  /** Copy one picture or clip into ~/Downloads. Returns where it landed. */
+  imageExport: (path: string) => invoke<string>("image_export", { path }),
   codeCreate: (root: string, path: string, dir: boolean) =>
     invoke<string>("code_create", { root, path, dir }),
   codeRename: (root: string, from: string, to: string) =>

@@ -71,6 +71,13 @@ let unlisten: (() => void) | null = null;
 let initImage = "";
 /** Driving WAV for the speech-to-video models. Per session. */
 let refAudio = "";
+/** Whether the strip of already-made pictures is open under the picker row. */
+let pickingMade = false;
+
+/** The gallery, minus the clips: a WebM cannot be a first frame. */
+function madePictures(): string[] {
+  return gallery.filter((p) => p.endsWith(".png"));
+}
 
 export function setImageDeps(d: ImageDeps): void {
   deps = d;
@@ -183,28 +190,51 @@ function blockedLine(m: ImageModelInfo): string {
     : m.reason;
 }
 
-function modelCard(m: ImageModelInfo): string {
-  const gb = (m.bytes / 1e9).toFixed(1);
+/** What this machine can do with the model: time for a clip, pixels for a still. */
+function fitLine(m: ImageModelInfo): string {
+  if (!m.usable) return "";
+  return m.video
+    ? t("img.fitsClip").replace("%s", clipLabel(m.max_frames, m.video.fps))
+    : t("img.fitsUpTo").replace("%s", sizeLabel(m.max_side, m.max_side));
+}
+
+function measuredLine(m: ImageModelInfo): string {
   const fastest = m.measured.find((x) => x.seconds);
-  const speed = fastest
+  return fastest
     ? t("img.measured")
         .replace("%t", fmtSeconds(fastest.seconds ?? 0))
         .replace("%s", sizeLabel(fastest.width ?? 0, fastest.height ?? 0))
     : t("img.notMeasured");
-  // The same verdict the LLM cards carry: what this MACHINE can do with the
-  // model, next to what the model is. A usable model says how far it goes
-  // here; a blocked one wears the chip and says why underneath. For a video
-  // model the useful half of the verdict is time, not pixels.
-  const fit = !m.usable
-    ? ""
-    : m.video
-      ? ` · ${esc(t("img.fitsClip").replace("%s", clipLabel(m.max_frames, m.video.fps)))}`
-      : ` · ${esc(t("img.fitsUpTo").replace("%s", sizeLabel(m.max_side, m.max_side)))}`;
+}
+
+/**
+ * One line in the picker.
+ *
+ * WHY a select and not the grid of cards it replaces: eleven cards, each
+ * carrying a paragraph of measured prose, pushed the prompt and the gallery
+ * off the page. The reading matter belongs to the ONE model you are about to
+ * run, not to the ten you are not; the list stays a list.
+ */
+function modelOption(m: ImageModelInfo): string {
+  const gb = (m.bytes / 1e9).toFixed(1);
+  const marks = [
+    m.video ? t("img.videoChip") : "",
+    m.usable ? "" : t("img.blockedChip"),
+    m.installed || !m.usable ? "" : t("img.notInstalled"),
+  ].filter(Boolean);
+  const tail = marks.length ? ` · ${marks.join(" · ")}` : "";
+  return `<option value="${esc(m.id)}" ${m.id === chosen ? "selected" : ""}>${esc(`${m.name} — ${gb} GB${tail}`)}</option>`;
+}
+
+/** The chosen model, in full: what it is, what it costs here, why it is blocked. */
+function modelDetail(m: ImageModelInfo): string {
+  const gb = (m.bytes / 1e9).toFixed(1);
+  const fit = fitLine(m);
   const videoChip = m.video ? `<span class="chip-cert">▸ ${esc(t("img.videoChip"))}</span>` : "";
-  return `<div class="mcard ${m.id === chosen ? "on" : ""}" data-pick="${esc(m.id)}">
+  return `<div class="mcard imgdetail">
     <div class="top"><div class="info">
       <div class="nm"><b>${esc(m.name)}</b>${videoChip}${m.usable ? "" : `<span class="chip-cert pending">✕ ${esc(t("img.blockedChip"))}</span>`}${m.installed ? "" : `<span class="chip-cert pending">◷ ${esc(t("img.notInstalled"))}</span>`}</div>
-      <span class="meta">${gb} GB · ${esc(speed)}${fit}</span>
+      <span class="meta">${gb} GB · ${esc(measuredLine(m))}${fit ? ` · ${esc(fit)}` : ""}</span>
     </div><span data-a></span></div>
     <div class="brief">${esc(inLang(m.note))}</div>
     ${inLang(m.licence) ? `<div class="brief blocked">${esc(t("img.licenceLine"))} ${esc(inLang(m.licence))}</div>` : ""}
@@ -215,7 +245,9 @@ function modelCard(m: ImageModelInfo): string {
 function bodyHtml(): string {
   const m = current();
   const d = defaultsFor(m);
-  const cards = models.map(modelCard).join("");
+  const picker = `<div class="imgpick">
+    <label>${esc(t("img.model"))}<select id="imgmodel">${models.map(modelOption).join("")}</select></label>
+  </div>${m ? modelDetail(m) : ""}`;
   // Startable means installed AND within this machine, exactly the pair the
   // LLM list uses: an installed model too big for the Mac would otherwise
   // offer a Generate button whose only outcome is a swap spiral.
@@ -230,14 +262,15 @@ function bodyHtml(): string {
   // the input stays editable, this is a starting point rather than a wall.
   const steps = m?.recommended_steps ?? d.steps;
   return `
-  <div class="imgmodels">${cards}</div>
+  ${picker}
   ${
     m && !m.installed
       ? m.usable
         ? `<div class="card"><div class="hd"><div class="grow"><b>${esc(t("img.installTitle").replace("%s", m.name))}</b>
              <span class="d">${esc(t("img.installHint").replace("%g", (m.bytes / 1e9).toFixed(1)))}</span></div>
              ${installing === m.id ? `<button class="bs" id="imginstallstop">${esc(t("img.stop"))}</button>` : ""}
-             <button class="bp" id="imginstall" ${installing ? "disabled" : ""}>${esc(installing === m.id ? t("img.installing") : t("img.install"))}</button></div></div>`
+             <button class="bp" id="imginstall" ${installing ? "disabled" : ""}>${esc(installing === m.id ? t("img.installing") : t("img.install"))}</button></div>
+             ${installing === m.id ? `<div class="imgbar"><i id="imginstallfill" style="width:${Math.round(installPct?.pct ?? 0)}%"></i></div>` : ""}</div>`
         : `<div class="card"><div class="hd"><div class="grow"><b>${esc(t("img.cantRunTitle").replace("%s", m.name))}</b>
              <span class="d">${esc(blockedLine(m))}</span></div></div></div>`
       : ""
@@ -290,8 +323,39 @@ function bodyHtml(): string {
         ? `<div class="imgrow">
             <span class="d">${esc(m.video.needs_init_image ? t("img.startNeeded") : t("img.startOptional"))}</span>
             <button class="bs" id="imgpickstart" ${canRun ? "" : "disabled"}>${esc(initImage ? t("img.startChange") : t("img.startPick"))}</button>
+            <button class="bs" id="imgpickmade" ${canRun ? "" : "disabled"}>${esc(t("img.startFromMade"))}</button>
             ${initImage ? `<span class="d mono" id="imgstartpath">${esc(initImage.split("/").pop() ?? "")}</span><button class="bs" id="imgstartclear">✕</button>` : ""}
-          </div>`
+          </div>
+          ${
+            // The pictures this app already made, one click away from becoming
+            // the first frame of a clip. WHY it is here and not only behind the
+            // file panel: the obvious starting picture is almost always the one
+            // generated a minute ago, and finding it meant navigating to
+            // Application Support by hand.
+            pickingMade
+              ? `<div class="imgstrip" id="imgstrip">${
+                  madePictures().length
+                    ? madePictures()
+                        .map(
+                          (p) =>
+                            `<figure class="imgcell${p === initImage ? " on" : ""}" data-pickimg="${esc(p)}" title="${esc(p.split("/").pop() ?? "")}" role="button" tabindex="0"><div class="ph"></div></figure>`,
+                        )
+                        .join("")
+                    : `<div class="cempty">${esc(t("img.galleryEmpty"))}</div>`
+                }</div>`
+              : ""
+          }`
+        : ""
+    }
+    ${
+      busy
+        ? // A run is minutes long on a video model, so the bar is the honest
+          // control here: the step count alone reads as a frozen number
+          // between two slow steps. Indeterminate until the first step event
+          // arrives, because model loading has no step to report.
+          `<div class="imgbar ${progress ? "" : "wait"}"><i id="imgbarfill" style="width:${
+            progress?.total ? Math.round((progress.done / progress.total) * 100) : 0
+          }%"></i></div>`
         : ""
     }
     <div class="imgacts">
@@ -312,7 +376,17 @@ function bodyHtml(): string {
   <div class="sect"><b>${esc(t("img.gallery"))}</b><span>${esc(t("img.galleryHint"))}</span></div>
   <div class="imggrid" id="imggrid">${
     gallery.length
-      ? gallery.slice(0, GALLERY_PAGE).map((p) => `<figure class="imgcell" data-img="${esc(p)}" title="${esc(t("img.open"))}" role="button" tabindex="0"><div class="ph"></div></figure>`).join("")
+      ? gallery
+          .slice(0, GALLERY_PAGE)
+          .map(
+            (p) =>
+              `<figure class="imgcell" data-img="${esc(p)}" title="${esc(t("img.open"))}" role="button" tabindex="0"><div class="ph"></div>` +
+              // Saving is not destructive, so unlike delete it can live under
+              // the pointer: the worst a mis-click does is put a copy in
+              // Downloads.
+              `<button class="cellsave" data-save="${esc(p)}" title="${esc(t("img.save"))}" aria-label="${esc(t("img.save"))}">⤓</button></figure>`,
+          )
+          .join("")
       : `<div class="cempty">${esc(t("img.galleryEmpty"))}</div>`
   }</div>`;
 }
@@ -325,6 +399,8 @@ function paintInstall(): void {
     .replace("%p", String(Math.round(installPct.pct)))
     .replace("%a", gb(installPct.done))
     .replace("%b", gb(installPct.bytes));
+  const fill = liveWrap?.querySelector<HTMLElement>("#imginstallfill");
+  if (fill) fill.style.width = `${Math.round(installPct.pct)}%`;
 }
 
 function paintProgress(): void {
@@ -335,21 +411,47 @@ function paintProgress(): void {
     .replace("%d", String(progress.done))
     .replace("%n", String(progress.total))
     .replace("%p", String(pct));
+  const fill = liveWrap?.querySelector<HTMLElement>("#imgbarfill");
+  if (fill) {
+    fill.style.width = `${pct}%`;
+    // The first step turns the waiting stripes into a real measurement.
+    fill.parentElement?.classList.remove("wait");
+  }
 }
+
+/**
+ * The element whose listeners are already attached.
+ *
+ * WHY THIS EXISTS. `paint` rewrites the INSIDE of #imgbody and leaves the node
+ * itself in place, so every repaint used to add another click listener to the
+ * same element: after choosing a picture (which repaints), the next click on
+ * "Choose a starting picture" opened two panels in a row, then three, then
+ * four. It read as the app asking for the file over and over, and the count
+ * grew with every repaint of the session.
+ */
+let wiredBox: HTMLElement | null = null;
 
 function wire(wrap: HTMLElement): void {
   const box = wrap.querySelector<HTMLElement>("#imgbody");
   if (!box) return;
+  if (wiredBox === box) {
+    // Already listening. The content changed underneath, so the tiles still
+    // need decoding, but the handlers are the same ones and delegate from the
+    // container: rebinding them is how the loop above happened.
+    void decodeVisible(wrap);
+    return;
+  }
+  wiredBox = box;
+  box.addEventListener("change", (e) => {
+    const sel = (e.target as HTMLElement).closest("#imgmodel") as HTMLSelectElement | null;
+    if (!sel) return;
+    chosen = sel.value;
+    paint(wrap, bodyHtml());
+    wire(wrap);
+    void decodeVisible(wrap);
+  });
   box.addEventListener("click", (e) => {
     const target = e.target as HTMLElement;
-    const pick = target.closest("[data-pick]") as HTMLElement | null;
-    if (pick) {
-      chosen = pick.dataset.pick!;
-      paint(wrap, bodyHtml());
-      wire(wrap);
-      void decodeVisible(wrap);
-      return;
-    }
     if (target.closest("#imginstallstop")) {
       void api.imageInstallCancel();
       return;
@@ -372,6 +474,21 @@ function wire(wrap: HTMLElement): void {
     }
     if (target.closest("#imgstartclear")) {
       initImage = "";
+      repaint();
+      return;
+    }
+    if (target.closest("#imgpickmade")) {
+      pickingMade = !pickingMade;
+      repaint();
+      return;
+    }
+    const made = target.closest("[data-pickimg]") as HTMLElement | null;
+    if (made) {
+      // Chosen from what this app made. The path is the gallery's own, which
+      // is an absolute path the engine reads directly, exactly like one the
+      // file panel would have returned.
+      initImage = made.dataset.pickimg!;
+      pickingMade = false;
       repaint();
       return;
     }
@@ -400,6 +517,14 @@ function wire(wrap: HTMLElement): void {
       void api.imageCancel();
       return;
     }
+    const saver = target.closest("[data-save]") as HTMLElement | null;
+    if (saver) {
+      // Before the tile branches below: the button sits inside the tile, so a
+      // click on it is also a click on the picture.
+      e.stopPropagation();
+      void save(saver.dataset.save!);
+      return;
+    }
     const cell = target.closest("[data-img]") as HTMLElement | null;
     if (cell && e.altKey) {
       // Alt-click removes it. Deliberately not a visible button on every tile:
@@ -419,7 +544,16 @@ function wire(wrap: HTMLElement): void {
   // worse than a plain image, because a screen reader will offer it.
   box.addEventListener("keydown", (e) => {
     if (e.key !== "Enter" && e.key !== " ") return;
-    const cell = (e.target as HTMLElement).closest("[data-img]") as HTMLElement | null;
+    const target = e.target as HTMLElement;
+    const made = target.closest("[data-pickimg]") as HTMLElement | null;
+    if (made) {
+      e.preventDefault();
+      initImage = made.dataset.pickimg!;
+      pickingMade = false;
+      repaint();
+      return;
+    }
+    const cell = target.closest("[data-img]") as HTMLElement | null;
     if (!cell) return;
     e.preventDefault();
     openLightbox(gallery.indexOf(cell.dataset.img!));
@@ -443,6 +577,12 @@ function wire(wrap: HTMLElement): void {
  */
 function openLightbox(startAt: number): void {
   if (gallery.length === 0) return;
+  // One at a time, whatever asked. Two identical viewers stacked on top of each
+  // other look exactly like a close button that does nothing: the first ✕
+  // closes the top one and the one underneath is still there. That is what a
+  // duplicated click listener produced before `wiredBox`, and the guard stays
+  // because the cost of being wrong about it is a viewer nobody can dismiss.
+  if (document.querySelector(".lightbox")) return;
   let at = Math.max(0, Math.min(startAt, gallery.length - 1));
   const previous = document.activeElement as HTMLElement | null;
 
@@ -450,6 +590,7 @@ function openLightbox(startAt: number): void {
     <div class="lb-bar">
       <span class="lb-count"></span>
       <span class="lb-hint">${esc(t("img.lbHint"))}</span>
+      <button class="lb-btn" data-lb="save" title="${esc(t("img.save"))}" aria-label="${esc(t("img.save"))}">⤓</button>
       <button class="lb-btn" data-lb="close" title="${esc(t("img.lbClose"))}" aria-label="${esc(t("img.lbClose"))}">✕</button>
     </div>
     <button class="lb-nav prev" data-lb="prev" aria-label="${esc(t("img.lbPrev"))}">‹</button>
@@ -582,6 +723,12 @@ function openLightbox(startAt: number): void {
 
   back.addEventListener("click", (e) => {
     const btn = (e.target as HTMLElement).closest("[data-lb]") as HTMLElement | null;
+    if (btn?.dataset.lb === "save") {
+      // The viewer stays open: saving is not leaving, and a clip the user is
+      // still watching should keep playing.
+      void save(gallery[at]);
+      return;
+    }
     if (btn?.dataset.lb === "close") return close();
     if (btn?.dataset.lb === "prev") return move(-1);
     if (btn?.dataset.lb === "next") return move(1);
@@ -597,6 +744,21 @@ function openLightbox(startAt: number): void {
 
 /** Decode the visible tiles. One command per image, newest first. */
 async function decodeVisible(wrap: HTMLElement): Promise<void> {
+  // The strip of already-made pictures decodes the same way the gallery does,
+  // and first: it is what the user is looking at when it is open.
+  for (const cell of Array.from(wrap.querySelectorAll<HTMLElement>("[data-pickimg]"))) {
+    if (cell.querySelector("img")) continue;
+    try {
+      const url = await api.imageRead(cell.dataset.pickimg!);
+      const img = document.createElement("img");
+      img.src = url;
+      img.alt = "";
+      img.loading = "lazy";
+      cell.replaceChildren(img);
+    } catch {
+      // Deleted between the listing and the decode: leave the tile blank.
+    }
+  }
   for (const cell of Array.from(wrap.querySelectorAll<HTMLElement>("[data-img]"))) {
     if (cell.querySelector("img,video")) continue;
     try {
@@ -657,6 +819,23 @@ async function install(): Promise<void> {
   installing = null;
   installPct = null;
   await refresh();
+}
+
+/**
+ * Copy one picture or clip out to ~/Downloads.
+ *
+ * The destination is named in the confirmation rather than left implied: a
+ * save that says only "done" leaves the user hunting, and the file may have
+ * been renamed to avoid replacing something already there.
+ */
+async function save(path: string): Promise<void> {
+  if (!path) return;
+  try {
+    const dest = await api.imageExport(path);
+    deps?.toast(t("img.saved").replace("%s", dest.split("/").pop() ?? dest), "ok");
+  } catch (e: any) {
+    deps?.toast(String(e?.message ?? e));
+  }
 }
 
 /** Repaint the live view from current state. */
