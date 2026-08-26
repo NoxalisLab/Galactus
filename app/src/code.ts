@@ -202,6 +202,13 @@ let leftTab: LeftTab = "files";
  * to flash the no-repo hint on every launch inside a real repository.
  */
 let git: GitInfo | null | undefined = undefined;
+/**
+ * A push or a pull already in flight. Both take seconds over the network while
+ * their button keeps its enabled look, and a second press fired a second
+ * command against the same repository. The head repaints from this, so the
+ * button goes visibly inert instead of silently swallowing the click.
+ */
+let gitBusy = false;
 let changes: GitChange[] = [];
 let commits: GitCommitInfo[] = [];
 let branches: string[] = [];
@@ -2628,36 +2635,44 @@ async function commitStaged(): Promise<void> {
  * standing rule can ever make it silent.
  */
 async function push(): Promise<void> {
-  if (!root || !git) return;
+  if (!root || !git || gitBusy) return;
   if (!git.upstream || git.ahead === 0) return;
   const detail = t("code.pushDetail")
     .replace("%n", String(git.ahead))
     .replace("%b", git.branch)
     .replace("%u", git.upstream);
-  const ok = await deps!.ask({ kind: "git", detail, elevated: false, noAlways: true });
-  if (!ok) return;
+  // Claimed before the dialog, not after it: the confirmation is part of the
+  // wait, and a second press while it stands would queue a second push.
+  gitBusy = true;
+  paintHead();
   try {
+    const ok = await deps!.ask({ kind: "git", detail, elevated: false, noAlways: true });
+    if (!ok) return;
     const out = await api.gitPush(root);
     await refreshGit();
     paintLeft();
-    paintHead();
     deps?.toast(out.trim().split("\n").slice(-1)[0] || t("code.pushDone"), "ok");
   } catch (e: any) {
     deps?.toast(String(e?.message ?? e));
+  } finally {
+    gitBusy = false;
+    paintHead();
   }
 }
 
 /** Pull. Same treatment as push, and never folded into the same button. */
 async function pull(): Promise<void> {
-  if (!root || !git) return;
+  if (!root || !git || gitBusy) return;
   if (!git.upstream) return;
   const detail = t("code.pullDetail")
     .replace("%n", String(git.behind))
     .replace("%u", git.upstream)
     .replace("%b", git.branch);
-  const ok = await deps!.ask({ kind: "git", detail, elevated: false, noAlways: true });
-  if (!ok) return;
+  gitBusy = true;
+  paintHead();
   try {
+    const ok = await deps!.ask({ kind: "git", detail, elevated: false, noAlways: true });
+    if (!ok) return;
     const out = await api.gitPull(root, false);
     await refreshGit();
     await refreshHistory();
@@ -2675,6 +2690,9 @@ async function pull(): Promise<void> {
     deps?.toast(out.trim().split("\n").slice(-1)[0] || t("code.pullDone"), "ok");
   } catch (e: any) {
     deps?.toast(String(e?.message ?? e));
+  } finally {
+    gitBusy = false;
+    paintHead();
   }
 }
 
@@ -2729,10 +2747,10 @@ function headHtml(): string {
   // Pull and Push carry their counts and go inert with a reason rather than
   // firing and answering with a toast.
   const netButtons = g?.repo
-    ? `<button class="bs" id="cpull" ${g.upstream ? "" : "disabled"} title="${esc(
+    ? `<button class="bs" id="cpull" ${g.upstream && !gitBusy ? "" : "disabled"} title="${esc(
         g.upstream ? t("code.pullDone") : t("code.noUpstream")
       )}">${esc(t("code.pull"))}${g.behind ? ` ↓${g.behind}` : ""}</button>` +
-      `<button class="bs" id="cpush" ${g.upstream && g.ahead ? "" : "disabled"} title="${esc(
+      `<button class="bs" id="cpush" ${g.upstream && g.ahead && !gitBusy ? "" : "disabled"} title="${esc(
         !g.upstream ? t("code.noUpstream") : g.ahead ? t("code.push") : t("code.nothingToPush")
       )}">${esc(t("code.push"))}${g.ahead ? ` ↑${g.ahead}` : ""}</button>`
     : "";
@@ -3261,7 +3279,10 @@ export function codeView(): HTMLElement {
       <div class="codeleft" id="codeleft"></div>
       <div class="pane-splitter code-left-splitter" id="codeleftsplit"></div>
       <div class="codemidwrap" id="codemidwrap">
-        <div class="codemid" id="codemid"></div>
+        <div class="codemidrow">
+          <div class="codemid" id="codemid"></div>
+          <div class="codeprev" id="codeprev"></div>
+        </div>
         <div class="codeterm" id="codeterm"></div>
       </div>
       <div class="pane-splitter code-agent-splitter" id="codeagentsplit"></div>

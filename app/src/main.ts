@@ -1033,7 +1033,10 @@ function wireCopy(btn: HTMLElement, getText: () => string) {
 }
 
 async function showServerLogModal() {
-  const m = el(`<div class="modal-bd"><div class="modal wide">
+  // The card behind stays clickable, so pressing twice stacked two identical
+  // modals and closing one still left the other.
+  if (document.querySelector("[data-srvlog]")) return;
+  const m = el(`<div class="modal-bd" data-srvlog><div class="modal wide">
     <h3>${esc(t("srvfail.logTitle"))}</h3>
     <pre class="logpre">${esc(t("srvfail.loading"))}</pre>
     <div class="acts">
@@ -1042,15 +1045,17 @@ async function showServerLogModal() {
     </div></div></div>`);
   document.body.appendChild(m);
   const pre = m.querySelector<HTMLElement>(".logpre")!;
+  // Wired before the log is asked for, not after: reading a large engine log
+  // takes seconds, and for those seconds the ✕ was drawn but did nothing.
+  m.addEventListener("click", (e) => {
+    const tg = e.target as HTMLElement;
+    if (tg === m || tg.closest("[data-close]")) m.remove();
+  });
   let text = "";
   try { text = await api.serverLog(); } catch (e: any) { text = String(e?.message ?? e); }
   pre.textContent = text.trim().length ? text : t("srvfail.emptyLog");
   pre.scrollTop = pre.scrollHeight;
   wireCopy(m.querySelector<HTMLElement>("[data-copy]")!, () => text);
-  m.addEventListener("click", (e) => {
-    const tg = e.target as HTMLElement;
-    if (tg === m || tg.closest("[data-close]")) m.remove();
-  });
 }
 
 /**
@@ -2807,6 +2812,9 @@ function prettyTool(name: string): string {
 
 // ---------- install (volume choice + dual-SSD dialog) ----------
 
+/** One install dialog at a time, released wherever that dialog goes away. */
+let installDlgOpen = false;
+
 function startInstall(m: ModelEntry, volumes: InstallVolumes | null): void {
   installProgress.set(m.id, { pct: 0, label: "download" });
   render();
@@ -2842,12 +2850,20 @@ function rootVolumeIndex(cands: VolumeInfo[]): number {
  * the fast one falls back to mono on the fast SSD, with a warning.
  */
 async function showInstallModal(m: ModelEntry): Promise<void> {
+  // Two guards for two ways of pressing twice. The flag is claimed
+  // synchronously because the dialog only exists after listVolumes has
+  // answered, so a DOM check would let the second half of a double click
+  // through; the map covers the dense path, which opens no dialog at all and
+  // starts the download on the spot.
+  if (installDlgOpen || installProgress.has(m.id)) return;
+  installDlgOpen = true;
   // A dense model has no pack, so there is no pack to place: the dialog would
   // measure two SSDs, ask which should hold the halves of a file that will
   // never exist, and then be ignored by an installer that stops after the
   // download. Asking a question whose answer changes nothing is worse than not
   // asking: it teaches the reader that the choice does not matter.
   if (m.dense) {
+    installDlgOpen = false;
     startInstall(m, null);
     return;
   }
@@ -2855,12 +2871,14 @@ async function showInstallModal(m: ModelEntry): Promise<void> {
   try {
     vols = await api.listVolumes();
   } catch {
+    installDlgOpen = false;
     startInstall(m, null); // detection unavailable: classic install
     return;
   }
   const packGb = (m.expert_bytes_total ?? m.gguf_bytes ?? 0) / 1e9;
   const cands = vols.filter((v) => v.free_gb >= Math.max(0.32 * packGb + 2, 8));
   if (!cands.length) {
+    installDlgOpen = false;
     toast(t("installdlg.noVolume"));
     return;
   }
@@ -3049,11 +3067,15 @@ async function showInstallModal(m: ModelEntry): Promise<void> {
           ? null // classic location inside the Galactus folder
           : { internal_dir: cands[iSel].dir };
     mm.remove();
+    installDlgOpen = false;
     startInstall(m, volumes);
   });
   mm.addEventListener("click", (e) => {
     const tg = e.target as HTMLElement;
-    if (tg === mm || tg.closest("[data-x]")) mm.remove();
+    if (tg === mm || tg.closest("[data-x]")) {
+      mm.remove();
+      installDlgOpen = false;
+    }
   });
   document.body.appendChild(mm);
 }
@@ -3666,15 +3688,27 @@ function memoryView(): HTMLElement {
 }
 
 // ---------- Obsidian constellation (cosmos.ts) ----------
+/**
+ * One constellation at a time. Claimed synchronously rather than by looking
+ * for the overlay: the graph is loaded before the overlay exists, so two quick
+ * presses both got past a DOM check and the second left a window keydown
+ * listener that no close would ever remove.
+ */
+let cosmosOpen = false;
+
 async function openCosmos(): Promise<void> {
+  if (cosmosOpen) return;
+  cosmosOpen = true;
   let data;
   try {
     data = await api.obsidianGraph();
   } catch (e: any) {
+    cosmosOpen = false;
     toast(String(e?.message ?? e));
     return;
   }
   if (!data.nodes.length) {
+    cosmosOpen = false;
     toast(t("cosmos.empty"));
     return;
   }
@@ -3737,6 +3771,7 @@ async function openCosmos(): Promise<void> {
     viz = new Cosmos(body, data, (name, path) => { void openNote(name, path); });
   } catch (e: any) {
     overlay.remove();
+    cosmosOpen = false;
     toast(String(e?.message ?? e));
     return;
   }
@@ -3744,6 +3779,7 @@ async function openCosmos(): Promise<void> {
     viz?.destroy();
     overlay.remove();
     window.removeEventListener("keydown", onKey);
+    cosmosOpen = false;
   };
   const onKey = (e: KeyboardEvent) => {
     if (e.key !== "Escape") return;

@@ -67,6 +67,13 @@ let progress: { done: number; total: number } | null = null;
 let installing: string | null = null;
 let deps: ImageDeps | null = null;
 let unlisten: (() => void) | null = null;
+/**
+ * Bumped on every listen(). The subscription only becomes cancellable when
+ * onEvent resolves, so two mounts close together both found `unlisten` still
+ * null and the first subscription stayed alive for the rest of the session,
+ * repainting a view that had already been replaced.
+ */
+let listenGen = 0;
 /** Starting picture for the video models that animate one. Per session. */
 let initImage = "";
 /** Driving WAV for the speech-to-video models. Per session. */
@@ -104,9 +111,9 @@ export function imageView(): HTMLElement {
 function listen(wrap: HTMLElement): void {
   unlisten?.();
   unlisten = null;
-  let dead = false;
+  const gen = ++listenGen;
   void onEvent("galactus://image", (p: any) => {
-    if (dead) return;
+    if (gen !== listenGen) return;
     if (p?.kind === "step") {
       progress = { done: Number(p.done) || 0, total: Number(p.total) || 0 };
       paintProgress();
@@ -122,8 +129,8 @@ function listen(wrap: HTMLElement): void {
       void refresh();
     }
   }).then((off) => {
-    if (dead) off();
-    else unlisten = () => { dead = true; off(); };
+    if (gen !== listenGen) off();
+    else unlisten = () => { listenGen++; off(); };
   });
 }
 
@@ -150,7 +157,16 @@ async function refresh(_wrap?: HTMLElement): Promise<void> {
     models = await api.imageModels();
   } catch (e: any) {
     models = [];
-    paint(wrap, `<div class="cerror"><b>${esc(t("img.noRegistry"))}</b><span class="mono">${esc(String(e?.message ?? e))}</span></div>`);
+    // A registry that fails to load left the view with nothing to act on: the
+    // only way to ask again was to leave and come back, and nothing on screen
+    // said so.
+    paint(
+      wrap,
+      `<div class="cerror"><b>${esc(t("img.noRegistry"))}</b><span class="mono">${esc(String(e?.message ?? e))}</span><div style="display:flex"><button class="bs" data-retry>${esc(t("boot.retry"))}</button></div></div>`,
+    );
+    wrap.querySelector<HTMLElement>("[data-retry]")?.addEventListener("click", () => {
+      void refresh();
+    });
     return;
   }
   if (!chosen || !models.some((m) => m.id === chosen)) {

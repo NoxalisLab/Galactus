@@ -148,6 +148,14 @@ let loading = false;
 let mounted: HTMLElement | null = null;
 /** One debounce timer per run, exactly as store.ts does per conversation. */
 const saveTimers = new Map<string, number>();
+/**
+ * The run whose deletion is being confirmed right now, or null.
+ *
+ * The list keeps repainting behind the dialog, which puts a fresh and perfectly
+ * live delete button back under the pointer: a second press opened a second
+ * confirmation for a run the first one was already about to erase.
+ */
+let confirmingDelete: string | null = null;
 let tick: number | null = null;
 
 /** The declaration form, kept out of the DOM so a full render never eats it. */
@@ -341,21 +349,27 @@ async function loadStored(): Promise<void> {
 }
 
 async function forget(run: LiveRun): Promise<void> {
-  // The run AND its transcript go, and nothing else keeps a copy. One click on
-  // a row in a list is not enough intent for that.
-  const ok = await confirmDestructive({
-    title: t("confirm.runTitle"),
-    detail: t("confirm.runBody"),
-    confirmLabel: t("confirm.delete"),
-  });
-  if (!ok) return;
   const id = run.run.id;
-  const timer = saveTimers.get(id);
-  if (timer !== undefined) clearTimeout(timer);
-  saveTimers.delete(id);
-  live.delete(id);
-  await api.convDelete(id).catch(() => {});
-  schedulePaint();
+  if (confirmingDelete === id) return;
+  confirmingDelete = id;
+  try {
+    // The run AND its transcript go, and nothing else keeps a copy. One click
+    // on a row in a list is not enough intent for that.
+    const ok = await confirmDestructive({
+      title: t("confirm.runTitle"),
+      detail: t("confirm.runBody"),
+      confirmLabel: t("confirm.delete"),
+    });
+    if (!ok) return;
+    const timer = saveTimers.get(id);
+    if (timer !== undefined) clearTimeout(timer);
+    saveTimers.delete(id);
+    live.delete(id);
+    await api.convDelete(id).catch(() => {});
+    schedulePaint();
+  } finally {
+    confirmingDelete = null;
+  }
 }
 
 // ---------------------------------------------------------------- the agent
