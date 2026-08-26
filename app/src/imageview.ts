@@ -257,7 +257,9 @@ function bodyHtml(): string {
             // grows with the frame count (784 of TI2V's measured 873 seconds
             // were the decode alone), and a first click that runs most of an
             // hour reads as a hang, exactly the recommended_steps reasoning.
-            (() => {
+            m.video.duration_follows_audio
+              ? `<span class="d">${esc(t("img.durationFromWav"))} · ${esc(sizeLabel(dw, dh))} · ${m.video.fps} fps</span>`
+              : (() => {
               const presets = framePresets(m.video, m.max_frames || m.video.frames);
               const first = presets.find((f) => f >= m.video!.fps) ?? presets[0];
               return `<label>${esc(t("img.duration"))}<select id="imgframes" ${canRun ? "" : "disabled"}>${presets
@@ -272,6 +274,7 @@ function bodyHtml(): string {
       <label>${esc(t("img.steps"))}<input id="imgsteps" type="number" min="1" max="100" value="${steps}" ${canRun ? "" : "disabled"}/></label>
       <label>${esc(t("img.cfg"))}<input id="imgcfg" type="number" min="0" max="30" step="0.5" value="${d.cfg}" ${canRun ? "" : "disabled"}/></label>
       <label>${esc(t("img.seed"))}<input id="imgseed" type="number" value="-1" ${canRun ? "" : "disabled"}/></label>
+      ${m?.video?.fast_decode ? `<label class="chk"><input type="checkbox" id="imgfast" checked ${canRun ? "" : "disabled"}/>${esc(t("img.fastDecode"))}</label>` : ""}
     </div>
     ${
       m?.video?.needs_ref_audio
@@ -699,6 +702,7 @@ async function generate(): Promise<void> {
     frames: m.video ? num("#imgframes", m.video.frames) : 0,
     init_image: m.video ? initImage : "",
     ref_audio: m.video ? refAudio : "",
+    fast: !!m.video?.fast_decode && (wrap.querySelector<HTMLInputElement>("#imgfast")?.checked ?? true),
   };
   if (!req.prompt.trim()) {
     deps?.toast(t("img.needPrompt"));

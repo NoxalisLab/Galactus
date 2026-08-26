@@ -304,6 +304,9 @@ export interface VideoSpecInfo {
   needs_init_image?: boolean;
   accepts_init_image?: boolean;
   needs_ref_audio?: boolean;
+  fast_decode?: boolean;
+  /** The clip length follows the WAV; the engine chains segments itself. */
+  duration_follows_audio?: boolean;
 }
 
 export interface ImageModelInfo {
@@ -356,6 +359,8 @@ export interface ImageRequest {
   init_image?: string;
   /** Driving WAV for the speech-to-video models. */
   ref_audio?: string;
+  /** Tiny-VAE decode: 9x faster, watercolour colours. */
+  fast?: boolean;
 }
 
 /** Wire shape of `SearchOpts` in search.rs: snake_case, not the UI's camel. */

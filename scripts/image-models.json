@@ -447,11 +447,12 @@
       "id": "wan22-ti2v-5b",
       "name": "Wan 2.2 TI2V 5B",
       "kind": "video",
-      "bytes": 12852648256,
+      "bytes": 12875496304,
       "roles": {
         "diffusion": "Wan2.2-TI2V-5B-Q8_0.gguf",
         "t5xxl": "umt5-xxl-encoder-Q8_0.gguf",
-        "vae": "wan2.2_vae.safetensors"
+        "vae": "wan2.2_vae.safetensors",
+        "taesd": "taew2_2.safetensors"
       },
       "download": {
         "files": [
@@ -466,6 +467,10 @@
           {
             "url": "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/vae/wan2.2_vae.safetensors",
             "as": "wan2.2_vae.safetensors"
+          },
+          {
+            "url": "https://github.com/madebyollin/taehv/raw/refs/heads/main/safetensors/taew2_2.safetensors",
+            "as": "taew2_2.safetensors"
           }
         ]
       },
@@ -483,12 +488,13 @@
         "flow_shift": 3.0,
         "sampling_method": "euler",
         "offload_to_cpu": true,
-        "accepts_init_image": true
+        "accepts_init_image": true,
+        "fast_decode": true
       },
       "min_ram_gb": 24,
       "note": {
-        "en": "The small one of the family: 5B dense, its own high-compression VAE, text or picture as input, the same command does both. The first to install to see a video come out of this machine. Apache 2.0. 24 frames per second. Measured: 873 s for 25 frames on the 128 GB Mac, 784 s of which were the VAE decode alone, which grows with the clip length.",
-        "fr": "Le petit de la famille : 5B dense, VAE haute compression qui lui est propre, texte ou image en entrée, la même commande fait les deux. Le premier à installer pour voir une vidéo sortir de cette machine. Apache 2.0. 24 images par seconde. Mesuré : 873 s pour 25 images sur le Mac 128 Go, dont 784 s dans le décodage VAE seul, qui grandit avec la durée du clip."
+        "en": "The small one of the family: 5B dense, its own high-compression VAE, text or picture as input, the same command does both. The first to install to see a video come out of this machine. Apache 2.0. 24 frames per second. Measured: 873 s for 25 frames on the 128 GB Mac, 784 s of which were the VAE decode alone, which grows with the clip length. Fast mode (tiny VAE): 95 s instead of 873 for the same clip - colours go a little watercolour, motion untouched.",
+        "fr": "Le petit de la famille : 5B dense, VAE haute compression qui lui est propre, texte ou image en entrée, la même commande fait les deux. Le premier à installer pour voir une vidéo sortir de cette machine. Apache 2.0. 24 images par seconde. Mesuré : 873 s pour 25 images sur le Mac 128 Go, dont 784 s dans le décodage VAE seul, qui grandit avec la durée du clip. Mode rapide (VAE léger) : 95 s au lieu de 873 pour le même clip - les couleurs tirent vers l'aquarelle, le mouvement est intact."
       },
       "measured": [
         {
@@ -498,6 +504,15 @@
           "steps": 20,
           "frames": 25,
           "seconds": 873.0
+        },
+        {
+          "mac_gb": 128,
+          "width": 832,
+          "height": 480,
+          "steps": 20,
+          "frames": 25,
+          "seconds": 95.0,
+          "fast": true
         }
       ]
     },
@@ -505,12 +520,13 @@
       "id": "wan22-s2v-14b",
       "name": "Wan 2.2 S2V 14B",
       "kind": "video",
-      "bytes": 24403288310,
+      "bytes": 24425931212,
       "roles": {
         "diffusion": "wan2.2-s2v-14b-q8_0.gguf",
         "audio_encoder": "wav2vec2-large-xlsr-53-f16.gguf",
         "t5xxl": "umt5-xxl-encoder-Q8_0.gguf",
-        "vae": "wan_2.1_vae.safetensors"
+        "vae": "wan_2.1_vae.safetensors",
+        "taesd": "taew2_1.safetensors"
       },
       "download": {
         "files": [
@@ -529,6 +545,10 @@
           {
             "url": "https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/vae/wan_2.1_vae.safetensors",
             "as": "wan_2.1_vae.safetensors"
+          },
+          {
+            "url": "https://github.com/madebyollin/taehv/raw/refs/heads/main/safetensors/taew2_1.safetensors",
+            "as": "taew2_1.safetensors"
           }
         ]
       },
@@ -546,12 +566,15 @@
         "flow_shift": 3.0,
         "sampling_method": "euler",
         "needs_init_image": true,
-        "needs_ref_audio": true
+        "needs_ref_audio": true,
+        "cache_mode": "easycache",
+        "fast_decode": true,
+        "duration_follows_audio": true
       },
       "min_ram_gb": 48,
       "note": {
-        "en": "Speech to video, ported by Noxalis Lab: give it a WAV and a face, it speaks. The 14B DiT in Q8_0 runs the picture; wav2vec2 reads the voice; both verified numerically against the PyTorch reference (final output cosine 0.999996). One segment per run: audio up to about one second at 16 fps for now, the engine refuses longer with a clear message. Apache 2.0. Measured: 1077 s for 17 frames at 16 steps on the 128 GB Mac, on Metal - photorealistic.",
-        "fr": "La parole en vidéo, portée par Noxalis Lab : donnez-lui un WAV et un visage, il parle. Le DiT 14B en Q8_0 fait l'image ; wav2vec2 lit la voix ; les deux vérifiés numériquement contre la référence PyTorch (cosinus final 0,999996). Un segment par rendu : audio d'environ une seconde à 16 fps pour l'instant, le moteur refuse plus long avec un message clair. Apache 2.0. Mesuré : 1077 s pour 17 images à 16 pas sur le Mac 128 Go, en Metal - photoréaliste."
+        "en": "Speech to video, ported by Noxalis Lab: give it a WAV and a face, it speaks. The 14B DiT in Q8_0 runs the picture; wav2vec2 reads the voice; both verified numerically against the PyTorch reference (final output cosine 0.999996). Apache 2.0. Measured: 1077 s for 17 frames at 16 steps on the 128 GB Mac, on Metal - photorealistic. EasyCache skips the steps that barely change: 872 s instead of 1208 for the same clip, indistinguishable to the eye. The clip length follows the WAV: the engine chains segments of 17 frames autoregressively (seam measured smoother than normal motion, 5.4 s proven in 9 min at gate settings).",
+        "fr": "La parole en vidéo, portée par Noxalis Lab : donnez-lui un WAV et un visage, il parle. Le DiT 14B en Q8_0 fait l'image ; wav2vec2 lit la voix ; les deux vérifiés numériquement contre la référence PyTorch (cosinus final 0,999996). Apache 2.0. Mesuré : 1077 s pour 17 images à 16 pas sur le Mac 128 Go, en Metal - photoréaliste. EasyCache saute les pas qui ne changent presque rien : 872 s au lieu de 1208 pour le même clip, indiscernable à l'œil. La durée du clip suit le WAV : le moteur enchaîne des segments de 17 images en autorégressif (couture mesurée plus douce que le mouvement normal, 5,4 s prouvées en 9 min au réglage de gate)."
       },
       "measured": [
         {
@@ -561,6 +584,87 @@
           "steps": 16,
           "frames": 17,
           "seconds": 1077.0
+        },
+        {
+          "mac_gb": 128,
+          "width": 480,
+          "height": 832,
+          "steps": 16,
+          "frames": 17,
+          "seconds": 872.0,
+          "cache": "easycache"
+        }
+      ]
+    },
+    {
+      "id": "wan22-s2v-14b-light",
+      "name": "Wan 2.2 S2V 14B léger",
+      "kind": "video",
+      "bytes": 11544190572,
+      "roles": {
+        "diffusion": "wan2.2-s2v-14b-q4_k.gguf",
+        "audio_encoder": "wav2vec2-large-xlsr-53-f16.gguf",
+        "t5xxl": "umt5-xxl-encoder-Q4_K_M.gguf",
+        "vae": "wan_2.1_vae.safetensors",
+        "taesd": "taew2_1.safetensors"
+      },
+      "download": {
+        "files": [
+          {
+            "url": "https://huggingface.co/dschaerer/Wan2.2-S2V-14B-GGUF/resolve/main/wan2.2-s2v-14b-q4_k.gguf",
+            "as": "wan2.2-s2v-14b-q4_k.gguf"
+          },
+          {
+            "url": "https://huggingface.co/dschaerer/Wan2.2-S2V-14B-GGUF/resolve/main/wav2vec2-large-xlsr-53-f16.gguf",
+            "as": "wav2vec2-large-xlsr-53-f16.gguf"
+          },
+          {
+            "url": "https://huggingface.co/city96/umt5-xxl-encoder-gguf/resolve/main/umt5-xxl-encoder-Q4_K_M.gguf",
+            "as": "umt5-xxl-encoder-Q4_K_M.gguf"
+          },
+          {
+            "url": "https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/vae/wan_2.1_vae.safetensors",
+            "as": "wan_2.1_vae.safetensors"
+          },
+          {
+            "url": "https://github.com/madebyollin/taehv/raw/refs/heads/main/safetensors/taew2_1.safetensors",
+            "as": "taew2_1.safetensors"
+          }
+        ]
+      },
+      "defaults": {
+        "steps": 16,
+        "cfg": 4.5,
+        "width": 480,
+        "height": 832
+      },
+      "video": {
+        "frames": 17,
+        "frame_step": 4,
+        "frame_base": 1,
+        "fps": 16,
+        "flow_shift": 3.0,
+        "sampling_method": "euler",
+        "needs_init_image": true,
+        "needs_ref_audio": true,
+        "cache_mode": "easycache",
+        "max_vram_gb": 6,
+        "fast_decode": true,
+        "duration_follows_audio": true
+      },
+      "min_ram_gb": 32,
+      "note": {
+        "en": "The 32 GB profile of the speech model: Q4 DiT, Q4 text encoder, segmented compute budget. Measured peak residency 20.1 GB - it fits where the full card cannot. Same voice, same picture in; the eye barely tells the difference, the clock does: 1476 s for 17 frames at 16 steps. The clip length follows the WAV: the engine chains segments of 17 frames autoregressively (seam measured smoother than normal motion, 5.4 s proven in 9 min at gate settings).",
+        "fr": "Le profil 32 Go du modèle qui parle : DiT en Q4, encodeur texte en Q4, budget de calcul segmenté. Pic mesuré à 20,1 Go - il tient là où la carte complète ne rentre pas. Même voix, même image en entrée ; l'œil fait à peine la différence, l'horloge oui : 1476 s pour 17 images à 16 pas. La durée du clip suit le WAV : le moteur enchaîne des segments de 17 images en autorégressif (couture mesurée plus douce que le mouvement normal, 5,4 s prouvées en 9 min au réglage de gate)."
+      },
+      "measured": [
+        {
+          "mac_gb": 128,
+          "width": 480,
+          "height": 832,
+          "steps": 16,
+          "frames": 17,
+          "seconds": 1476.0
         }
       ]
     }

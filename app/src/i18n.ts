@@ -831,6 +831,11 @@ const dict: Record<string, { en: string; fr: string }> = {
     en: "Choose a WAV file first: this model speaks it.",
     fr: "Choisis d'abord un fichier WAV : ce modèle le fait parler.",
   },
+  "img.durationFromWav": {
+    en: "Clip length follows the WAV file",
+    fr: "La durée du clip suit le fichier WAV",
+  },
+  "img.fastDecode": { en: "Fast (light colours)", fr: "Rapide (couleurs légères)" },
   "img.licenceLine": { en: "Licence:", fr: "Licence :" },
   "img.licenceTitle": { en: "The %s licence", fr: "La licence de %s" },
   "img.licenceAccept": { en: "I read it, download", fr: "J'ai lu, télécharger" },

@@ -121,6 +121,15 @@ pub struct VideoSpec {
     /// point, so refusing without one happens before the model loads.
     #[serde(default)]
     pub needs_ref_audio: bool,
+    /// A tiny-VAE fast mode exists for this model (a `taesd` role is on
+    /// disk). The card offers the checkbox only when this is true.
+    #[serde(default)]
+    pub fast_decode: bool,
+    /// Diffusion cache the engine should run for this model ("easycache").
+    /// Set per model, and only after a measured run showed the output holds:
+    /// a cache threshold that works for one architecture can smear another.
+    #[serde(default)]
+    pub cache_mode: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -360,6 +369,10 @@ pub fn generate_argv(
             args.push("--rng".into());
             args.push(rng.to_string());
         }
+        if let Some(cache) = v.cache_mode.as_deref().filter(|s| !s.is_empty()) {
+            args.push("--cache-mode".into());
+            args.push(cache.to_string());
+        }
         // The noisy half of the schedule, for a model that splits it over two
         // weight files. Its cfg and sampler follow the clean half's rather
         // than being invented: the published Wan invocations set both halves
@@ -387,6 +400,15 @@ pub fn generate_argv(
         if !req.ref_audio.is_empty() {
             args.push("--ref-audio".into());
             args.push(req.ref_audio.clone());
+        }
+        // The fast decode. NOT in ROLE_FLAGS: a taesd on disk must not be
+        // wired in unconditionally, it is a per-request trade of colour
+        // fidelity for a 9x faster decode, chosen with a checkbox.
+        if req.fast {
+            if let Some(file) = m.roles.get("taesd").filter(|f| is_plain_name(f)) {
+                args.push("--taesd".into());
+                args.push(dir.join(file).to_string_lossy().to_string());
+            }
         }
         // Residency streaming, and the budget it rides on. --stream-layers is
         // documented as having no effect without --max-vram, so the two are
@@ -458,6 +480,11 @@ pub struct GenerateRequest {
     /// picture: a user-picked path, validated as existing, not confined.
     #[serde(default)]
     pub ref_audio: String,
+    /// Decode through the tiny VAE instead of the full one. Only meaningful
+    /// on models whose registry carries a taesd role; measured at 9x faster
+    /// on TI2V-5B, with visibly cheaper colour.
+    #[serde(default)]
+    pub fast: bool,
 }
 
 /// The nearest frame count at or above `want` that this model accepts.
@@ -1549,6 +1576,8 @@ mod tests {
             needs_init_image: false,
             accepts_init_image: true,
             needs_ref_audio: false,
+            fast_decode: false,
+            cache_mode: None,
         }
     }
 
@@ -1565,6 +1594,7 @@ mod tests {
             frames: 0,
             init_image: String::new(),
             ref_audio: String::new(),
+            fast: false,
         }
     }
 
