@@ -54,6 +54,8 @@ TOOLS = load_tools()
 # Kept explicit and short so a genuinely unknown tool cannot hide in here.
 NON_TOOLS = {
     "request_id", "next_cursor", "order_id",           # API field names
+    "smallest_scale", "flattened_pages",                 # edit_document answer fields
+    "explicit_page_breaks", "between_start", "between_end",
     "allocation_cible",                                  # portfolio JSON key
     "for_each", "prevent_destroy",                       # Terraform meta-args
     "node_modules",                                      # directory name
