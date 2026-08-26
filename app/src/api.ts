@@ -303,6 +303,7 @@ export interface VideoSpecInfo {
   fps: number;
   needs_init_image?: boolean;
   accepts_init_image?: boolean;
+  needs_ref_audio?: boolean;
 }
 
 export interface ImageModelInfo {
@@ -353,6 +354,8 @@ export interface ImageRequest {
   frames?: number;
   /** Starting picture for the models that animate one. */
   init_image?: string;
+  /** Driving WAV for the speech-to-video models. */
+  ref_audio?: string;
 }
 
 /** Wire shape of `SearchOpts` in search.rs: snake_case, not the UI's camel. */
@@ -445,6 +448,8 @@ export const api = {
   pickFolder: () => invoke<string | null>("pick_folder"),
   /** One image file, for the video models that animate a starting picture. */
   pickImage: () => invoke<string | null>("pick_image"),
+  /** One WAV file, for the speech-to-video models. */
+  pickAudio: () => invoke<string | null>("pick_audio"),
   serverStatus: () => invoke<ServerStatus>("server_status"),
   serverStart: (modelId: string, cacheGb: number | null) =>
     invoke<void>("server_start", { modelId, cacheGb }),

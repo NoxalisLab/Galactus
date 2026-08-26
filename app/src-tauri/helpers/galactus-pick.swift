@@ -14,6 +14,7 @@
 //
 //   galactus-pick folder [start-path]     prints the chosen POSIX path
 //   galactus-pick image  [start-path]     same panel, one image file
+//   galactus-pick audio  [start-path]     same panel, one WAV file
 //
 // Exit codes are the contract, because a path is not the only outcome:
 //   0  a folder was chosen, its path is on stdout
@@ -26,8 +27,8 @@ import UniformTypeIdentifiers
 
 let args = Array(CommandLine.arguments.dropFirst())
 let mode = args.first ?? ""
-guard mode == "folder" || mode == "image" else {
-    FileHandle.standardError.write("usage: galactus-pick folder|image [start-path]\n".data(using: .utf8)!)
+guard mode == "folder" || mode == "image" || mode == "audio" else {
+    FileHandle.standardError.write("usage: galactus-pick folder|image|audio [start-path]\n".data(using: .utf8)!)
     exit(1)
 }
 
@@ -37,7 +38,13 @@ let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 
 let panel = NSOpenPanel()
-if mode == "image" {
+if mode == "audio" {
+    // One WAV, for the speech-to-video models. WAV only: the engine parses
+    // PCM WAV itself and converts to 16 kHz mono internally.
+    panel.canChooseDirectories = false
+    panel.canChooseFiles = true
+    panel.allowedContentTypes = [UTType.wav]
+} else if mode == "image" {
     // One image, for the video models that animate a starting picture. The
     // engine reads PNG and JPEG through stb; the panel offers exactly those
     // rather than letting a .heic through to fail inside a log.

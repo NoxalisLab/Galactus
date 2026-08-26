@@ -69,6 +69,8 @@ let deps: ImageDeps | null = null;
 let unlisten: (() => void) | null = null;
 /** Starting picture for the video models that animate one. Per session. */
 let initImage = "";
+/** Driving WAV for the speech-to-video models. Per session. */
+let refAudio = "";
 
 export function setImageDeps(d: ImageDeps): void {
   deps = d;
@@ -272,6 +274,15 @@ function bodyHtml(): string {
       <label>${esc(t("img.seed"))}<input id="imgseed" type="number" value="-1" ${canRun ? "" : "disabled"}/></label>
     </div>
     ${
+      m?.video?.needs_ref_audio
+        ? `<div class="imgrow">
+            <span class="d">${esc(t("img.audioNeeded"))}</span>
+            <button class="bs" id="imgpickaudio" ${canRun ? "" : "disabled"}>${esc(refAudio ? t("img.audioChange") : t("img.audioPick"))}</button>
+            ${refAudio ? `<span class="d mono">${esc(refAudio.split("/").pop() ?? "")}</span><button class="bs" id="imgaudioclear">✕</button>` : ""}
+          </div>`
+        : ""
+    }
+    ${
       m?.video && (m.video.needs_init_image || m.video.accepts_init_image)
         ? `<div class="imgrow">
             <span class="d">${esc(m.video.needs_init_image ? t("img.startNeeded") : t("img.startOptional"))}</span>
@@ -358,6 +369,23 @@ function wire(wrap: HTMLElement): void {
     }
     if (target.closest("#imgstartclear")) {
       initImage = "";
+      repaint();
+      return;
+    }
+    if (target.closest("#imgpickaudio")) {
+      void api
+        .pickAudio()
+        .then((p) => {
+          if (p) {
+            refAudio = p;
+            repaint();
+          }
+        })
+        .catch((e: any) => deps?.toast(String(e?.message ?? e)));
+      return;
+    }
+    if (target.closest("#imgaudioclear")) {
+      refAudio = "";
       repaint();
       return;
     }
@@ -670,6 +698,7 @@ async function generate(): Promise<void> {
     seed: num("#imgseed", -1),
     frames: m.video ? num("#imgframes", m.video.frames) : 0,
     init_image: m.video ? initImage : "",
+    ref_audio: m.video ? refAudio : "",
   };
   if (!req.prompt.trim()) {
     deps?.toast(t("img.needPrompt"));
@@ -679,6 +708,10 @@ async function generate(): Promise<void> {
     // The same sentence the backend would answer with, said before minutes
     // of model loading rather than after.
     deps?.toast(t("img.needStart"));
+    return;
+  }
+  if (m.video?.needs_ref_audio && !refAudio) {
+    deps?.toast(t("img.needAudio"));
     return;
   }
   busy = true;

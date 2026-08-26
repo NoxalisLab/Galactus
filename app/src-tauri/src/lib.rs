@@ -6627,6 +6627,46 @@ fn pick_folder() -> Result<Option<String>, String> {
     Ok(if p.is_empty() { None } else { Some(p) })
 }
 
+/// Native WAV chooser, for the speech-to-video models. Same helper, same
+/// contract as pick_image; osascript fallback restricted to WAV.
+#[tauri::command]
+fn pick_audio() -> Result<Option<String>, String> {
+    match swift_helper("galactus-pick") {
+        Ok(bin) => {
+            let out = Command::new(&bin)
+                .arg("audio")
+                .arg(std::env::var("HOME").unwrap_or_default())
+                .output()
+                .map_err(|e| e.to_string())?;
+            return match out.status.code() {
+                Some(0) => {
+                    let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                    Ok(if p.is_empty() { None } else { Some(p) })
+                }
+                Some(2) => Ok(None),
+                _ => Err(format!(
+                    "the audio chooser could not open: {}",
+                    String::from_utf8_lossy(&out.stderr).trim()
+                )),
+            };
+        }
+        Err(_) => {}
+    }
+    let out = Command::new("osascript")
+        .arg("-e")
+        .arg("POSIX path of (choose file of type {\"com.microsoft.waveform-audio\"} with prompt \"Choose a WAV file\")")
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return match classify_chooser_failure(&String::from_utf8_lossy(&out.stderr)) {
+            None => Ok(None),
+            Some(reason) => Err(reason),
+        };
+    }
+    let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    Ok(if p.is_empty() { None } else { Some(p) })
+}
+
 /// Native image chooser, for the video models that animate a starting picture.
 ///
 /// The same helper and the same contract as `pick_folder`, in file mode. The
@@ -8819,6 +8859,7 @@ pub fn run() {
             detect_root,
             pick_folder,
             pick_image,
+            pick_audio,
             memory_read,
             memory_write,
             memory_save,

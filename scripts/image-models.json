@@ -2,9 +2,9 @@
   "_note": [
     "Image models, kept apart from models-registry.json because they are a different kind of thing:",
     "several files with named roles rather than one GGUF plus expert packs, and no bit-exactness claim",
-    "to make. The engine is stable-diffusion.cpp as published, unpatched, so nothing here is certified",
-    "the way a text model is. What IS here is measured: every `measured` entry below is a run on real",
-    "hardware, timed, with the image checked by eye. Nothing is listed that has not produced a picture.",
+    "to make. The engine is the NoxalisLab fork of stable-diffusion.cpp (branch s2v-port: Wan2.2-S2V support",
+    "and a Metal int64 fix, every addition gated numerically against the PyTorch reference - see",
+    "docs/specs/s2v-port/). Nothing here is bit-certified the way a text model is; what IS here is measured: every `measured` entry is a run on real hardware, timed, output checked by eye.",
     "",
     "Each download entry carries a url and the name it lands under, because the files of one model come",
     "from different repositories and one of them has to be renamed: there are two files called",
@@ -498,6 +498,69 @@
           "steps": 20,
           "frames": 25,
           "seconds": 873.0
+        }
+      ]
+    },
+    {
+      "id": "wan22-s2v-14b",
+      "name": "Wan 2.2 S2V 14B",
+      "kind": "video",
+      "bytes": 24403288310,
+      "roles": {
+        "diffusion": "wan2.2-s2v-14b-q8_0.gguf",
+        "audio_encoder": "wav2vec2-large-xlsr-53-f16.gguf",
+        "t5xxl": "umt5-xxl-encoder-Q8_0.gguf",
+        "vae": "wan_2.1_vae.safetensors"
+      },
+      "download": {
+        "files": [
+          {
+            "url": "https://huggingface.co/NoxalisLab/Wan2.2-S2V-14B-GGUF/resolve/main/wan2.2-s2v-14b-q8_0.gguf",
+            "as": "wan2.2-s2v-14b-q8_0.gguf"
+          },
+          {
+            "url": "https://huggingface.co/NoxalisLab/Wan2.2-S2V-14B-GGUF/resolve/main/wav2vec2-large-xlsr-53-f16.gguf",
+            "as": "wav2vec2-large-xlsr-53-f16.gguf"
+          },
+          {
+            "url": "https://huggingface.co/city96/umt5-xxl-encoder-gguf/resolve/main/umt5-xxl-encoder-Q8_0.gguf",
+            "as": "umt5-xxl-encoder-Q8_0.gguf"
+          },
+          {
+            "url": "https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/vae/wan_2.1_vae.safetensors",
+            "as": "wan_2.1_vae.safetensors"
+          }
+        ]
+      },
+      "defaults": {
+        "steps": 16,
+        "cfg": 4.5,
+        "width": 480,
+        "height": 832
+      },
+      "video": {
+        "frames": 17,
+        "frame_step": 4,
+        "frame_base": 1,
+        "fps": 16,
+        "flow_shift": 3.0,
+        "sampling_method": "euler",
+        "needs_init_image": true,
+        "needs_ref_audio": true
+      },
+      "min_ram_gb": 48,
+      "note": {
+        "en": "Speech to video, ported by Noxalis Lab: give it a WAV and a face, it speaks. The 14B DiT in Q8_0 runs the picture; wav2vec2 reads the voice; both verified numerically against the PyTorch reference (final output cosine 0.999996). One segment per run: audio up to about one second at 16 fps for now, the engine refuses longer with a clear message. Apache 2.0. Measured: 1077 s for 17 frames at 16 steps on the 128 GB Mac, on Metal - photorealistic.",
+        "fr": "La parole en vidéo, portée par Noxalis Lab : donnez-lui un WAV et un visage, il parle. Le DiT 14B en Q8_0 fait l'image ; wav2vec2 lit la voix ; les deux vérifiés numériquement contre la référence PyTorch (cosinus final 0,999996). Un segment par rendu : audio d'environ une seconde à 16 fps pour l'instant, le moteur refuse plus long avec un message clair. Apache 2.0. Mesuré : 1077 s pour 17 images à 16 pas sur le Mac 128 Go, en Metal - photoréaliste."
+      },
+      "measured": [
+        {
+          "mac_gb": 128,
+          "width": 480,
+          "height": 832,
+          "steps": 16,
+          "frames": 17,
+          "seconds": 1077.0
         }
       ]
     }

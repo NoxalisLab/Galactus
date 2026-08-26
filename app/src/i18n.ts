@@ -821,6 +821,16 @@ const dict: Record<string, { en: string; fr: string }> = {
     en: "Choose a starting picture first: this model animates one.",
     fr: "Choisis d'abord une image de départ : ce modèle en anime une.",
   },
+  "img.audioPick": { en: "Choose a WAV file", fr: "Choisir un fichier WAV" },
+  "img.audioChange": { en: "Change the audio", fr: "Changer l'audio" },
+  "img.audioNeeded": {
+    en: "This model speaks a voice: give it a WAV file.",
+    fr: "Ce modèle fait parler une voix : donne-lui un fichier WAV.",
+  },
+  "img.needAudio": {
+    en: "Choose a WAV file first: this model speaks it.",
+    fr: "Choisis d'abord un fichier WAV : ce modèle le fait parler.",
+  },
   "img.licenceLine": { en: "Licence:", fr: "Licence :" },
   "img.licenceTitle": { en: "The %s licence", fr: "La licence de %s" },
   "img.licenceAccept": { en: "I read it, download", fr: "J'ai lu, télécharger" },

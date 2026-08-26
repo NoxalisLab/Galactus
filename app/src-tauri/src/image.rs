@@ -51,6 +51,10 @@ pub const ROLE_FLAGS: &[(&str, &str)] = &[
     // CLIP/T5 pair. Without this role its --llm flag is never emitted and the
     // model loads with no encoder at all.
     ("llm", "--llm"),
+    // The wav2vec2 speech encoder of Wan S2V. Without it the engine refuses
+    // the render outright, which beats the silent zero it gives a missing
+    // t5xxl - but the flag still has to exist to be passed at all.
+    ("audio_encoder", "--audio-encoder"),
     // The vision tower of that encoder, when it ships as its own file. Baked
     // into the checkpoint for both models here, so nothing sets it today; it
     // exists because a model that stores it apart loads with no vision at all
@@ -113,6 +117,10 @@ pub struct VideoSpec {
     /// This model can take a starting picture but does not require one.
     #[serde(default)]
     pub accepts_init_image: bool,
+    /// This model is driven by a voice: it needs a WAV to speak. S2V's whole
+    /// point, so refusing without one happens before the model loads.
+    #[serde(default)]
+    pub needs_ref_audio: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -376,6 +384,10 @@ pub fn generate_argv(
             args.push("-i".into());
             args.push(req.init_image.clone());
         }
+        if !req.ref_audio.is_empty() {
+            args.push("--ref-audio".into());
+            args.push(req.ref_audio.clone());
+        }
         // Residency streaming, and the budget it rides on. --stream-layers is
         // documented as having no effect without --max-vram, so the two are
         // emitted together or not at all. -1 means "most of the free VRAM,
@@ -442,6 +454,10 @@ pub struct GenerateRequest {
     /// validated as an existing file, not confined to our folder.
     #[serde(default)]
     pub init_image: String,
+    /// Driving voice for the speech-to-video models, same trust model as the
+    /// picture: a user-picked path, validated as existing, not confined.
+    #[serde(default)]
+    pub ref_audio: String,
 }
 
 /// The nearest frame count at or above `want` that this model accepts.
@@ -1063,6 +1079,15 @@ pub async fn image_generate(
         if v.needs_init_image && req.init_image.is_empty() {
             return Err(format!("{} needs a starting picture", m.name));
         }
+        if !req.ref_audio.is_empty() && !Path::new(&req.ref_audio).is_file() {
+            return Err(format!("there is no audio file at {}", req.ref_audio));
+        }
+        if v.needs_ref_audio && req.ref_audio.is_empty() {
+            return Err(format!("{} needs a voice: pick a WAV file first", m.name));
+        }
+        if !v.needs_ref_audio {
+            req.ref_audio.clear();
+        }
         if !v.needs_init_image && !v.accepts_init_image {
             // A model that was not trained to start from a picture ignores or
             // mangles one; dropping it silently would be worse than saying so.
@@ -1523,6 +1548,7 @@ mod tests {
             offload_to_cpu: true,
             needs_init_image: false,
             accepts_init_image: true,
+            needs_ref_audio: false,
         }
     }
 
@@ -1538,6 +1564,7 @@ mod tests {
             seed: 42,
             frames: 0,
             init_image: String::new(),
+            ref_audio: String::new(),
         }
     }
 
@@ -1985,6 +2012,33 @@ mod tests {
         // And an empty one emits nothing rather than an empty argument.
         let argv = generate_argv(Path::new("/m"), &m, &req("x"), Path::new("/o/x.webm"), false);
         assert!(!argv.iter().any(|a| a == "-i"));
+    }
+
+    #[test]
+    fn the_speech_model_gets_its_voice_and_its_encoder() {
+        // The S2V shape: audio encoder as a role, WAV as a request field.
+        // A missing --audio-encoder refuses loudly in the engine; a missing
+        // --t5xxl renders zeros silently, which is why the role table must
+        // carry t5xxl for this model and the registry entry lists it.
+        let mut m = video_model();
+        m.roles.insert("audio_encoder".into(), "w2v.gguf".into());
+        m.roles.insert("t5xxl".into(), "umt5.gguf".into());
+        if let Some(v) = m.video.as_mut() {
+            v.needs_ref_audio = true;
+        }
+        let mut r = req("a person speaking");
+        r.ref_audio = "/tmp/voice.wav".into();
+        r.init_image = "/tmp/face.png".into();
+        let argv = generate_argv(Path::new("/m"), &m, &r, Path::new("/o/x.webm"), false);
+        for (flag, val) in [
+            ("--audio-encoder", "/m/w2v.gguf"),
+            ("--t5xxl", "/m/umt5.gguf"),
+            ("--ref-audio", "/tmp/voice.wav"),
+            ("-i", "/tmp/face.png"),
+        ] {
+            let at = argv.iter().position(|a| a == flag).unwrap_or_else(|| panic!("{flag} missing"));
+            assert_eq!(argv[at + 1], val);
+        }
     }
 
     #[test]
