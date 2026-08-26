@@ -13,6 +13,7 @@ mod lsp;
 mod pty;
 mod housekeeping;
 mod image;
+mod imgapi;
 mod webm;
 mod regexlite;
 mod secaudit;
@@ -8558,10 +8559,18 @@ fn relay_new_key() -> Result<String, String> {
 fn relay_start(bind: String, port: u16, key: String) -> Result<relay::RelayStatus, String> {
     let engine_port = {
         let s = server_state().lock().unwrap_or_else(|e| e.into_inner());
-        if s.child.is_none() {
-            return Err("start a model before opening the relay".into());
+        match s.child.is_none() {
+            // Zero means "no text model", and the relay answers text requests
+            // with a 503 that says which. It is allowed because the image
+            // routes are served by this process rather than proxied: a Mac
+            // whose job is making pictures for a team should not have to load
+            // a language model it will never be asked anything.
+            true if image::image_engine_present() => 0,
+            true => return Err("start a model before opening the relay".into()),
+            false => {
+                if s.port == 0 { SERVER_PORT_BASE } else { s.port }
+            }
         }
-        if s.port == 0 { SERVER_PORT_BASE } else { s.port }
     };
     relay::start(&bind, port, engine_port, &key)?;
     Ok(relay::status())
@@ -8783,6 +8792,10 @@ pub fn run() {
         })
         .setup(|app| {
             let _ = app.get_webview_window("main");
+            // The relay serves pictures itself (imgapi.rs) and has no handle of
+            // its own; with this, a generation asked for over the network shows
+            // in the window like any other.
+            relay::set_app(app.handle().clone());
             if let Err(e) = harden_settings_permissions() {
                 eprintln!("Galactus settings permission hardening failed: {e}");
             }

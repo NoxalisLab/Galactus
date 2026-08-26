@@ -141,6 +141,19 @@ function connectionSnippets(base: string, key: string, model: string): { name: s
       name: "Obsidian, Python, Node (OpenAI SDK)",
       body: `OPENAI_BASE_URL=${base}\nOPENAI_API_KEY=${k}`,
     },
+    // Pictures and clips are served by the app itself rather than proxied to
+    // the text engine (imgapi.rs), so they are reachable on the same port,
+    // behind the same key, whether or not a language model is running. The
+    // snippet says `path` rather than the default base64 because a clip comes
+    // back as tens of megabytes of JSON otherwise.
+    {
+      name: "Images (OpenAI-compatible)",
+      body: `curl ${base}/images/generations \\\n  -H "Authorization: Bearer ${k}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"prompt":"a red fox in the snow","size":"1024x1024"}'`,
+    },
+    {
+      name: "Video, driven by a WAV or a picture",
+      body: `curl ${base}/videos/generations \\\n  -H "Authorization: Bearer ${k}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"wan22-s2v-14b","prompt":"a person speaking, front facing",\n       "audio":"/path/to/voice.wav","image":"/path/to/face.png",\n       "response_format":"path"}'\n\n# What this Mac can actually run:\ncurl ${base}/images/models -H "Authorization: Bearer ${k}"`,
+    },
   ];
 }
 
@@ -4443,13 +4456,16 @@ function settingsView(): HTMLElement {
       render();
       return;
     }
-    if (!(server.running && server.phase === "ready")) {
-      toast(t("net.needModel"));
-      return;
-    }
     if (!relayKey) {
       toast(t("net.needKey"));
       return;
+    }
+    // A text model is no longer required to open the port: pictures and clips
+    // are served by the app itself, so a Mac whose job is diffusion can be a
+    // server without loading a language model it will never be asked anything.
+    // Rust refuses if neither engine is there, and that refusal is the toast.
+    if (!(server.running && server.phase === "ready")) {
+      toast(t("net.imagesOnly"));
     }
     try {
       relay = await api.relayStart(relayBind, RELAY_PORT, relayKey);

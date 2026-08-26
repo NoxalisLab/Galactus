@@ -230,6 +230,129 @@ fn pump(mut from: TcpStream, mut to: TcpStream) {
     let _ = to.shutdown(Shutdown::Write);
 }
 
+/// The method and path of a request head, for routing.
+///
+/// Only the first line is parsed, and only into two words. The relay still does
+/// not interpret HTTP: it needs to know whether a request is one IT answers
+/// (pictures, which have no server to forward to) or one it copies to the
+/// engine, and that decision is the request line.
+pub fn method_path(head: &str) -> Option<(&str, &str)> {
+    let line = head.split("\r\n").next()?;
+    let mut parts = line.split(' ');
+    let method = parts.next()?;
+    let path = parts.next()?;
+    if method.is_empty() || !path.starts_with('/') {
+        return None;
+    }
+    Some((method, path))
+}
+
+/// The declared body length of a request, when it declares one.
+///
+/// Only `Content-Length` is honoured. A chunked body would need a decoder, and
+/// no OpenAI client sends one for a JSON request; `chunked_is_refused_clearly`
+/// covers what a caller sees if one ever does.
+pub fn content_length(head: &str) -> Option<usize> {
+    for line in head.split("\r\n").skip(1) {
+        let Some((name, value)) = line.split_once(':') else { continue };
+        if name.trim().eq_ignore_ascii_case("content-length") {
+            return value.trim().parse::<usize>().ok();
+        }
+    }
+    None
+}
+
+/// True when the request says its body arrives in chunks.
+pub fn is_chunked(head: &str) -> bool {
+    head.split("\r\n").skip(1).any(|line| {
+        line.split_once(':')
+            .map(|(n, v)| {
+                n.trim().eq_ignore_ascii_case("transfer-encoding")
+                    && v.to_ascii_lowercase().contains("chunked")
+            })
+            .unwrap_or(false)
+    })
+}
+
+/// Read the rest of a body of known length, `first` being what already arrived.
+fn read_body(sock: &mut TcpStream, first: Vec<u8>, want: usize) -> Result<Vec<u8>, String> {
+    let mut body = first;
+    if body.len() > want {
+        body.truncate(want);
+    }
+    let mut chunk = [0u8; 16 * 1024];
+    while body.len() < want {
+        let n = sock.read(&mut chunk).map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err("the client closed before sending its whole body".into());
+        }
+        body.extend_from_slice(&chunk[..n.min(want - body.len())]);
+    }
+    Ok(body)
+}
+
+/// Serve a picture or clip route from this process. Minutes, on this thread.
+fn serve_locally(
+    client: &mut TcpStream,
+    route: crate::imgapi::Route,
+    head: &str,
+    rest: Vec<u8>,
+) {
+    use crate::imgapi::{self, Reply};
+    let reply = match route {
+        // A listing has no body to wait for.
+        imgapi::Route::Models => imgapi::handle(route, b"", app_handle()),
+        imgapi::Route::Generate => {
+            if is_chunked(head) {
+                Reply::err(400, "send the body with a Content-Length, not chunked")
+            } else {
+                match content_length(head) {
+                    None => Reply::err(400, "a JSON body with a Content-Length is required"),
+                    Some(n) if n > imgapi::MAX_BODY => Reply::err(
+                        400,
+                        "that body is too large: inline media is capped at 64 MB, \
+                         or pass a path on this Mac instead",
+                    ),
+                    Some(n) => {
+                        // The head timeout is lifted only now, because a body of
+                        // known length is bounded work: an idle socket before
+                        // this point is a client that never says what it wants.
+                        let _ = client.set_read_timeout(Some(Duration::from_secs(120)));
+                        match read_body(client, rest, n) {
+                            Ok(body) => {
+                                // A generation runs for minutes and must not be
+                                // cut by a read deadline that belongs to the
+                                // request, not to the work.
+                                let _ = client.set_read_timeout(None);
+                                imgapi::handle(route, &body, app_handle())
+                            }
+                            Err(e) => Reply::err(400, &e),
+                        }
+                    }
+                }
+            }
+        }
+    };
+    let _ = client.write_all(&reply.to_http());
+    let _ = client.flush();
+}
+
+/// The window, when there is one, so an API generation moves the same progress
+/// bar the app shows. Absent in tests and in a headless run, which is why the
+/// whole image path takes an Option rather than requiring a handle.
+fn app_slot() -> &'static Mutex<Option<tauri::AppHandle>> {
+    static A: OnceLock<Mutex<Option<tauri::AppHandle>>> = OnceLock::new();
+    A.get_or_init(|| Mutex::new(None))
+}
+
+pub fn set_app(app: tauri::AppHandle) {
+    *app_slot().lock().unwrap_or_else(|e| e.into_inner()) = Some(app);
+}
+
+fn app_handle() -> Option<tauri::AppHandle> {
+    app_slot().lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
 fn serve_one(mut client: TcpStream, engine_port: u16) {
     let _ = client.set_read_timeout(Some(HEAD_TIMEOUT));
     let (head, rest) = match read_head(&mut client) {
@@ -249,10 +372,38 @@ fn serve_one(mut client: TcpStream, engine_port: u16) {
         let _ = client.write_all(UNAUTHORIZED);
         return;
     }
+    // Pictures and clips are ours: there is no second HTTP server holding the
+    // image engine, so these routes are answered here rather than forwarded.
+    // Checked BEFORE the connection to llama-server, which is what lets the
+    // relay serve images on a Mac where no text model is running at all.
+    if let Some((method, path)) = method_path(&head) {
+        if let Some(route) = crate::imgapi::route(method, path) {
+            serve_locally(&mut client, route, &head, rest);
+            return;
+        }
+    }
     // Authenticated: the read timeout must go, or a streaming answer that
     // pauses longer than the head timeout would be cut mid-generation.
     let _ = client.set_read_timeout(None);
 
+    if engine_port == 0 {
+        // Image-only serving. Saying which is the difference between a caller
+        // fixing it in ten seconds and reading a 502 as "the relay is broken".
+        // The length is computed rather than typed: a Content-Length that
+        // disagrees with the body by one byte hangs the client instead of
+        // showing it the sentence.
+        let body = br#"{"error":{"message":"no text model is running: start one in Galactus","type":"unavailable"}}"#;
+        let head = format!(
+            "HTTP/1.1 503 Service Unavailable\r\n\
+             Content-Type: application/json\r\n\
+             Content-Length: {}\r\n\
+             Connection: close\r\n\r\n",
+            body.len()
+        );
+        let _ = client.write_all(head.as_bytes());
+        let _ = client.write_all(body);
+        return;
+    }
     let mut engine = match TcpStream::connect(("127.0.0.1", engine_port)) {
         Ok(s) => s,
         Err(_) => {
@@ -539,6 +690,176 @@ Content-Length: 13\r\nConnection: close\r\n\r\n{\"data\":[{}]}",
             TcpStream::connect(("127.0.0.1", port)).is_err(),
             "the port must be free after stop"
         );
+    }
+
+    #[test]
+    fn the_request_line_is_split_into_a_method_and_a_path() {
+        assert_eq!(
+            method_path("POST /v1/images/generations HTTP/1.1\r\nHost: x\r\n"),
+            Some(("POST", "/v1/images/generations"))
+        );
+        assert_eq!(method_path("GET / HTTP/1.1\r\n"), Some(("GET", "/")));
+        // Garbage must not be routed anywhere: a first line that is not a
+        // request line means the request goes to the engine untouched, which
+        // is the behaviour this relay had before it learned any routes.
+        assert_eq!(method_path("hello\r\n"), None);
+        assert_eq!(method_path("POST v1/images HTTP/1.1\r\n"), None);
+    }
+
+    #[test]
+    fn the_body_length_is_read_from_the_header_whatever_its_case() {
+        assert_eq!(content_length("POST / HTTP/1.1\r\ncontent-length: 42\r\n"), Some(42));
+        assert_eq!(content_length("POST / HTTP/1.1\r\nContent-Length:  7 \r\n"), Some(7));
+        assert_eq!(content_length("POST / HTTP/1.1\r\nHost: x\r\n"), None);
+        // The request line is not a header, here as in bearer_of.
+        assert_eq!(content_length("Content-Length: 9\r\nHost: x\r\n"), None);
+    }
+
+    #[test]
+    fn a_chunked_body_is_recognised_so_it_can_be_refused_in_words() {
+        assert!(is_chunked("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n"));
+        assert!(is_chunked("POST / HTTP/1.1\r\ntransfer-encoding: gzip, Chunked\r\n"));
+        assert!(!is_chunked("POST / HTTP/1.1\r\nContent-Length: 3\r\n"));
+    }
+
+    /// The bytes that arrived with the head are kept, and the rest is read.
+    ///
+    /// The failure this pins: a client that sends head and body in one packet
+    /// had its first body bytes dropped by an implementation that only read
+    /// from the socket, and a JSON body missing its opening brace is a 400 on
+    /// a request that was perfectly well formed.
+    #[test]
+    fn a_body_that_arrived_with_the_head_is_not_read_twice_nor_dropped() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        std::thread::spawn(move || {
+            let mut s = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+            let _ = s.write_all(b"6789");
+            std::thread::sleep(Duration::from_millis(50));
+        });
+        let (mut sock, _) = listener.accept().expect("accept");
+        let body = read_body(&mut sock, b"12345".to_vec(), 9).expect("body");
+        assert_eq!(&body, b"123456789");
+    }
+
+    #[test]
+    fn a_body_longer_than_declared_is_truncated_to_what_was_declared() {
+        // Whatever follows the declared length is the next request on a
+        // keep-alive socket, not part of this JSON.
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        std::thread::spawn(move || {
+            let _ = TcpStream::connect(("127.0.0.1", port));
+        });
+        let (mut sock, _) = listener.accept().expect("accept");
+        let body = read_body(&mut sock, b"{\"a\":1}GET /".to_vec(), 7).expect("body");
+        assert_eq!(&body, b"{\"a\":1}");
+    }
+
+    /// The picture routes are answered HERE, and never forwarded to the engine.
+    ///
+    /// Asserted against a stub that puts a marker in every answer it gives: if
+    /// the marker comes back, the relay proxied a request it was supposed to
+    /// serve, and a caller would have got llama-server's 404 for an endpoint
+    /// this app does have.
+    #[test]
+    fn image_routes_are_served_locally_and_chat_still_reaches_the_engine() {
+        use std::io::{BufRead, BufReader};
+
+        let _guard = relay_lock();
+        let key = generate_key().expect("key");
+        let engine_port = stub_engine();
+        let port = {
+            let probe = TcpListener::bind(("127.0.0.1", 0)).expect("probe");
+            probe.local_addr().expect("addr").port()
+        };
+        start("127.0.0.1", port, engine_port, &key).expect("relay start");
+        std::thread::sleep(Duration::from_millis(200));
+
+        let call = |head: &str| -> String {
+            let mut s = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+            s.write_all(head.as_bytes()).expect("write");
+            let mut r = BufReader::new(s);
+            let mut all = String::new();
+            let mut line = String::new();
+            while r.read_line(&mut line).unwrap_or(0) > 0 {
+                all.push_str(&line);
+                line.clear();
+            }
+            all
+        };
+
+        let ours = call(&format!(
+            "GET /v1/images/models HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {key}\r\n\
+             Connection: close\r\n\r\n"
+        ));
+        assert!(
+            !ours.contains("\"data\":[{}]"),
+            "an image route must not reach llama-server, got: {ours}"
+        );
+        // And text still goes where it always went.
+        let theirs = call(&format!(
+            "POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {key}\r\n\
+             Content-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+        ));
+        assert!(theirs.contains("\"data\":[{}]"), "chat must be forwarded, got: {theirs}");
+
+        // A picture request with no key is refused before any of this: the
+        // local routes are behind the same door as the proxied ones.
+        let no_key = call("GET /v1/images/models HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+        assert!(no_key.contains("401"), "got: {no_key}");
+
+        stop();
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    /// With no text model running, chat says so instead of failing as a gateway.
+    #[test]
+    fn without_an_engine_text_is_a_503_that_names_the_reason() {
+        use std::io::{BufRead, BufReader};
+
+        let _guard = relay_lock();
+        let key = generate_key().expect("key");
+        let port = {
+            let probe = TcpListener::bind(("127.0.0.1", 0)).expect("probe");
+            probe.local_addr().expect("addr").port()
+        };
+        // Zero is what relay_start passes when the machine is serving pictures
+        // only, which is a supported way to run this app.
+        start("127.0.0.1", port, 0, &key).expect("relay start");
+        std::thread::sleep(Duration::from_millis(200));
+
+        let mut s = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+        s.write_all(
+            format!(
+                "POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {key}\r\n\
+                 Content-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+            )
+            .as_bytes(),
+        )
+        .expect("write");
+        let mut all = String::new();
+        let mut r = BufReader::new(s);
+        let mut line = String::new();
+        while r.read_line(&mut line).unwrap_or(0) > 0 {
+            all.push_str(&line);
+            line.clear();
+        }
+        assert!(all.contains("503"), "got: {all}");
+        assert!(all.contains("no text model is running"), "got: {all}");
+        // The declared length must match the sentence exactly, or the client
+        // waits for bytes that never come instead of showing it.
+        let body = all.split("\r\n\r\n").nth(1).unwrap_or_default();
+        let declared: usize = all
+            .split("Content-Length: ")
+            .nth(1)
+            .and_then(|s| s.split("\r\n").next())
+            .and_then(|s| s.trim().parse().ok())
+            .expect("a declared length");
+        assert_eq!(body.len(), declared, "body {body:?}");
+
+        stop();
+        std::thread::sleep(Duration::from_millis(200));
     }
 
     #[test]

@@ -207,6 +207,56 @@ impl ImageModel {
     }
 }
 
+/// A registry entry as `image_models` would hand it over: installed, and fine
+/// on this machine. For the API tests in imgapi.rs, which need a catalogue and
+/// must not need a disk, a download or a Mac of a particular size.
+#[cfg(test)]
+pub fn test_model(id: &str) -> ImageModel {
+    ImageModel {
+        id: id.into(),
+        name: id.into(),
+        kind: "image".into(),
+        video: None,
+        licence: json!(""),
+        bytes: 6_900_000_000,
+        roles: std::collections::BTreeMap::new(),
+        download: json!({}),
+        defaults: json!({"steps": 20, "cfg": 7.0, "width": 1024, "height": 1024}),
+        min_ram_gb: 8,
+        measured: vec![],
+        note: json!(""),
+        installed: true,
+        vae_on_cpu: false,
+        usable: true,
+        reason: String::new(),
+        max_side: 1024,
+        recommended_steps: None,
+        need_gb: 8,
+        max_frames: 0,
+    }
+}
+
+/// Wan's 16 fps grid of 4k + 1, for the same tests.
+#[cfg(test)]
+pub fn test_video_spec() -> VideoSpec {
+    VideoSpec {
+        frames: 17,
+        frame_step: 4,
+        frame_base: 1,
+        fps: 16,
+        flow_shift: Some(3.0),
+        sampling_method: Some("euler".into()),
+        rng: None,
+        high_noise_steps: None,
+        offload_to_cpu: true,
+        needs_init_image: false,
+        accepts_init_image: true,
+        needs_ref_audio: false,
+        fast_decode: true,
+        cache_mode: None,
+    }
+}
+
 /// Where generated images and downloaded weights live.
 fn image_root() -> PathBuf {
     crate::app_support().join("images")
@@ -922,6 +972,16 @@ fn generate_cancel_flag() -> &'static AtomicBool {
 
 #[tauri::command]
 pub async fn image_models() -> Result<Vec<ImageModel>, String> {
+    models_now()
+}
+
+/// The catalogue with this Mac's verdict on it, on the calling thread.
+///
+/// The command above is `async` because Tauri wants it so; the work is a
+/// registry read and some arithmetic. The API path in imgapi.rs runs on a plain
+/// socket thread with no runtime to await on, so the body lives here and both
+/// callers get the same answer rather than a second implementation of it.
+pub fn models_now() -> Result<Vec<ImageModel>, String> {
     let dir = model_root();
     let mut list = load_registry(&crate::galactus_root()?)?;
     let ram_gb = machine_ram_gb();
@@ -1080,6 +1140,22 @@ pub async fn image_generate(
     app: tauri::AppHandle,
     req: GenerateRequest,
 ) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || generate_sync(req, Some(app)))
+        .await
+        .map_err(|e| format!("the image thread died: {e}"))?
+}
+
+/// One picture or one clip, start to finish, on the calling thread.
+///
+/// WHY THIS IS SEPARATE from the command above: the relay serves
+/// `/v1/images/generations` from a plain std::net thread that has no window and
+/// no `AppHandle`, and the checks below are exactly the ones an API caller
+/// needs most, because there is no disabled button on the other end of a curl.
+/// Passing `None` costs only the progress events, which have nowhere to go.
+pub fn generate_sync(
+    req: GenerateRequest,
+    app: Option<tauri::AppHandle>,
+) -> Result<String, String> {
     if req.prompt.trim().is_empty() {
         return Err("write what you want to see first".into());
     }
@@ -1149,10 +1225,9 @@ pub async fn image_generate(
         return Err("an image is already being made: wait for it, or stop it first".into());
     }
     generate_cancel_flag().store(false, Ordering::SeqCst);
-    let path = out.clone();
-    let done = tauri::async_runtime::spawn_blocking(move || run_generation(app, bin, args, path)).await;
+    let done = run_generation(app, bin, args, out);
     busy_flag().store(false, Ordering::SeqCst);
-    done.map_err(|e| format!("the image thread died: {e}"))?
+    done
 }
 
 fn busy_flag() -> &'static AtomicBool {
@@ -1161,11 +1236,17 @@ fn busy_flag() -> &'static AtomicBool {
 }
 
 fn run_generation(
-    app: tauri::AppHandle,
+    app: Option<tauri::AppHandle>,
     bin: PathBuf,
     args: Vec<String>,
     out: PathBuf,
 ) -> Result<String, String> {
+    /// The view's progress and result events, when there is a view.
+    fn say(app: &Option<tauri::AppHandle>, payload: Value) {
+        if let Some(a) = app {
+            let _ = a.emit("galactus://image", payload);
+        }
+    }
     // The pipe readers moved into read_engine_stream, which brings its own
     // imports: these two were left behind by that move.
     use std::process::{Command, Stdio};
@@ -1192,7 +1273,7 @@ fn run_generation(
         let app2 = app.clone();
         let sink = lines.clone();
         std::thread::spawn(move || {
-            read_engine_stream(err, sink, Some(app2));
+            read_engine_stream(err, sink, app2);
         });
     }
     if let Some(outp) = child.stdout.take() {
@@ -1207,7 +1288,7 @@ fn run_generation(
             // just the one that happens to carry it today: parse_progress only
             // fires on a progress line, so a stream that has none costs
             // nothing.
-            read_engine_stream(outp, sink, Some(app3));
+            read_engine_stream(outp, sink, app3);
         });
     }
 
@@ -1224,12 +1305,12 @@ fn run_generation(
                     // Only when the user asked BEFORE it finished: an image that
                     // completed on its own is theirs, whatever was pressed after.
                     let _ = std::fs::remove_file(&out);
-                    let _ = app.emit("galactus://image", json!({"kind": "cancelled"}));
+                    say(&app, json!({"kind": "cancelled"}));
                     return Err("cancelled".into());
                 }
                 if !status.success() {
                     let tail = tail_of(&lines);
-                    let _ = app.emit("galactus://image", json!({"kind": "failed", "log": tail}));
+                    say(&app, json!({"kind": "failed", "log": tail}));
                     return Err(if tail.trim().is_empty() {
                         "the image engine stopped without saying why".to_string()
                     } else {
@@ -1280,7 +1361,7 @@ fn run_generation(
             Ok(()) => kept.to_string_lossy().to_string(),
             Err(_) => out.to_string_lossy().to_string(),
         };
-        let _ = app.emit("galactus://image", json!({"kind": "failed", "log": "blank"}));
+        say(&app, json!({"kind": "failed", "log": "blank"}));
         return Err(format!(
             "the engine produced what looks like an empty image: this model may not run \
              correctly here. It was kept at {where_} in case it is not{}",
@@ -1288,7 +1369,7 @@ fn run_generation(
         ));
     }
     let path = out.to_string_lossy().to_string();
-    let _ = app.emit("galactus://image", json!({"kind": "done", "path": path}));
+    say(&app, json!({"kind": "done", "path": path.clone()}));
     Ok(path)
 }
 
@@ -1519,7 +1600,7 @@ fn ours(path: &str) -> Result<PathBuf, String> {
 }
 
 /// Base64, by hand: one small function against one more dependency.
-fn b64(bytes: &[u8]) -> String {
+pub fn b64(bytes: &[u8]) -> String {
     const SET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {

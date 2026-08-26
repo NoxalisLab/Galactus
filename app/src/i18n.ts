@@ -86,6 +86,10 @@ const dict: Record<string, { en: string; fr: string }> = {
   "net.start": { en: "Open", fr: "Ouvrir" },
   "net.stop": { en: "Close", fr: "Fermer" },
   "net.needModel": { en: "Start a model first.", fr: "Démarrez d'abord un modèle." },
+  "net.imagesOnly": {
+    en: "Open, serving pictures and clips only: no text model is running.",
+    fr: "Ouvert, images et vidéos seulement : aucun modèle de texte ne tourne.",
+  },
   "net.needKey": { en: "Generate a key first.", fr: "Générez d'abord une clé." },
   "net.open": { en: "open on", fr: "ouvert sur" },
   "net.closed": { en: "closed", fr: "fermé" },
