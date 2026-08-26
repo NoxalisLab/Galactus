@@ -553,7 +553,7 @@
         ]
       },
       "defaults": {
-        "steps": 16,
+        "steps": 8,
         "cfg": 4.5,
         "width": 480,
         "height": 832
@@ -573,8 +573,8 @@
       },
       "min_ram_gb": 48,
       "note": {
-        "en": "Speech to video, ported by Noxalis Lab: give it a WAV and a face, it speaks. The 14B DiT in Q8_0 runs the picture; wav2vec2 reads the voice; both verified numerically against the PyTorch reference (final output cosine 0.999996). Apache 2.0. Measured: 1077 s for 17 frames at 16 steps on the 128 GB Mac, on Metal - photorealistic. EasyCache skips the steps that barely change: 872 s instead of 1208 for the same clip, indistinguishable to the eye. The clip length follows the WAV: the engine chains segments of 17 frames autoregressively (seam measured smoother than normal motion, 5.4 s proven in 9 min at gate settings).",
-        "fr": "La parole en vidéo, portée par Noxalis Lab : donnez-lui un WAV et un visage, il parle. Le DiT 14B en Q8_0 fait l'image ; wav2vec2 lit la voix ; les deux vérifiés numériquement contre la référence PyTorch (cosinus final 0,999996). Apache 2.0. Mesuré : 1077 s pour 17 images à 16 pas sur le Mac 128 Go, en Metal - photoréaliste. EasyCache saute les pas qui ne changent presque rien : 872 s au lieu de 1208 pour le même clip, indiscernable à l'œil. La durée du clip suit le WAV : le moteur enchaîne des segments de 17 images en autorégressif (couture mesurée plus douce que le mouvement normal, 5,4 s prouvées en 9 min au réglage de gate)."
+        "en": "Speech to video, ported by Noxalis Lab: give it a WAV and a face, it speaks. The 14B DiT in Q8_0 runs the picture; wav2vec2 reads the voice; both verified numerically against the PyTorch reference (final output cosine 0.999996). Apache 2.0. Measured: 1077 s for 17 frames at 16 steps on the 128 GB Mac, on Metal - photorealistic. EasyCache skips the steps that barely change: 872 s instead of 1208 for the same clip, indistinguishable to the eye. The clip length follows the WAV: the engine chains segments of 17 frames autoregressively (seam measured smoother than normal motion, 5.4 s proven in 9 min at gate settings). Sweep-validated defaults: 8 steps with EasyCache keep the articulation (362 s measured for the flagship second of speech); dropping CFG was tried and refused - the mouth stops moving, the uncond branch is what amplifies the voice.",
+        "fr": "La parole en vidéo, portée par Noxalis Lab : donnez-lui un WAV et un visage, il parle. Le DiT 14B en Q8_0 fait l'image ; wav2vec2 lit la voix ; les deux vérifiés numériquement contre la référence PyTorch (cosinus final 0,999996). Apache 2.0. Mesuré : 1077 s pour 17 images à 16 pas sur le Mac 128 Go, en Metal - photoréaliste. EasyCache saute les pas qui ne changent presque rien : 872 s au lieu de 1208 pour le même clip, indiscernable à l'œil. La durée du clip suit le WAV : le moteur enchaîne des segments de 17 images en autorégressif (couture mesurée plus douce que le mouvement normal, 5,4 s prouvées en 9 min au réglage de gate). Défauts validés par balayage : 8 pas avec EasyCache gardent l'articulation (362 s mesurées pour la seconde de parole vitrine) ; couper le CFG a été essayé et refusé - la bouche s'arrête, c'est la branche uncond qui amplifie la voix."
       },
       "measured": [
         {
@@ -592,6 +592,15 @@
           "steps": 16,
           "frames": 17,
           "seconds": 872.0,
+          "cache": "easycache"
+        },
+        {
+          "mac_gb": 128,
+          "width": 480,
+          "height": 832,
+          "steps": 8,
+          "frames": 17,
+          "seconds": 362.0,
           "cache": "easycache"
         }
       ]
@@ -633,7 +642,7 @@
         ]
       },
       "defaults": {
-        "steps": 16,
+        "steps": 8,
         "cfg": 4.5,
         "width": 480,
         "height": 832
@@ -654,8 +663,8 @@
       },
       "min_ram_gb": 32,
       "note": {
-        "en": "The 32 GB profile of the speech model: Q4 DiT, Q4 text encoder, segmented compute budget. Measured peak residency 20.1 GB - it fits where the full card cannot. Same voice, same picture in; the eye barely tells the difference, the clock does: 1476 s for 17 frames at 16 steps. The clip length follows the WAV: the engine chains segments of 17 frames autoregressively (seam measured smoother than normal motion, 5.4 s proven in 9 min at gate settings).",
-        "fr": "Le profil 32 Go du modèle qui parle : DiT en Q4, encodeur texte en Q4, budget de calcul segmenté. Pic mesuré à 20,1 Go - il tient là où la carte complète ne rentre pas. Même voix, même image en entrée ; l'œil fait à peine la différence, l'horloge oui : 1476 s pour 17 images à 16 pas. La durée du clip suit le WAV : le moteur enchaîne des segments de 17 images en autorégressif (couture mesurée plus douce que le mouvement normal, 5,4 s prouvées en 9 min au réglage de gate)."
+        "en": "The 32 GB profile of the speech model: Q4 DiT, Q4 text encoder, segmented compute budget. Measured peak residency 20.1 GB - it fits where the full card cannot. Same voice, same picture in; the eye barely tells the difference, the clock does: 1476 s for 17 frames at 16 steps. The clip length follows the WAV: the engine chains segments of 17 frames autoregressively (seam measured smoother than normal motion, 5.4 s proven in 9 min at gate settings). Sweep-validated defaults: 8 steps with EasyCache keep the articulation (362 s measured for the flagship second of speech); dropping CFG was tried and refused - the mouth stops moving, the uncond branch is what amplifies the voice.",
+        "fr": "Le profil 32 Go du modèle qui parle : DiT en Q4, encodeur texte en Q4, budget de calcul segmenté. Pic mesuré à 20,1 Go - il tient là où la carte complète ne rentre pas. Même voix, même image en entrée ; l'œil fait à peine la différence, l'horloge oui : 1476 s pour 17 images à 16 pas. La durée du clip suit le WAV : le moteur enchaîne des segments de 17 images en autorégressif (couture mesurée plus douce que le mouvement normal, 5,4 s prouvées en 9 min au réglage de gate). Défauts validés par balayage : 8 pas avec EasyCache gardent l'articulation (362 s mesurées pour la seconde de parole vitrine) ; couper le CFG a été essayé et refusé - la bouche s'arrête, c'est la branche uncond qui amplifie la voix."
       },
       "measured": [
         {
