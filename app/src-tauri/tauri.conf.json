@@ -45,6 +45,8 @@
       "helpers/galactus-doc.swift",
       "helpers/galactus-pick.swift",
       "helpers/galactus-voice.swift",
+      "helpers/galactus-docx.py",
+      "helpers/galactus-sheet.py",
       "engine",
       "image-engine",
       "packaged",

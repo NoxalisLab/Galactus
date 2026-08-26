@@ -343,6 +343,27 @@ export interface ImageModelInfo {
   max_frames: number;
 }
 
+/** One edit asked of a PDF. Mirrors DocEdit in lib.rs field for field. */
+export interface DocEditRequest {
+  op: "find" | "replace" | "insert" | "append";
+  path: string;
+  out?: string;
+  find?: string;
+  replace?: string;
+  page?: number;
+  x?: number;
+  y?: number;
+  size?: number;
+  text?: string;
+  keep_text?: boolean;
+  /** Word only: narrow the edit to the paragraphs between two anchors. */
+  between_start?: string;
+  between_end?: string;
+  /** Word only: a single paragraph, or a single match, by number. */
+  paragraph?: number;
+  occurrence?: number;
+}
+
 export interface ImageRequest {
   model: string;
   prompt: string;
@@ -554,6 +575,8 @@ export const api = {
   convSearch: (query: string, k?: number) => invoke<ConvHit[]>("conv_search", { query, k }),
   convRead: (id: string, maxChars?: number) => invoke<string>("conv_read", { id, maxChars }),
   docRead: (path: string, mode?: string) => invoke<string>("doc_read", { path, mode }),
+  /** Edit a PDF in place of nothing: the result is always a second file. */
+  docEdit: (edit: DocEditRequest) => invoke<string>("doc_edit", { edit }),
   docCapabilities: () => invoke<{ swiftc: boolean; helper: boolean }>("doc_capabilities"),
   voiceStart: (locale?: string) => invoke<void>("voice_start", { locale }),
   voiceStop: () => invoke<void>("voice_stop"),

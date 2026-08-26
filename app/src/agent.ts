@@ -856,6 +856,64 @@ function builtinTools(
     {
       type: "function",
       function: {
+        name: "edit_document",
+        description:
+          "Change a .docx or a .pdf and write the result to a SECOND file, never over the original " +
+          "(the result must have the same extension: this edits documents, it does not convert them). " +
+          "operation=find reports where a sentence is and writes nothing; run it first, because it is " +
+          "what tells you whether the text is findable at all. operation=replace changes every " +
+          "occurrence of `find` into `replace`. operation=append adds text at the end. " +
+          "WORD (.docx) IS THE BETTER TARGET WHENEVER THE FILE EXISTS: the layout, styles, images, " +
+          "headers and tables are kept exactly, a sentence split across bold and non-bold runs is still " +
+          "found, and operation=insert adds a paragraph after the one holding `find`. " +
+          "PDF cannot do that, because a PDF has no paragraphs: replacing covers the old words and draws " +
+          "the new ones in the same box, the page that changed is re-drawn as an image (so it loses its " +
+          "selectable text, while every other page keeps it), and operation=insert draws `text` at x,y in " +
+          "points from the bottom left of page `page`. " +
+          "A .docx HAS NO PAGES: Word computes them when it lays the file out, so nothing in it says " +
+          "page 3 and there is no page option for Word. To reach one part of a document, use " +
+          "between_start and between_end (two headings, for instance \"Article 4\" and \"Article 5\"), " +
+          "or paragraph, or occurrence. The `page` field is for PDF only. " +
+          "The answer is JSON. Read it before reporting: replaced=0 means NOTHING was written, and for a " +
+          "PDF, smallest_scale below about 0.7 means the new sentence had to be shrunk to fit the space " +
+          "the old one occupied. Say either of those to the user rather than claiming a clean result.",
+        parameters: {
+          type: "object",
+          properties: {
+            operation: { type: "string", enum: ["find", "replace", "insert", "append"] },
+            path: { type: "string", description: "Absolute path to the .docx or .pdf to read" },
+            out: { type: "string", description: "Absolute path to write, same extension, required except for find" },
+            find: {
+              type: "string",
+              description:
+                "The text to look for. For find and replace; in a .docx it is also what insert adds a paragraph after",
+            },
+            replace: { type: "string", description: "What to put in its place" },
+            page: { type: "number", description: "PDF only: page number for insert, counting from 1" },
+            x: { type: "number", description: "PDF only: points from the left edge, for insert" },
+            y: { type: "number", description: "PDF only: points from the bottom edge, for insert" },
+            size: { type: "number", description: "PDF only: font size in points, 11 by default" },
+            text: { type: "string", description: "The text to add, for insert and append" },
+            between_start: {
+              type: "string",
+              description:
+                "Word only: limit the edit to the paragraphs starting at the one holding this text, " +
+                "typically a heading such as \"Article 4\"",
+            },
+            between_end: {
+              type: "string",
+              description: "Word only: where that range stops, typically the next heading. Omit for the end of the document",
+            },
+            paragraph: { type: "number", description: "Word only: a single paragraph, numbered as find numbers them" },
+            occurrence: { type: "number", description: "Word only: change only the Nth match, in reading order" },
+          },
+          required: ["operation", "path"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
         name: "use_skill",
         description:
           "Load the full instructions of a named skill, then follow them for the current task.",
@@ -976,6 +1034,7 @@ function activityModeFor(tool: string): import("./pixel").PixelMode {
       return "doc";
     case "fetch_url":
       return "web";
+    case "edit_document":
     case "write_file":
     case "obsidian_append":
     case "obsidian_update":
@@ -1903,6 +1962,59 @@ export class Agent {
    * knows what is installed and the model does not, so a tool call naming a
    * missing one would come back as an error the user has to translate.
    */
+  /**
+   * One PDF edit, with the two ways it can mislead turned into sentences.
+   *
+   * A model reading raw JSON reports what it asked for rather than what
+   * happened, and the two differ in exactly two places: a `find` that matched
+   * nothing still returns success, and a replacement that had to be shrunk to
+   * fit still returns success. Both are spelled out here, in the tool result,
+   * where the model cannot skip them.
+   */
+  private async editDocument(args: Record<string, unknown>): Promise<string> {
+    const op = String(args.operation ?? "");
+    try {
+      const raw = await api.docEdit({
+        op: op as "find" | "replace" | "insert" | "append",
+        path: String(args.path ?? ""),
+        out: String(args.out ?? ""),
+        find: String(args.find ?? ""),
+        replace: String(args.replace ?? ""),
+        page: Number(args.page ?? 0),
+        x: Number(args.x ?? 0),
+        y: Number(args.y ?? 0),
+        size: Number(args.size ?? 0),
+        text: String(args.text ?? ""),
+        between_start: String(args.between_start ?? ""),
+        between_end: String(args.between_end ?? ""),
+        paragraph: Number(args.paragraph ?? 0),
+        occurrence: Number(args.occurrence ?? 0),
+      });
+      let said = raw;
+      try {
+        const j = JSON.parse(raw);
+        if (op === "find" && Array.isArray(j.matches) && j.matches.length === 0) {
+          said += "\n\nNothing matched. The sentence may be split across lines in the PDF, "
+            + "which breaks the search: try a shorter fragment that fits on one line.";
+        }
+        if (op === "replace") {
+          if (j.replaced === 0) {
+            said += "\n\nNothing was replaced and the file was not written. "
+              + "Try a shorter fragment: a sentence broken across two lines cannot be found as one string.";
+          } else if (typeof j.smallest_scale === "number" && j.smallest_scale < 0.7) {
+            said += `\n\nThe replacement had to be shrunk to ${Math.round(j.smallest_scale * 100)}% `
+              + "of the original size to fit the space the old text occupied. Tell the user: it will look smaller.";
+          }
+        }
+      } catch {
+        // Not JSON: hand the helper's own words back unchanged.
+      }
+      return said;
+    } catch (e: any) {
+      return `error: ${String(e?.message ?? e)}`;
+    }
+  }
+
   private async makeImage(args: Record<string, unknown>): Promise<string> {
     let root = "";
     try {
@@ -2252,6 +2364,11 @@ export class Agent {
     if (name === "write_file" || name === "read_file" || name === "list_directory" || name === "read_document") {
       return String(args.path ?? "");
     }
+    if (name === "edit_document") {
+      // What it will DO, not just what it reads: the interesting half of an
+      // edit is the file it creates.
+      return `${String(args.operation ?? "")} ${String(args.path ?? "")} -> ${String(args.out ?? "")}`.trim();
+    }
     if (name === "fetch_url") return String(args.url ?? "");
     if (name.startsWith("obsidian_")) return String(args.note ?? args.query ?? "");
     if (name === "search_knowledge" || name === "search_workspace" || name === "find_files") {
@@ -2385,7 +2502,25 @@ export class Agent {
           const wanted = String(args.prompt ?? "");
           const ok = await this.gate({ kind: "image", detail: wanted.slice(0, 300), elevated: false });
           result = ok ? await this.makeImage(args) : this.denialReason;
-        } else if (name === "read_document") {
+        } else if (name === "edit_document") {
+        const src = String(args.path ?? "");
+        const dest = String(args.out ?? "");
+        const op = String(args.operation ?? "");
+        if (op === "find") {
+          // Reads and writes nothing: the same gate reading a document takes.
+          const ok = await this.gate({ kind: "fs_read", detail: src, elevated: isElevatedRead(src) });
+          result = ok ? await this.editDocument(args) : this.denialReason;
+        } else {
+          // Two files are involved and the dangerous one is the destination:
+          // the gate names it, because that is what appears on the disk.
+          const ok = await this.gate({
+            kind: "fs_write",
+            detail: dest,
+            elevated: isElevatedWrite(dest) || isElevatedRead(src),
+          });
+          result = ok ? await this.editDocument(args) : this.denialReason;
+        }
+      } else if (name === "read_document") {
         const p = String(args.path ?? "");
         const ok = await this.gate({ kind: "fs_read", detail: p, elevated: isElevatedRead(p) });
         result = ok
