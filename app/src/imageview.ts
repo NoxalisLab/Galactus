@@ -223,7 +223,7 @@ function modelOption(m: ImageModelInfo): string {
     m.installed || !m.usable ? "" : t("img.notInstalled"),
   ].filter(Boolean);
   const tail = marks.length ? ` · ${marks.join(" · ")}` : "";
-  return `<option value="${esc(m.id)}" ${m.id === chosen ? "selected" : ""}>${esc(`${m.name} — ${gb} GB${tail}`)}</option>`;
+  return `<option value="${esc(m.id)}" ${m.id === chosen ? "selected" : ""}>${esc(`${m.name} · ${gb} GB${tail}`)}</option>`;
 }
 
 /** The chosen model, in full: what it is, what it costs here, why it is blocked. */
