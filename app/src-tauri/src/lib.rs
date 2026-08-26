@@ -43,7 +43,29 @@ const SERVER_PORT_SPAN: u16 = 40;
 
 // ---------------------------------------------------------------- settings
 
+/// Where the tests point the settings file, when they do.
+///
+/// WHY THIS EXISTS. The tests for this file used to define their own `parse()`
+/// and assert on it, so `settings_read`, `settings_store` and `settings_update`
+/// had no test at all: swapping the refusing read for `settings_load` inside
+/// `settings_update`, which is the exact regression the comment above warns
+/// about, left every test green while overwriting a file holding the user's
+/// connector tokens. Compiled out of a release build, and never set outside a
+/// test, so the shipped path is the one line below it.
+#[cfg(test)]
+fn settings_root_override() -> &'static Mutex<Option<PathBuf>> {
+    static R: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+    R.get_or_init(|| Mutex::new(None))
+}
+
 fn settings_path() -> PathBuf {
+    #[cfg(test)]
+    {
+        let over = settings_root_override().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(dir) = over.as_ref() {
+            return dir.join("settings.json");
+        }
+    }
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
     PathBuf::from(home).join("Library/Application Support/Galactus/settings.json")
 }
@@ -307,45 +329,117 @@ mod cache_ceiling_tests {
 mod settings_read_tests {
     use super::*;
 
-    fn scratch(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("galactus-set-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    /// One test at a time: the override and the file are process-wide.
+    fn settings_lock() -> std::sync::MutexGuard<'static, ()> {
+        static L: OnceLock<Mutex<()>> = OnceLock::new();
+        L.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The decision itself, with the file read out, so it can be tested without
-    /// touching the real settings path.
-    fn parse(raw: Option<&str>) -> Result<HashMap<String, String>, String> {
-        match raw {
-            None => Ok(HashMap::new()),
-            Some(s) if s.trim().is_empty() => Ok(HashMap::new()),
-            Some(s) => serde_json::from_str(s).map_err(|e| e.to_string()),
+    /// A scratch folder that IS the settings folder for the duration.
+    struct Scratch {
+        dir: PathBuf,
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl Scratch {
+        fn new(name: &str) -> Scratch {
+            let guard = settings_lock();
+            let dir = std::env::temp_dir()
+                .join(format!("galactus-set-{}-{name}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            *settings_root_override().lock().unwrap_or_else(|e| e.into_inner()) =
+                Some(dir.clone());
+            Scratch { dir, _guard: guard }
+        }
+
+        fn file(&self) -> PathBuf {
+            self.dir.join("settings.json")
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            *settings_root_override().lock().unwrap_or_else(|e| e.into_inner()) = None;
+            let _ = std::fs::remove_dir_all(&self.dir);
         }
     }
 
     #[test]
     fn absent_is_empty_but_unreadable_is_an_error() {
         // The distinction that matters: one is a first launch, the other is a
-        // file holding the user's tokens.
-        assert!(parse(None).unwrap().is_empty());
-        assert!(parse(Some("   ")).unwrap().is_empty());
-        assert!(parse(Some("{\"root\": \"/tmp\"}")).is_ok());
-        assert!(parse(Some("{\"root\": ")).is_err(), "truncated");
-        assert!(parse(Some("{\"memory_on\": true}")).is_err(), "wrong value type");
-        assert!(parse(Some("not json at all")).is_err());
+        // file holding the user's tokens. Asserted on `settings_read` itself.
+        let s = Scratch::new("read");
+        assert!(settings_read().unwrap().is_empty(), "no file is a first launch");
+        std::fs::write(s.file(), "   ").unwrap();
+        assert!(settings_read().unwrap().is_empty(), "an empty file is not a failure");
+        std::fs::write(s.file(), "{\"root\": \"/tmp\"}").unwrap();
+        assert_eq!(settings_read().unwrap().get("root").map(String::as_str), Some("/tmp"));
+        for bad in ["{\"root\": ", "{\"memory_on\": true}", "not json at all"] {
+            std::fs::write(s.file(), bad).unwrap();
+            assert!(settings_read().is_err(), "should refuse: {bad}");
+        }
     }
 
+    /// An update on top of an unreadable file refuses and changes nothing.
+    ///
+    /// This is the one that was never covered, and the one that costs the most:
+    /// the read-modify-write in `settings_update` is what would turn a file
+    /// with one bad line into an empty object with the user's tokens gone.
     #[test]
-    fn a_file_that_cannot_be_read_is_left_alone_on_disk() {
-        // The point is not the error, it is that the bytes survive.
-        let dir = scratch("keep");
-        let file = dir.join("settings.json");
-        std::fs::write(&file, b"{\"root\": \"/tmp\", ").unwrap();
-        let before = std::fs::read(&file).unwrap();
-        assert!(parse(Some(&String::from_utf8_lossy(&before))).is_err());
-        assert_eq!(std::fs::read(&file).unwrap(), before);
-        let _ = std::fs::remove_dir_all(&dir);
+    fn an_update_over_an_unreadable_file_refuses_and_keeps_the_bytes() {
+        let s = Scratch::new("keep");
+        std::fs::write(s.file(), "{\"root\": \"/tmp\", ").unwrap();
+        let before = std::fs::read(s.file()).unwrap();
+        let out = settings_update(|m| {
+            m.insert("root".into(), "/elsewhere".into());
+        });
+        assert!(out.is_err(), "an unreadable file must not be updated");
+        assert_eq!(std::fs::read(s.file()).unwrap(), before, "the bytes must survive");
+    }
+
+    /// A normal update round trips, and does it without a truncate window.
+    #[test]
+    fn an_update_writes_atomically_and_reads_back() {
+        let s = Scratch::new("write");
+        settings_update(|m| {
+            m.insert("root".into(), "/tmp/work".into());
+        })
+        .expect("first write");
+        settings_update(|m| {
+            m.insert("theme".into(), "dark".into());
+        })
+        .expect("second write");
+        let back = settings_read().expect("read");
+        assert_eq!(back.get("root").map(String::as_str), Some("/tmp/work"));
+        assert_eq!(back.get("theme").map(String::as_str), Some("dark"), "keys must not be dropped");
+        // Write-then-rename leaves nothing behind: a temp file still sitting
+        // there means the rename half of the pair was lost in a refactor.
+        let leftovers: Vec<String> = std::fs::read_dir(&s.dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n != "settings.json")
+            .collect();
+        assert!(leftovers.is_empty(), "temp files left behind: {leftovers:?}");
+    }
+
+    /// The file the user's tokens live in is readable by nobody else.
+    #[cfg(unix)]
+    #[test]
+    fn the_written_file_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let s = Scratch::new("mode");
+        settings_update(|m| {
+            m.insert("token".into(), "secret".into());
+        })
+        .expect("write");
+        let mode = std::fs::metadata(s.file()).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "settings.json must stay owner-only");
+        let dir_mode = std::fs::metadata(&s.dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o700, "the folder around it too");
     }
 }
 
@@ -4477,6 +4571,13 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
     }
     // Released on every path out, including the early returns and a panic.
     let _done = Done;
+    // The generation as it stands BEFORE the slow preamble below, which reads
+    // the engine binary and every dylib, probes the machine and plans the
+    // cache. `server_stop` bumps this counter, so comparing it after the spawn
+    // is how a Stop pressed during those seconds reaches a process that did not
+    // exist when the button was clicked. Without it, Stop found no child, did
+    // nothing, and the model finished loading anyway.
+    let entry_gen = SERVER_GEN.load(Ordering::SeqCst);
     let root = galactus_root()?;
     let entry = registry_entry(&root, &model_id)?;
     require_certified_model(&entry)?;
@@ -4694,7 +4795,13 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
         .args(chat_parsing_args())
         .stdout(Stdio::from(log_out))
         .stderr(Stdio::from(log_err));
-    let child = cmd.spawn().map_err(|e| format!("spawn llama-server: {e}"))?;
+    let mut child = cmd.spawn().map_err(|e| format!("spawn llama-server: {e}"))?;
+    // Did somebody press Stop while all of the above was running?
+    if SERVER_GEN.load(Ordering::SeqCst) != entry_gen {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err("cancelled".into());
+    }
 
     // Watchdog: the engine must die WITH the app in every death mode (crash,
     // force quit, kill -9), not only on the clean RunEvent::Exit path. A tiny
@@ -4707,7 +4814,13 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
         let _ = Command::new("/bin/zsh")
             .arg("-c")
             .arg(format!(
-                "while kill -0 {app_pid} 2>/dev/null; do sleep 3; done; \
+                // It watches BOTH pids and leaves when either is gone. Watching
+                // only the app meant one of these shells survived every model
+                // change and every stop, waking up every three seconds until
+                // the app closed: twenty models tried in a session left twenty
+                // of them behind.
+                "while kill -0 {app_pid} 2>/dev/null && kill -0 {srv_pid} 2>/dev/null; do sleep 3; done; \
+                 if kill -0 {app_pid} 2>/dev/null; then exit 0; fi; \
                  if ps -p {srv_pid} -o comm= 2>/dev/null | grep -q llama-server; then \
                    kill {srv_pid} 2>/dev/null; sleep 2; kill -9 {srv_pid} 2>/dev/null; fi"
             ))
@@ -4720,6 +4833,15 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
     let generation = SERVER_GEN.fetch_add(1, Ordering::SeqCst) + 1;
     {
         let mut s = server_state().lock().unwrap_or_else(|e| e.into_inner());
+        // The same question as after the spawn, asked again under the lock so
+        // that a Stop landing in the window between the two cannot be lost:
+        // from here on the child is in the state and Stop can reach it itself.
+        if generation != entry_gen + 1 {
+            drop(s);
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("cancelled".into());
+        }
         s.child = Some(child);
         s.model_id = Some(model_id.clone());
         // Both expert paths are bit-exact, so the regime worth showing is the
@@ -4910,6 +5032,14 @@ fn server_stop_impl() -> Result<(), String> {
     // window until the process was gone.
     let child = {
         let mut s = server_state().lock().unwrap_or_else(|e| e.into_inner());
+        // A start already in flight belongs to the generation before this one,
+        // so bumping here is how Stop reaches a model that has not been spawned
+        // yet. Without it, the preamble of server_start (reading llama-server
+        // and every dylib to check the patches, probing the machine, planning
+        // the cache) runs for seconds during which Stop found `child == None`,
+        // did nothing at all, and the ninety gigabyte model finished loading
+        // as if nobody had asked.
+        s.generation = SERVER_GEN.fetch_add(1, Ordering::SeqCst) + 1;
         let taken = s.child.take();
         s.model_id = None;
         s.mode = String::new();
@@ -4931,6 +5061,50 @@ fn server_stop_impl() -> Result<(), String> {
 // ---------------------------------------------------------------- install
 
 static INSTALL_CANCEL: OnceLock<Mutex<HashMap<String, Arc<AtomicBool>>>> = OnceLock::new();
+
+/// The pids of the processes an installation is running right now.
+///
+/// WHY A PID AND NOT THE CANCEL FLAG. The flag is polled every two seconds by
+/// the loop that owns the child, which is the right design while the app is
+/// alive and useless at the moment it dies: `RunEvent::Exit` sets the flag and
+/// the process is gone long before anybody reads it, so `curl` was reparented
+/// to launchd and carried on writing two hundred gigabytes with no window and
+/// no icon to stop it. A pid can be killed from the exit handler in one call,
+/// which is what the engine, the connectors and the image engine already do.
+fn install_pids() -> &'static Mutex<Vec<u32>> {
+    static P: OnceLock<Mutex<Vec<u32>>> = OnceLock::new();
+    P.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Remembers a live install child and forgets it however the scope ends.
+struct InstallChild(u32);
+
+impl InstallChild {
+    fn new(pid: u32) -> InstallChild {
+        install_pids().lock().unwrap_or_else(|e| e.into_inner()).push(pid);
+        InstallChild(pid)
+    }
+}
+
+impl Drop for InstallChild {
+    fn drop(&mut self) {
+        let mut live = install_pids().lock().unwrap_or_else(|e| e.into_inner());
+        live.retain(|p| *p != self.0);
+    }
+}
+
+/// Kill whatever an installation is running. Called from the exit handler.
+fn kill_install_children() {
+    let live: Vec<u32> = install_pids().lock().unwrap_or_else(|e| e.into_inner()).clone();
+    for pid in live {
+        // SIGKILL rather than SIGTERM: curl catches nothing useful here, the
+        // partial file is resumed by `-C -` on the next attempt, and the window
+        // is already closing.
+        // SAFETY: a plain kill(2) on a pid this process spawned, exactly as
+        // mcp_kill_children does. ESRCH on an already dead pid is not an error.
+        unsafe { kill(pid as i32, SIG_KILL) };
+    }
+}
 
 fn install_cancels() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
     INSTALL_CANCEL.get_or_init(|| Mutex::new(HashMap::new()))
@@ -5188,6 +5362,7 @@ fn install_pipeline_with(
             .arg(&url)
             .spawn()
             .map_err(|e| format!("curl: {e}"))?;
+        let _live = InstallChild::new(child.id());
         loop {
             if cancel.load(Ordering::SeqCst) {
                 let _ = child.kill();
@@ -9045,6 +9220,9 @@ pub fn run() {
                         flag.store(true, Ordering::SeqCst);
                     }
                 }
+                // The flag alone was the bug: nobody is left to read it. The
+                // children are killed by pid, here, before this process goes.
+                kill_install_children();
                 // Same reason: a generation holds ten gigabytes and a download
                 // keeps writing seven more after the window has gone.
                 image::kill_child();

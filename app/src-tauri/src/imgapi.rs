@@ -129,8 +129,109 @@ pub struct Ask {
     pub model: ImageModel,
     pub req: GenerateRequest,
     pub fmt: Fmt,
-    /// Files this module wrote for the engine and must clean up afterwards.
-    pub temp: Vec<PathBuf>,
+    /// Files this module wrote for the engine, deleted when this is dropped.
+    pub temp: TempFiles,
+}
+
+/// Temporary files that go away by themselves.
+///
+/// WHY A DROP GUARD AND NOT A CLEANUP LINE. The cleanup used to live on the one
+/// path where everything succeeded, so a request that wrote 48 MB of inline
+/// audio and was then refused ("this model makes pictures, not clips") left
+/// those megabytes in TMPDIR for good, and nothing in the app ever sweeps that
+/// folder. Every early return is a leak unless the deletion belongs to the
+/// value itself.
+#[derive(Debug, Default)]
+pub struct TempFiles {
+    pub paths: Vec<PathBuf>,
+}
+
+impl Drop for TempFiles {
+    fn drop(&mut self) {
+        for p in &self.paths {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+}
+
+/// The folders a request arriving over the network may name.
+fn media_dirs() -> Vec<PathBuf> {
+    vec![image::api_inbox(), image::image_root()]
+}
+
+/// Resolve a caller-supplied path, or refuse it without saying what exists.
+///
+/// Two checks, and the order is the point. The path is normalised WITHOUT
+/// touching the disk first, so a path outside the allowed folders is refused
+/// with a message that reads the same whether or not the file is there: the
+/// error used to quote the path back, which turned this endpoint into an
+/// existence oracle for the whole disk. Only once a path is known to be ours is
+/// the disk consulted, and canonicalisation is repeated then, so a symlink
+/// planted inside the folder cannot point out of it.
+fn confine(raw: &str) -> Result<PathBuf, String> {
+    let want = if let Some(rest) = raw.strip_prefix("~/") {
+        dirs_home().join(rest)
+    } else {
+        PathBuf::from(raw)
+    };
+    let mut flat = PathBuf::new();
+    for part in want.components() {
+        match part {
+            std::path::Component::ParentDir => {
+                flat.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => flat.push(other),
+        }
+    }
+    let dirs = media_dirs();
+    let outside = format!(
+        "a path from the network has to be inside {}: put the file there, or send it inline as base64",
+        image::api_inbox().to_string_lossy()
+    );
+    if !dirs.iter().any(|d| flat.starts_with(d)) {
+        return Err(outside);
+    }
+    // The disk, now that the answer no longer leaks anything about it.
+    let real = std::fs::canonicalize(&flat).map_err(|_| format!("there is no file at {}", flat.to_string_lossy()))?;
+    let ok = dirs
+        .iter()
+        .filter_map(|d| std::fs::canonicalize(d).ok())
+        .any(|d| real.starts_with(&d));
+    if !ok {
+        return Err(outside);
+    }
+    if !real.is_file() {
+        return Err(format!("there is no file at {}", flat.to_string_lossy()));
+    }
+    Ok(real)
+}
+
+/// One media field: a path inside the allowed folders, or inline base64.
+fn media_field(
+    v: &Value,
+    keys: [&str; 2],
+    ext: &str,
+    temp: &mut TempFiles,
+) -> Result<String, String> {
+    let Some(raw) = keys.iter().find_map(|k| v.get(*k).and_then(|s| s.as_str())) else {
+        return Ok(String::new());
+    };
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(String::new());
+    }
+    if raw.starts_with('/') || raw.starts_with("~/") {
+        return Ok(confine(raw)?.to_string_lossy().to_string());
+    }
+    let bytes = decode_b64(strip_data_url(raw))
+        .ok_or_else(|| format!("{} is neither a path nor base64", keys[0]))?;
+    let dir = image::api_inbox();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot write to the inbox: {e}"))?;
+    let p = temp_path(&dir, ext);
+    std::fs::write(&p, &bytes).map_err(|e| format!("cannot write {}: {e}", p.to_string_lossy()))?;
+    temp.paths.push(p.clone());
+    Ok(p.to_string_lossy().to_string())
 }
 
 /// Read `size` in either of the two spellings a caller might use.
@@ -244,38 +345,11 @@ pub fn parse_ask(v: &Value, models: &[ImageModel]) -> Result<Ask, String> {
         }
     };
 
-    let mut temp = Vec::new();
-    let mut media = |keys: [&str; 2], ext: &str| -> Result<String, String> {
-        let Some(raw) = keys.iter().find_map(|k| v.get(*k).and_then(|s| s.as_str())) else {
-            return Ok(String::new());
-        };
-        let raw = raw.trim();
-        if raw.is_empty() {
-            return Ok(String::new());
-        }
-        // A path is taken as a path. The caller is on this machine or is
-        // trusted with a key to it, and the alternative, base64ing a file that
-        // is already on the disk the engine will read it from, is pure waste.
-        if raw.starts_with('/') || raw.starts_with("~/") {
-            let p = if let Some(rest) = raw.strip_prefix("~/") {
-                dirs_home().join(rest)
-            } else {
-                PathBuf::from(raw)
-            };
-            if !p.is_file() {
-                return Err(format!("there is no file at {}", p.to_string_lossy()));
-            }
-            return Ok(p.to_string_lossy().to_string());
-        }
-        let bytes = decode_b64(strip_data_url(raw))
-            .ok_or_else(|| format!("{} is neither a path nor base64", keys[0]))?;
-        let p = temp_path(ext);
-        std::fs::write(&p, &bytes).map_err(|e| format!("cannot write {}: {e}", p.to_string_lossy()))?;
-        temp.push(p.clone());
-        Ok(p.to_string_lossy().to_string())
-    };
-    let init_image = media(["image", "init_image"], "png")?;
-    let ref_audio = media(["audio", "ref_audio"], "wav")?;
+    // `temp` is declared before the first write and carries its own deletion,
+    // so every `?` below throws the bytes away with it.
+    let mut temp = TempFiles::default();
+    let init_image = media_field(v, ["image", "init_image"], "png", &mut temp)?;
+    let ref_audio = media_field(v, ["audio", "ref_audio"], "wav", &mut temp)?;
 
     // Length, for the models that make clips. `seconds` is what a caller
     // thinks in; frames are what the engine takes, and the model's grid is
@@ -336,12 +410,15 @@ fn dirs_home() -> PathBuf {
     std::env::var("HOME").map(PathBuf::from).unwrap_or_default()
 }
 
-fn temp_path(ext: &str) -> PathBuf {
+fn temp_path(dir: &Path, ext: &str) -> PathBuf {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    std::env::temp_dir().join(format!("galactus-api-{stamp}.{ext}"))
+    // Beside the files it will sit next to rather than in TMPDIR: the inbox is
+    // swept by its own drop guard, and a folder the user can open is a folder
+    // they can check.
+    dir.join(format!("galactus-api-{stamp}.{ext}"))
 }
 
 /// The payload of a data URL, or the string unchanged when it is not one.
@@ -408,9 +485,6 @@ pub fn generate(v: &Value, app: Option<tauri::AppHandle>) -> Reply {
     };
     let started = std::time::Instant::now();
     let done = image::generate_sync(ask.req.clone(), app);
-    for p in &ask.temp {
-        let _ = std::fs::remove_file(p);
-    }
     let path = match done {
         Ok(p) => PathBuf::from(p),
         Err(e) => {
@@ -662,33 +736,95 @@ mod tests {
         assert_eq!(ask.fmt, Fmt::PathOnly);
     }
 
+    /// A path from the network cannot reach outside the two allowed folders,
+    /// and cannot be used to learn what is on the disk either.
+    ///
+    /// The second assertion is the one that matters and it is easy to lose in a
+    /// refactor: the refusal for a file that EXISTS must be the same sentence
+    /// as the refusal for one that does not. Anything else answers "is there a
+    /// file at this path" to anybody holding the key, for every path on the
+    /// machine.
     #[test]
-    fn a_media_path_that_does_not_exist_is_named_rather_than_passed_on() {
+    fn a_path_outside_the_allowed_folders_is_refused_and_tells_nothing() {
         let models = vec![model("wan-i2v", true)];
-        let err = parse_ask(
-            &json!({"prompt": "x", "model": "wan-i2v", "image": "/nope/missing.png"}),
-            &models,
-        )
-        .unwrap_err();
-        assert!(err.contains("no file at /nope/missing.png"), "got: {err}");
+        let ask = |p: &str| {
+            parse_ask(&json!({"prompt": "x", "model": "wan-i2v", "image": p}), &models).unwrap_err()
+        };
+        let missing = ask("/nope/definitely-not-here.png");
+        let present = ask("/etc/hosts");
+        assert!(missing.contains("has to be inside"), "got: {missing}");
+        assert_eq!(missing, present, "the refusal must not reveal what exists");
+        // And the classic escape, which a prefix test alone would let through.
+        let climb = ask(&format!("{}/../../../../etc/hosts", image::api_inbox().to_string_lossy()));
+        assert_eq!(climb, present, ".. must not walk out of the inbox");
     }
 
     #[test]
-    fn inline_media_lands_on_disk_for_the_engine_to_read() {
+    fn a_missing_file_inside_the_inbox_is_named_because_that_leaks_nothing() {
         let models = vec![model("wan-i2v", true)];
-        let png = image::b64(b"\x89PNG\r\n\x1a\nnot really");
-        let ask = parse_ask(
-            &json!({"prompt": "x", "model": "wan-i2v", "image": format!("data:image/png;base64,{png}")}),
+        let p = image::api_inbox().join("not-there.png");
+        let err = parse_ask(
+            &json!({"prompt": "x", "model": "wan-i2v", "image": p.to_string_lossy()}),
             &models,
         )
-        .expect("ask");
-        assert!(!ask.req.init_image.is_empty());
-        assert_eq!(ask.temp.len(), 1, "the temp file must be tracked for cleanup");
-        let on_disk = std::fs::read(&ask.req.init_image).expect("written");
-        assert_eq!(&on_disk, b"\x89PNG\r\n\x1a\nnot really");
-        for p in &ask.temp {
-            let _ = std::fs::remove_file(p);
-        }
+        .unwrap_err();
+        assert!(err.contains("no file at"), "got: {err}");
+    }
+
+    #[test]
+    fn inline_media_lands_in_the_inbox_and_is_deleted_with_the_request() {
+        let _guard = inbox_lock();
+        let models = vec![model("wan-i2v", true)];
+        let png = image::b64(b"\x89PNG\r\n\x1a\nnot really");
+        let written = {
+            let ask = parse_ask(
+                &json!({"prompt": "x", "model": "wan-i2v", "image": format!("data:image/png;base64,{png}")}),
+                &models,
+            )
+            .expect("ask");
+            assert_eq!(ask.temp.paths.len(), 1, "the file must be tracked for cleanup");
+            assert!(
+                PathBuf::from(&ask.req.init_image).starts_with(image::api_inbox()),
+                "inline media belongs in the inbox, not in TMPDIR: {}",
+                ask.req.init_image
+            );
+            let on_disk = std::fs::read(&ask.req.init_image).expect("written");
+            assert_eq!(&on_disk, b"\x89PNG\r\n\x1a\nnot really");
+            PathBuf::from(&ask.req.init_image)
+        };
+        assert!(!written.exists(), "dropping the request must take its bytes with it");
+    }
+
+    /// A request refused AFTER the media was written still leaves nothing.
+    ///
+    /// This is the leak that was measured: 48 MB of inline audio written, then
+    /// "this model makes pictures, not clips", and the megabytes stayed.
+    #[test]
+    fn media_written_before_a_refusal_does_not_survive_the_refusal() {
+        let _guard = inbox_lock();
+        let before = inbox_count();
+        let wav = image::b64(b"RIFF....WAVEfmt ");
+        let err = parse_ask(
+            &json!({"prompt": "x", "model": "sdxl-base", "audio": wav}),
+            &[model("sdxl-base", false)],
+        )
+        .unwrap_err();
+        assert!(err.contains("does not apply"), "got: {err}");
+        assert_eq!(inbox_count(), before, "the refused request left files behind");
+    }
+
+    fn inbox_count() -> usize {
+        std::fs::read_dir(image::api_inbox()).map(|d| d.count()).unwrap_or(0)
+    }
+
+    /// The inbox is one folder for the whole process, and two tests writing
+    /// into it at once make each other's count wrong. Same reason the relay
+    /// and the scheduler serialise theirs.
+    fn inbox_lock() -> std::sync::MutexGuard<'static, ()> {
+        static L: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        L.get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     #[test]

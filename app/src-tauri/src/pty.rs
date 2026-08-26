@@ -462,11 +462,40 @@ pub fn own_session(cmd: &mut std::process::Command) {
     }
 }
 
+/// Close a terminal's process group, giving it a moment to react first.
+///
+/// WHY THE PAUSE. The two signals used to be sent on consecutive lines, which
+/// made the hangup decorative: nothing can save a buffer or close a socket in
+/// the microseconds between them. A `vim` with unsaved work in a tab being
+/// closed lost it, and a dev server never got to release its port. The delay
+/// is short enough that a tab still closes instantly to the eye and long
+/// enough that a program which handles SIGHUP gets to run its handler.
+///
+/// The wait happens on a detached thread because the caller is a click, and
+/// the group is killed whether or not the program used the time.
 pub fn kill_group(pgid: i32) {
     if pgid <= 1 {
         return; // never signal pid 1 or the whole system (pgid 0 means "my group")
     }
     // SAFETY: killpg on a pid we spawned. A dead group returns ESRCH, ignored.
+    unsafe { killpg(pgid, SIGHUP) };
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        unsafe { killpg(pgid, SIGKILL) };
+    });
+}
+
+/// The same, with no grace period, for the app's own exit.
+///
+/// There is nowhere to wait at that point: the process is going, and a
+/// detached thread that would deliver the second signal dies with it. A
+/// terminal left holding a port after the window closed is the failure this
+/// avoids, and it outranks the buffer nobody will see saved.
+pub fn kill_group_now(pgid: i32) {
+    if pgid <= 1 {
+        return;
+    }
+    // SAFETY: as above.
     unsafe {
         killpg(pgid, SIGHUP);
         killpg(pgid, SIGKILL);
@@ -598,7 +627,7 @@ pub fn kill_all() {
         Err(_) => return,
     };
     for s in taken {
-        kill_group(s.pgid);
+        kill_group_now(s.pgid);
     }
 }
 

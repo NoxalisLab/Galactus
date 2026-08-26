@@ -258,8 +258,19 @@ pub fn test_video_spec() -> VideoSpec {
 }
 
 /// Where generated images and downloaded weights live.
-fn image_root() -> PathBuf {
+pub(crate) fn image_root() -> PathBuf {
     crate::app_support().join("images")
+}
+
+/// Where a caller over the network may leave files for the engine to read.
+///
+/// The window's file panels hand over a path the USER picked, anywhere on the
+/// disk, and that is right: the person choosing the file is the person who owns
+/// it. A request arriving over the relay has no such person behind it, so it is
+/// confined to this folder and to the gallery, and every other path is refused
+/// without saying whether it exists. See `imgapi::confine`.
+pub(crate) fn api_inbox() -> PathBuf {
+    crate::app_support().join("api-inbox")
 }
 
 pub(crate) fn model_root() -> PathBuf {
@@ -1269,17 +1280,23 @@ fn run_generation(
     // stderr, so a failure was reported to the user as the tail of the chatter
     // while the actual reason was thrown away.
     let lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    // The handles are KEPT and joined before anything reads `lines`. Without
+    // that, an engine that prints its reason and exits a millisecond later is
+    // reported as "stopped without saying why": the process is reaped, the
+    // wait loop breaks, and the reader thread has not yet pushed the line that
+    // explains everything.
+    let mut readers = Vec::new();
     if let Some(err) = child.stderr.take() {
         let app2 = app.clone();
         let sink = lines.clone();
-        std::thread::spawn(move || {
+        readers.push(std::thread::spawn(move || {
             read_engine_stream(err, sink, app2);
-        });
+        }));
     }
     if let Some(outp) = child.stdout.take() {
         let sink = lines.clone();
         let app3 = app.clone();
-        std::thread::spawn(move || {
+        readers.push(std::thread::spawn(move || {
             // The step counter goes to STDOUT, which this passed None for, so
             // the progress bar it feeds never moved: the user waited the whole
             // twenty to thirty seconds of a generation with nothing on screen.
@@ -1289,7 +1306,7 @@ fn run_generation(
             // fires on a progress line, so a stream that has none costs
             // nothing.
             read_engine_stream(outp, sink, app3);
-        });
+        }));
     }
 
     let mut cancelled_first = false;
@@ -1301,6 +1318,12 @@ fn run_generation(
         match child.try_wait().map_err(|e| e.to_string())? {
             Some(status) => {
                 forget_child(Work::Generate);
+                // Both pipes are closed now that the process is gone, so these
+                // finish immediately; what matters is that they finish BEFORE
+                // tail_of and with_reason look at what was said.
+                for r in readers.drain(..) {
+                    let _ = r.join();
+                }
                 if cancelled_first {
                     // Only when the user asked BEFORE it finished: an image that
                     // completed on its own is theirs, whatever was pressed after.
@@ -1339,8 +1362,19 @@ fn run_generation(
     if out.extension().map(|e| e == "webm").unwrap_or(false) {
         if let Some(split) = crate::webm::split_audio(&written) {
             if let Some(wav) = split.wav {
-                if std::fs::write(&out, &split.webm).is_ok() {
-                    let _ = std::fs::write(out.with_extension("wav"), &wav);
+                // ORDER MATTERS, and the order used to be the other one: the
+                // video-only WebM was written over the original first, and the
+                // WAV afterwards with its error thrown away. A disk that fills
+                // during a long generation, which is the normal way this fails,
+                // then left a clip whose sound existed nowhere, reported as a
+                // success. The soundtrack is written first, and a failure on
+                // either half is the caller's answer rather than a silent loss.
+                let side = out.with_extension("wav");
+                std::fs::write(&side, &wav)
+                    .map_err(|e| format!("the clip was made but its sound could not be saved: {e}"))?;
+                if let Err(e) = std::fs::write(&out, &split.webm) {
+                    let _ = std::fs::remove_file(&side);
+                    return Err(format!("the clip was made but could not be finished: {e}"));
                 }
             }
         }

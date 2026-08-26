@@ -438,6 +438,29 @@ mod tests {
         assert!(split_audio(b"").map(|s| s.webm.is_empty()).unwrap_or(true));
     }
 
+    /// A streamed file, whose Segment declares no size, is refused cleanly.
+    ///
+    /// WHY THIS IS WORTH A TEST. Every other fixture here is built by this
+    /// module's own writer, so the parser only ever meets bytes it produced,
+    /// and the one shape it cannot produce is the one a streaming muxer emits:
+    /// an unknown size, all value bits set. The day the engine writes clips as
+    /// it renders them, `split_audio` starts answering None for every clip, and
+    /// what that costs is stated here rather than discovered as "video does not
+    /// play any more": the caller keeps the original bytes, which for a clip
+    /// carrying PCM means WKWebView refuses it. A None is the contract; a panic
+    /// or a half-parsed file would not be.
+    #[test]
+    fn a_streamed_segment_of_unknown_size_is_refused_rather_than_half_read() {
+        let mut file = Vec::new();
+        // A plausible EBML header, then a Segment whose size VINT is the
+        // one-byte unknown pattern, then bytes that would parse as children.
+        write_element(&mut file, 0x1A45DFA3, b"\x42\x86\x81\x01");
+        file.extend_from_slice(&[0x18, 0x53, 0x80, 0x67]); // Segment ID
+        file.push(0xFF); // size: unknown
+        file.extend_from_slice(&[0x16, 0x54, 0xAE, 0x6B, 0x80]); // an empty Tracks
+        assert!(split_audio(&file).is_none(), "an unknown size must not be guessed at");
+    }
+
     /// The real thing, on demand: point GALACTUS_WEBM at an engine-written
     /// clip and this splits it next to the source for a WKWebView probe.
     /// Ignored because it needs a file only some machines have.

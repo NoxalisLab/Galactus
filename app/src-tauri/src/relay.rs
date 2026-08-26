@@ -32,7 +32,7 @@
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -44,8 +44,41 @@ use serde::Serialize;
 /// opens a socket and streams headers forever cannot grow this buffer without
 /// bound; the body is never held in memory at all, it is streamed through.
 const MAX_HEAD: usize = 32 * 1024;
-/// How long a client may take to send its head before the relay gives up.
-const HEAD_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long ONE read may block before the relay looks at the clock again.
+const HEAD_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a client may take to send its whole head, first byte to last.
+///
+/// WHY BOTH. A socket timeout is per read, not per request, so a client sending
+/// one byte every four seconds kept a thread and its stack alive for as long as
+/// it liked: thirty two kilobytes of head at that rate is a day and a half, and
+/// nothing above required a key. The deadline is what actually bounds the wait;
+/// the socket timeout only exists so the loop wakes up to check it.
+const HEAD_DEADLINE: Duration = Duration::from_secs(15);
+
+/// Connections served at once, before the relay starts refusing.
+///
+/// One thread per connection with a two megabyte stack is fine at a dozen and
+/// is a memory exhaustion at ten thousand. The cap is far above what any client
+/// of a local model server needs (four slots is the engine's own maximum) and
+/// far below what hurts.
+const MAX_LIVE: usize = 64;
+static LIVE: AtomicUsize = AtomicUsize::new(0);
+
+const TOO_MANY: &[u8] = b"HTTP/1.1 503 Service Unavailable\r\n\
+Content-Type: application/json\r\n\
+Content-Length: 46\r\n\
+Connection: close\r\n\
+\r\n\
+{\"error\":{\"message\":\"too many connections\"}}\r\n";
+
+/// Decrements the live count however the thread ends, panic included.
+struct Live;
+
+impl Drop for Live {
+    fn drop(&mut self) {
+        LIVE.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 static RUNNING: AtomicBool = AtomicBool::new(false);
 static PORT: AtomicU16 = AtomicU16::new(0);
@@ -162,6 +195,30 @@ pub fn bearer_of(head: &str) -> Option<String> {
     None
 }
 
+/// The same head without its Authorization line, for the hop to the engine.
+///
+/// The request line is kept whatever it looks like: this function removes a
+/// header, it does not validate the request, and a head this relay has already
+/// authenticated is not the place to start being clever about syntax.
+pub fn without_authorization(head: &str) -> String {
+    let mut out = String::with_capacity(head.len());
+    for (i, line) in head.split("\r\n").enumerate() {
+        let is_auth = i > 0
+            && line
+                .split_once(':')
+                .map(|(n, _)| n.trim().eq_ignore_ascii_case("authorization"))
+                .unwrap_or(false);
+        if is_auth {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push_str("\r\n");
+        }
+        out.push_str(line);
+    }
+    out
+}
+
 /// True when this request head is a CORS preflight.
 pub fn is_preflight(head: &str) -> bool {
     head.split("\r\n")
@@ -194,7 +251,11 @@ Connection: close\r\n\
 fn read_head(sock: &mut TcpStream) -> Result<(String, Vec<u8>), String> {
     let mut buf: Vec<u8> = Vec::with_capacity(1024);
     let mut chunk = [0u8; 1024];
+    let started = std::time::Instant::now();
     loop {
+        if started.elapsed() > HEAD_DEADLINE {
+            return Err("the client took too long to send its head".into());
+        }
         let n = sock.read(&mut chunk).map_err(|e| e.to_string())?;
         if n == 0 {
             return Err("client closed before sending a head".into());
@@ -415,7 +476,11 @@ fn serve_one(mut client: TcpStream, engine_port: u16) {
     };
     let _ = engine.set_nodelay(true);
     let _ = client.set_nodelay(true);
-    if engine.write_all(head.as_bytes()).is_err()
+    // The key stops here. The engine has no authentication to do, its two
+    // streams are redirected into llama-server.log, and a secret that never
+    // crosses a boundary cannot be logged on the other side of it.
+    let forwarded = without_authorization(&head);
+    if engine.write_all(forwarded.as_bytes()).is_err()
         || engine.write_all(b"\r\n\r\n").is_err()
         || engine.write_all(&rest).is_err()
     {
@@ -457,8 +522,18 @@ pub fn start(bind: &str, port: u16, engine_port: u16, key: &str) -> Result<(), S
                 break;
             }
             match conn {
-                Ok(sock) => {
-                    std::thread::spawn(move || serve_one(sock, engine_port));
+                Ok(mut sock) => {
+                    // Refused here rather than inside a thread: the point of
+                    // the cap is to not create the thread.
+                    if LIVE.load(Ordering::SeqCst) >= MAX_LIVE {
+                        let _ = sock.write_all(TOO_MANY);
+                        continue;
+                    }
+                    LIVE.fetch_add(1, Ordering::SeqCst);
+                    std::thread::spawn(move || {
+                        let _live = Live;
+                        serve_one(sock, engine_port);
+                    });
                 }
                 Err(_) => break,
             }
@@ -860,6 +935,55 @@ Content-Length: 13\r\nConnection: close\r\n\r\n{\"data\":[{}]}",
 
         stop();
         std::thread::sleep(Duration::from_millis(200));
+    }
+
+    #[test]
+    fn the_key_does_not_travel_to_the_engine() {
+        let head = "POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\n\
+                    Authorization: Bearer gx_secret\r\nContent-Length: 2";
+        let out = without_authorization(head);
+        assert!(!out.contains("gx_secret"), "got: {out}");
+        assert!(out.starts_with("POST /v1/chat/completions HTTP/1.1\r\n"));
+        assert!(out.contains("Content-Length: 2"), "the rest of the head must survive");
+        // Case is not a way to smuggle it through.
+        assert!(!without_authorization("GET / HTTP/1.1\r\nAUTHORIZATION: Bearer k").contains("k"));
+        // A request line that happens to look like the header is not one.
+        let odd = "GET /authorization: x HTTP/1.1\r\nHost: y";
+        assert_eq!(without_authorization(odd), odd);
+    }
+
+    /// A client that dribbles its head cannot hold a thread for a day.
+    ///
+    /// The failure this pins is not a crash, it is a resource: `set_read_timeout`
+    /// is per read, so one byte every few seconds used to keep the connection,
+    /// and its thread, alive without ever presenting a key.
+    #[test]
+    fn a_head_that_never_ends_is_dropped_on_the_deadline() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let dribble = std::thread::spawn(move || {
+            let mut s = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+            // Never sends the terminator, keeps the socket warm.
+            for _ in 0..40 {
+                if s.write_all(b"X-Pad: 1\r\n").is_err() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        let (mut sock, _) = listener.accept().expect("accept");
+        let _ = sock.set_read_timeout(Some(Duration::from_millis(50)));
+        let started = std::time::Instant::now();
+        let err = read_head(&mut sock).unwrap_err();
+        // It gives up on its own, rather than on the client hanging up.
+        assert!(
+            started.elapsed() < HEAD_DEADLINE + Duration::from_secs(5),
+            "took {:?}",
+            started.elapsed()
+        );
+        assert!(!err.is_empty());
+        drop(sock);
+        let _ = dribble.join();
     }
 
     #[test]

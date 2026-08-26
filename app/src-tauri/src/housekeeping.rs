@@ -147,13 +147,25 @@ fn sweep_symbols(root: &Path) -> Swept {
                 .and_then(|m| now.duration_since(m).ok())
                 .unwrap_or_default();
             let text = std::fs::read_to_string(&path).unwrap_or_default();
-            let workspace_gone = serde_json::from_str::<serde_json::Value>(&text)
-                .ok()
+            let parsed = serde_json::from_str::<serde_json::Value>(&text).ok();
+            let workspace_gone = parsed
+                .as_ref()
                 .and_then(|v| v["root"].as_str().map(|s| !Path::new(s).is_dir()))
                 .unwrap_or(false);
             // An index with no symbols in it is what 144 of the 146 files here
             // were: written for a folder that had none, and re-read forever.
-            let empty = text.len() < 400;
+            //
+            // Asked of the CONTENT, not of the byte count. `text.len() < 400`
+            // also described a small project that is open right now and whose
+            // index is perfectly good: three or four real symbols fit in far
+            // less than four hundred bytes, so that index was deleted at every
+            // launch and rebuilt on the next visit to the Code view. A file
+            // that does not parse is left to the age rule rather than deleted
+            // on a guess.
+            let empty = parsed
+                .as_ref()
+                .map(|v| v["symbols"].as_array().map(|a| a.is_empty()).unwrap_or(true))
+                .unwrap_or(false);
             if workspace_gone || empty || age > SYMBOL_MAX_AGE {
                 let size = meta.len();
                 if std::fs::remove_file(&path).is_ok() {

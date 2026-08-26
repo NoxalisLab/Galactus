@@ -591,6 +591,13 @@ struct Sched {
     states: HashMap<String, JobState>,
     /// job id -> the instant after which a silent job is presumed dead.
     flight: HashMap<String, i64>,
+    /// job id -> the anchor it had BEFORE this pass fired it.
+    ///
+    /// Runtime only, never written to disk: it exists so that a job whose
+    /// event could not be delivered can be put back exactly where it was,
+    /// instead of being left marked as fired and silently skipped. Cleared
+    /// with the flight slot it shadows.
+    fired_from: HashMap<String, Option<i64>>,
     /// Bumped by anything that can change WHEN something next needs doing.
     /// The clock thread compares it against `horizon_gen` and skips the whole
     /// recomputation when the two agree, which is every wake that the sleep
@@ -609,6 +616,7 @@ fn sched() -> &'static Mutex<Sched> {
             jobs: Vec::new(),
             states: HashMap::new(),
             flight: HashMap::new(),
+            fired_from: HashMap::new(),
             generation: 1,
             horizon: None,
             // Deliberately not equal to `generation`: the first pass must
@@ -808,8 +816,21 @@ pub fn park_for(horizon: Option<i64>, now: i64) -> Option<Duration> {
 }
 
 /// Sleep until there is something to do, or until a command says there is.
-fn park(horizon: Option<i64>) {
+///
+/// `seen` is the generation the horizon was computed from. WHY IT IS CHECKED
+/// HERE: `bump` notifies while holding the lock, and this thread releases it
+/// at the end of `pass` and only takes it again on the line below, so a job
+/// saved or enabled in that window notifies nobody. Sleeping on the horizon
+/// computed before that change is then wrong by exactly the change, and when
+/// no job is enabled the horizon is `None`, meaning a wait with NO timeout:
+/// enabling a job in that window used to put the clock to sleep until an
+/// unrelated command happened to wake it. Comparing under the lock cannot miss
+/// it, because the bump and this read cannot both be inside it.
+fn park(horizon: Option<i64>, seen: u64) {
     let guard = sched().lock().unwrap_or_else(|e| e.into_inner());
+    if guard.generation != seen {
+        return;
+    }
     match park_for(horizon, now_secs()) {
         Some(d) if d.is_zero() => {}
         // The guard is bound and then dropped explicitly. `let _ =` on a lock
@@ -829,24 +850,28 @@ fn park(horizon: Option<i64>) {
 /// One pass of the clock: fire what is due, and say when the next pass has to
 /// happen. Returns the events rather than emitting them, so the whole thing
 /// runs with the lock released before anything touches Tauri.
-fn pass() -> (Vec<JobDue>, Option<i64>) {
+fn pass() -> (Vec<JobDue>, Option<i64>, u64) {
     let mut due: Vec<JobDue> = Vec::new();
     let mut changed = false;
     let horizon;
+    // The generation this pass computed its horizon from. `park` refuses to
+    // sleep on a horizon older than what the state now says, which is what
+    // closes the window described there.
+    let seen;
     {
         let mut s = sched().lock().unwrap_or_else(|e| e.into_inner());
         ensure_loaded(&mut s);
         if !s.error.is_empty() {
             // A refused file fires nothing, and there is nothing to wake for
             // until a human fixes it and the app is restarted.
-            return (due, None);
+            return (due, None, s.generation);
         }
         // The cached horizon. A wake that the sleep cap produced finds the
         // generation unchanged and recomputes nothing at all: this is the
         // whole reason the idle cost does not grow with the number of jobs.
         let now = now_secs();
         if s.horizon_gen == s.generation && s.horizon.map(|t| t > now).unwrap_or(true) {
-            return (due, s.horizon);
+            return (due, s.horizon, s.generation);
         }
         // A job whose window died owes us nothing more. Clearing the flight
         // here, before the decision, is what lets it fire again.
@@ -883,7 +908,10 @@ fn pass() -> (Vec<JobDue>, Option<i64>) {
                     catchup,
                 } => {
                     let st = state_of(&mut s, &job.id);
+                    let was = st.last_fired_at;
                     st.last_fired_at = Some(scheduled);
+                    s.fired_from.insert(job.id.clone(), was);
+                    let st = state_of(&mut s, &job.id);
                     if dropped > 0 {
                         st.missed = st.missed.saturating_add(dropped);
                         st.last_missed_at = Some(scheduled);
@@ -916,8 +944,9 @@ fn pass() -> (Vec<JobDue>, Option<i64>) {
         s.horizon = horizon_of(&s.jobs, &s.states, &s.flight, now, &Local);
         s.horizon_gen = s.generation;
         horizon = s.horizon;
+        seen = s.generation;
     }
-    (due, horizon)
+    (due, horizon, seen)
 }
 
 /// Start the clock. One OS thread, parked for the life of the process.
@@ -942,12 +971,37 @@ pub fn jobs_ready(app: AppHandle) {
 
 pub fn start(app: AppHandle) {
     std::thread::spawn(move || loop {
-        let (due, horizon) = pass();
+        let (due, horizon, seen) = pass();
         for payload in due {
-            let _ = app.emit(JOB_DUE_EVENT, payload);
+            let job_id = payload.job.id.clone();
+            // An emit that fails is a job that nobody will ever run, and the
+            // pass above has already written it down as fired and taken its
+            // flight slot. That is the failure named in the comment on ARMED,
+            // reached by another road: the webview reloading at the moment of
+            // the tick. Rolled back here so the next pass finds it due again.
+            if app.emit(JOB_DUE_EVENT, payload).is_err() {
+                unfire(&job_id);
+            }
         }
-        park(horizon);
+        park(horizon, seen);
     });
+}
+
+/// Undo what a pass wrote for a job whose event never reached anybody.
+///
+/// The flight slot goes first: it is what would otherwise keep the row saying
+/// "running" until the deadline, and what blocks the retry. `last_fired_at` is
+/// restored to what it was before the pass, which makes the job due again on
+/// the next tick rather than at its next scheduled time.
+fn unfire(job_id: &str) {
+    let mut s = sched().lock().unwrap_or_else(|e| e.into_inner());
+    s.flight.remove(job_id);
+    if let Some(was) = s.fired_from.remove(job_id) {
+        if let Some(st) = s.states.get_mut(job_id) {
+            st.last_fired_at = was;
+        }
+    }
+    bump(&mut s);
 }
 
 // ---------------------------------------------------------------- commands
@@ -996,6 +1050,7 @@ pub fn jobs_delete(id: String) -> Result<JobsView, String> {
     s.jobs.retain(|j| j.id != id);
     s.states.remove(&id);
     s.flight.remove(&id);
+    s.fired_from.remove(&id);
     write_jobs(&schedule_dir(), &s.jobs)?;
     flush_states(&s)?;
     bump(&mut s);
@@ -1092,6 +1147,7 @@ pub fn jobs_report(
         }
         let id = sanitize_id(&id);
         s.flight.remove(&id);
+    s.fired_from.remove(&id);
         job = s.jobs.iter().find(|j| j.id == id).cloned();
         let now = now_secs();
         let st = state_of(&mut s, &id);
@@ -1685,14 +1741,63 @@ mod tests {
         );
     }
 
+    /// Serialises the tests that touch the process-wide clock state.
+    ///
+    /// `sched()` is a global, which is right for a thing there is one of and
+    /// wrong for a test runner with a thread per test: the two park tests below
+    /// both bump the generation, and each one's bump is exactly what the other
+    /// asserts cannot happen. Without this they fail each other at random.
+    fn clock_lock() -> std::sync::MutexGuard<'static, ()> {
+        static L: OnceLock<Mutex<()>> = OnceLock::new();
+        L.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// A change that lands between the pass and the park is not slept through.
+    ///
+    /// This is the lost wakeup, and it is the one that hurts: `bump` notifies
+    /// while holding the lock, and the clock thread is not yet waiting on the
+    /// condvar at that moment. With no enabled job the horizon is `None`, so
+    /// the park that follows has NO timeout, and the job just enabled would
+    /// have waited for an unrelated command to wake the clock. What the fix
+    /// pins is that `park` refuses to sleep at all when the generation it was
+    /// given is stale.
+    #[test]
+    fn a_change_that_arrives_before_the_park_is_not_slept_through() {
+        let _guard = clock_lock();
+        use std::sync::mpsc;
+        let (tx, rx) = mpsc::channel::<()>();
+        let stale = {
+            let mut s = sched().lock().unwrap_or_else(|e| e.into_inner());
+            let before = s.generation;
+            // The command that lands in the window: it bumps and notifies
+            // while nobody is waiting yet.
+            bump(&mut s);
+            before
+        };
+        std::thread::spawn(move || {
+            // No timeout at all, so this returns only because the generation
+            // it carries no longer matches.
+            park(None, stale);
+            let _ = tx.send(());
+        });
+        assert!(
+            rx.recv_timeout(Duration::from_secs(2)).is_ok(),
+            "park slept on a horizon computed before a change it was told about"
+        );
+    }
+
     #[test]
     fn a_command_wakes_the_clock_instead_of_making_it_poll_for_the_change() {
+        let _guard = clock_lock();
         // Real threads and a real wall clock: the park is entered with no
         // timeout, and the notify is the only thing that can end it.
         use std::sync::mpsc;
         let (tx, rx) = mpsc::channel::<()>();
+        let seen = sched().lock().unwrap_or_else(|e| e.into_inner()).generation;
         let parked = std::thread::spawn(move || {
-            park(None);
+            park(None, seen);
             let _ = tx.send(());
         });
         std::thread::sleep(Duration::from_millis(120));
