@@ -4571,13 +4571,6 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
     }
     // Released on every path out, including the early returns and a panic.
     let _done = Done;
-    // The generation as it stands BEFORE the slow preamble below, which reads
-    // the engine binary and every dylib, probes the machine and plans the
-    // cache. `server_stop` bumps this counter, so comparing it after the spawn
-    // is how a Stop pressed during those seconds reaches a process that did not
-    // exist when the button was clicked. Without it, Stop found no child, did
-    // nothing, and the model finished loading anyway.
-    let entry_gen = SERVER_GEN.load(Ordering::SeqCst);
     let root = galactus_root()?;
     let entry = registry_entry(&root, &model_id)?;
     require_certified_model(&entry)?;
@@ -4665,6 +4658,19 @@ async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -
     // Every deterministic preflight has succeeded. Only now may this request
     // replace the active server.
     server_stop_impl()?;
+    // The generation to beat, read AFTER that stop and not before it.
+    //
+    // WHY THE ORDER IS THE WHOLE FIX. `server_stop_impl` bumps this counter,
+    // which is what lets a Stop reach a start that has not spawned anything
+    // yet. Reading the counter at the top of this function therefore compared
+    // against a value that this function's OWN internal stop had already
+    // invalidated, so the check below fired on every start and every model
+    // refused to load with "cancelled". Read here, the only thing that can
+    // move it is a Stop the user pressed during the slow part that follows:
+    // the engine binary and every dylib read to verify the patches, the
+    // machine probe, the cache plan, which together are the seconds where
+    // Stop used to do nothing at all.
+    let entry_gen = SERVER_GEN.load(Ordering::SeqCst);
     reap_orphan_servers(&root);
     let port = pick_free_port()?;
 
@@ -9170,6 +9176,52 @@ with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
         assert!(answer.contains("\"replaced\": 0"), "got: {answer}");
         assert!(!out.exists(), "a file was written for an edit that did not happen");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// The counter that lets Stop reach a start, and the trap it comes with.
+#[cfg(test)]
+mod server_generation_tests {
+    use super::*;
+
+    /// A start must not be cancelled by the stop it performs itself.
+    ///
+    /// WHAT THIS PINS, and it shipped broken. `server_start` stops whatever is
+    /// running before launching the next model, and `server_stop_impl` bumps
+    /// SERVER_GEN so that a Stop pressed during the slow preflight can reach a
+    /// process that does not exist yet. Read the counter at the top of
+    /// `server_start` and it is compared against a value the function's own
+    /// internal stop has already moved: the check fires every time, and every
+    /// model refuses to load with "cancelled". The counter has to be read
+    /// AFTER that stop, and the difference between the two readings is what
+    /// this test states.
+    #[test]
+    fn a_start_reads_its_generation_after_its_own_stop_and_not_before() {
+        static LOCK: Mutex<()> = Mutex::new(());
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let too_early = SERVER_GEN.load(Ordering::SeqCst);
+        // The internal stop every start performs. With no child it is a no-op
+        // apart from the thing that matters here.
+        server_stop_impl().expect("stopping nothing is not a failure");
+        let entry_gen = SERVER_GEN.load(Ordering::SeqCst);
+        assert_ne!(
+            too_early, entry_gen,
+            "the internal stop is expected to bump the counter: that is the whole trap"
+        );
+
+        // What the start does next, and what it checks.
+        let generation = SERVER_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+        assert_eq!(
+            generation,
+            entry_gen + 1,
+            "a start that read the counter after its own stop must not refuse itself"
+        );
+        assert_ne!(
+            generation,
+            too_early + 1,
+            "reading before the stop is what shipped, and it cancelled every start"
+        );
     }
 }
 
