@@ -218,8 +218,75 @@ export function commandWriteTargets(cmd: string): string[] {
   return out.map((p) => p.replace(/^~(?=\/|$)/, "/Users/x"));
 }
 
+/**
+ * Does this command install a Python package into the machine's own Python?
+ *
+ * WHY THIS IS NOT A DETAIL. A model asked to read a spreadsheet opened its work
+ * with `python3 -m pip install --quiet --break-system-packages xlsx2csv`, which
+ * ran and returned exit 0. That flag exists for one purpose: to override the
+ * refusal that protects a system interpreter. The package was not even needed,
+ * since read_document reads .xlsx directly, so a permanent change was made to
+ * the machine to reach something already available.
+ *
+ * Every command runs in a FRESH shell here, so a virtualenv can only be active
+ * if this very command line activates it or names its interpreter. That makes
+ * the test precise rather than a guess: an install with no venv on the line is
+ * an install into the machine's Python.
+ *
+ * Elevated, not refused. Installing a package is a legitimate thing to want;
+ * doing it to the system interpreter without the user seeing it is not.
+ */
+export function isSystemPythonInstall(cmd: string): boolean {
+  // Isolation is judged on the WHOLE line, not per segment: `segments` cuts at
+  // `&&`, and `source .venv/bin/activate && pip install x` puts the activation
+  // in one segment and the install in the next. Judging them separately called
+  // that an install into the machine, which is the opposite of the truth.
+  const isolated =
+    /(^|\s)(source|\.)\s+\S*activate\b/.test(cmd) ||
+    /(^|\s)\S*(\.venv|venv|env)\/bin\//.test(cmd) ||
+    /(^|\s)pipx(\s|$)/.test(cmd) ||
+    /\bVIRTUAL_ENV=/.test(cmd) ||
+    /\buv\s+run\b/.test(cmd) ||
+    /\bconda\b/.test(cmd) ||
+    /\s--(target|prefix)(\s|=)/.test(cmd);
+  if (isolated) return false;
+
+  for (const seg of segments(cmd)) {
+    let toks = words(seg).map(unquote);
+    // Leading assignments: `VAR=1 pip install x` still runs pip.
+    let i = 0;
+    while (i < toks.length && /^\w+=/.test(toks[i])) i++;
+    if (i >= toks.length) continue;
+    // The command actually RUN, by basename. Looking for "pip" anywhere in the
+    // tokens instead called `echo 'pip install x' > notes.txt` an install,
+    // because the quoted string tokenises like a command line.
+    const head = unquote(toks[i]).split("/").pop() ?? "";
+    let rest = toks.slice(i + 1);
+    if (head === "python" || head === "python3" || head === "uv") {
+      // `python -m pip install …`, `uv pip install …`
+      const m = rest.indexOf("-m");
+      if (head === "uv") {
+        if (rest[0] !== "pip") continue;
+        rest = rest.slice(1);
+      } else if (m >= 0 && rest[m + 1] === "pip") {
+        rest = rest.slice(m + 2);
+      } else {
+        continue;
+      }
+    } else if (head !== "pip" && head !== "pip3" && head !== "easy_install") {
+      continue;
+    }
+    if (head === "easy_install") return true;
+    // The subcommand is the first thing that is not a flag: `pip list` and
+    // `pip show x` are not installs and must not ask for anything.
+    if (rest.find((tk) => !tk.startsWith("-")) === "install") return true;
+  }
+  return false;
+}
+
 export function isElevatedCommand(cmd: string): boolean {
   if (ELEVATED_PATTERNS.some((re) => re.test(cmd))) return true;
+  if (isSystemPythonInstall(cmd)) return true;
   // Destructive rm in ANY flag layout: `rm -rf`, `rm -r -f`, `rm --recursive`,
   // `rm -f x` … Scan EVERY `rm` token by BASENAME: `/bin/rm` must not slip past
   // a whole-token compare, and an indexOf of the first occurrence misses

@@ -25,6 +25,84 @@ export interface ChatMessage {
 }
 
 /**
+ * Marks the message that carries the condensed earlier history.
+ *
+ * WHY THE SUMMARY IS A MESSAGE AND NOT PART OF THE SYSTEM PROMPT. It used to be
+ * appended to the prompt, and the prompt is the first thing the engine
+ * tokenises: changing it moves the point where the KV cache diverges back to
+ * token zero, so every turn after the first compaction re-read the system
+ * prompt and all 25 tool schemas, eight to nine thousand tokens, at the 171
+ * tokens a second measured on this machine, about a minute of nothing. As its
+ * own message right after the prompt, the cached block survives and only what
+ * genuinely changed is re-read.
+ *
+ * A `user` message rather than a second `system` one: many chat templates only
+ * render a system role in first position and quietly drop or mis-render one in
+ * the middle, and a summary that silently disappears is worse than none.
+ */
+export const SUMMARY_MARK = "[Earlier in this conversation]";
+
+/** The carrier for a given summary. Always the same bytes for the same text. */
+export function summaryMessage<T extends ChatMessage>(summary: string): T {
+  return {
+    role: "user",
+    content:
+      SUMMARY_MARK +
+      " Faithful summary of the EARLIER part of this conversation (auto-condensed to keep " +
+      "the context clean; treat as established facts, do not re-derive or embellish them, " +
+      "and do not reply to this message):\n" +
+      summary.trim(),
+  } as T;
+}
+
+/** True for the carrier and nothing else. */
+export function isSummaryMessage(m: ChatMessage | undefined): boolean {
+  return (
+    !!m && m.role === "user" && typeof m.content === "string" && m.content.startsWith(SUMMARY_MARK)
+  );
+}
+
+/** Where the carrier sits, or -1. It is always index 1 when present. */
+export function summaryIndex(messages: ChatMessage[]): number {
+  return isSummaryMessage(messages[1]) ? 1 : -1;
+}
+
+/**
+ * First index that is actual conversation: past the system prompt, and past the
+ * carrier when there is one. Compaction counts from here so it never folds the
+ * summary back into itself, which would lose a little more of the original on
+ * every pass.
+ */
+export function liveFrom(messages: ChatMessage[]): number {
+  return summaryIndex(messages) >= 0 ? 2 : 1;
+}
+
+/**
+ * Put the carrier at index 1, or refresh the one already there. Mutates.
+ *
+ * Refreshing rather than inserting is what keeps a long conversation from
+ * stacking one carrier per compaction.
+ */
+export function placeSummary<T extends ChatMessage>(messages: T[], summary: string): void {
+  if (!summary.trim()) return;
+  const msg = summaryMessage<T>(summary);
+  if (summaryIndex(messages) >= 0) messages[1] = msg;
+  else messages.splice(1, 0, msg);
+}
+
+/**
+ * The thread without any carrier, for a reload that will place a fresh one.
+ *
+ * A saved thread already holds the carrier, because `history()` returns the
+ * messages as they stand. Replaying it AND placing a new one would put the
+ * earlier part of the conversation in twice; the stored summary is the source
+ * of truth, so the old carrier goes.
+ */
+export function stripSummary<T extends ChatMessage>(messages: T[]): T[] {
+  return messages.filter((m) => !isSummaryMessage(m));
+}
+
+/**
  * A thread with no half-finished tool round in it.
  *
  * A conversation can be written to disk mid-turn: the app saves on a timer, on

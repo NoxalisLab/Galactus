@@ -11,6 +11,7 @@ import {
   isElevatedRead,
   isElevatedWrite,
   isElevatedMcp,
+  isSystemPythonInstall,
   isNetworkGitCommand,
 } from "../../src/sensitive.js";
 
@@ -279,4 +280,37 @@ test("a query is judged by the statement, not by the word query", () => {
   // And prose that merely mentions the words is not a statement.
   assert.equal(isElevatedMcp("search", { q: "how do I delete a row" }), false);
   assert.equal(isElevatedMcp("search", { q: "the update_at column" }), false);
+});
+
+// ---------------------------------------------- installing into the machine
+
+test("installing into the machine's Python needs a human", () => {
+  // The exact command that opened the run of 27 August, and ran unattended.
+  assert.equal(
+    isElevatedCommand("python3 -m pip install --quiet --break-system-packages xlsx2csv"),
+    true
+  );
+  assert.equal(isElevatedCommand("pip install requests"), true);
+  assert.equal(isElevatedCommand("pip3 install --user pandas"), true);
+  assert.equal(isElevatedCommand("echo ok && pip install evil"), true);
+});
+
+test("installing into an environment of its own does not", () => {
+  assert.equal(isElevatedCommand(".venv/bin/pip install requests"), false);
+  assert.equal(isElevatedCommand("/tmp/w/.venv/bin/pip install requests"), false);
+  // `source` stays elevated on its own account: it runs whatever the file says,
+  // and that rule predates this one. What matters here is that the install is
+  // not ALSO flagged as reaching the machine's Python.
+  assert.equal(
+    isSystemPythonInstall("source /tmp/w/.venv/bin/activate && pip install requests"),
+    false
+  );
+  assert.equal(isElevatedCommand("pipx install ruff"), false);
+  assert.equal(isElevatedCommand("pip install --target /tmp/libs xlsx2csv"), false);
+});
+
+test("a command that merely mentions pip is not an install", () => {
+  assert.equal(isElevatedCommand("pip list"), false);
+  assert.equal(isElevatedCommand("pip show xlsx2csv"), false);
+  assert.equal(isElevatedCommand("echo 'pip install x' > notes.txt"), false);
 });

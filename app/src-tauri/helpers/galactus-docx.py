@@ -49,7 +49,9 @@ Answers are one line of JSON on stdout, errors one line on stderr with exit 2.
 from __future__ import annotations
 
 import copy
+import difflib
 import json
+import pathlib
 import re
 import sys
 import xml.etree.ElementTree as ET
@@ -67,10 +69,54 @@ ET.register_namespace("w", W)
 # keeps the standard library as the only dependency.
 SUSPECT = re.compile(rb"<!DOCTYPE|<!ENTITY", re.I)
 
+# How close a paragraph must be to a sentence the document does not contain
+# verbatim before `apply` will let it stand in. Below this, the row is reported
+# as not found and nothing is written.
+FUZZY_MIN = 0.92
+
+# How much better than its runner-up a near match must be before it counts as
+# "the one meant". Inside this margin the row is reported as ambiguous and
+# nothing is written.
+AMBIGUOUS_BY = 0.02
+
+# How many failing rows, and how many near matches, a batch report names one by
+# one. Past this the report gives the count instead: the point of the answer is
+# to fit in the caller's window, and a list that does not fit is a list nobody
+# reads.
+REPORT_CAP = 60
+
+
+# Every xmlns declaration of a part, so the prefixes can be put back exactly.
+NS_DECL = re.compile(rb'xmlns:([A-Za-z0-9_.\-]+)="([^"]+)"')
+
+
+def register_prefixes(data: bytes) -> dict[str, str]:
+    """Teach ElementTree the prefixes this part already uses.
+
+    WHY THIS IS NOT COSMETIC. ElementTree does not keep the prefixes it read:
+    it invents ns0, ns1, ns2 for every namespace it did not know. A Word
+    document declares a dozen of them (wpc, cx, mc, aink, wps, w14...) and
+    refers to those names elsewhere, notably in mc:Ignorable and in the
+    AlternateContent blocks around every drawing. Rewriting them all breaks
+    those references, and Word answers by declaring the file damaged and
+    offering to repair it: "contenu illisible". Measured on a real notice, and
+    the reason this function exists at all.
+    """
+    found: dict[str, str] = {}
+    # The WHOLE part, not just its head: Word declares some namespaces deeper
+    # in the tree (asvg, on a drawing), and ElementTree hoists those to the
+    # root under an invented name unless it has been told the real one.
+    for prefix, uri in NS_DECL.findall(data):
+        prefix_s, uri_s = prefix.decode(), uri.decode()
+        found[prefix_s] = uri_s
+        ET.register_namespace(prefix_s, uri_s)
+    return found
+
 
 def parse_part(data: bytes) -> ET.Element:
     if SUSPECT.search(data[:8192]):
         fail("this document declares XML entities, which Word does not do: refusing to expand them")
+    register_prefixes(data)
     return ET.fromstring(data)
 
 
@@ -150,6 +196,21 @@ class Scope:
         self.start, self.end = between if between else (None, None)
         self.paragraph = paragraph
         self.occurrence = occurrence
+
+    def allowed_indices(self, paras: list, texts: list) -> list:
+        """The same choice as `allowed`, on a cached text list."""
+        first, last = 0, len(paras)
+        if self.start:
+            begin = next((i for i, t in enumerate(texts) if self.start in t), None)
+            if begin is None:
+                return []
+            first = begin
+            if self.end:
+                last = next((i for i in range(begin + 1, len(texts)) if self.end in texts[i]), len(paras))
+        if self.paragraph:
+            i = self.paragraph - 1
+            return [i] if first <= i < last else []
+        return list(range(first, last))
 
     def allowed(self, paras: list[ET.Element]) -> list[ET.Element]:
         chosen = paras
@@ -256,6 +317,67 @@ def replace_nth_in_paragraph(para: ET.Element, needle: str, replacement: str, nt
     return 1
 
 
+def replace_whole_paragraph(para: ET.Element, replacement: str) -> int:
+    """Put `replacement` in place of EVERYTHING this paragraph says.
+
+    The near-match path needs this and nothing else does. When the table's
+    sentence and the document's sentence differ by a comma, there is no
+    substring to swap: the only honest operation is "this paragraph now reads
+    that". The whole replacement lands in the first run, which is the rule
+    replace_in_paragraph already follows, so the paragraph keeps its font, its
+    size and its weight; the later runs are emptied rather than removed, so the
+    paragraph keeps its shape for Word.
+    """
+    nodes = text_nodes(para)
+    if not nodes:
+        return 0
+    nodes[0].text = replacement
+    preserve_space(nodes[0])
+    for node in nodes[1:]:
+        node.text = ""
+        preserve_space(node)
+    return 1
+
+
+def first_run_props(para: ET.Element) -> ET.Element | None:
+    """The run formatting of a paragraph: its font, its size, its colour.
+
+    LOOKED FOR RECURSIVELY, and that is the whole point. A direct-child search
+    finds nothing in a document with tracked changes, because Word wraps every
+    inserted run in <w:ins>, and it finds nothing inside a hyperlink either. A
+    new paragraph then carries no run properties at all and Word draws it in
+    the document default: measured on a real notice, Arial everywhere and the
+    inserted lines in the theme font, which is exactly the kind of difference
+    a reader notices immediately and a test never does.
+
+    Nested paragraphs are skipped for the same reason `text_nodes` skips them:
+    a text box has its own formatting and it is not this paragraph's.
+
+    The paragraph mark's own properties are the fallback. Word keeps the
+    formatting of an empty paragraph there, so on a paragraph whose runs carry
+    nothing it is the only place the font is written down.
+    """
+    def walk(node: ET.Element):
+        for child in node:
+            if child.tag == f"{{{W}}}p":
+                continue
+            if child.tag == f"{{{W}}}r":
+                found = child.find(f"{{{W}}}rPr")
+                if found is not None:
+                    return found
+            hit = walk(child)
+            if hit is not None:
+                return hit
+        return None
+
+    found = walk(para)
+    if found is None:
+        props = para.find(f"{{{W}}}pPr")
+        if props is not None:
+            found = props.find(f"{{{W}}}rPr")
+    return copy.deepcopy(found) if found is not None else None
+
+
 def new_paragraph(template: ET.Element | None, text: str) -> ET.Element:
     """A paragraph carrying `text`, styled like `template` when there is one.
 
@@ -269,11 +391,7 @@ def new_paragraph(template: ET.Element | None, text: str) -> ET.Element:
         props = template.find(f"{{{W}}}pPr")
         if props is not None:
             para.append(copy.deepcopy(props))
-        run = template.find(f"{{{W}}}r")
-        if run is not None:
-            found = run.find(f"{{{W}}}rPr")
-            if found is not None:
-                run_props = copy.deepcopy(found)
+        run_props = first_run_props(template)
     run = ET.SubElement(para, f"{{{W}}}r")
     if run_props is not None:
         run.append(run_props)
@@ -314,10 +432,48 @@ def write_docx(src: str, out: str, edited: dict[str, bytes]) -> None:
             dst.writestr(info, data)
 
 
-def serialise(root: ET.Element) -> bytes:
-    return b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' + ET.tostring(
-        root, encoding="utf-8", xml_declaration=False
-    )
+def root_tag_of(data: bytes) -> bytes:
+    """The opening tag of the root ELEMENT, skipping the XML declaration.
+
+    Written out because the obvious one-liner is wrong in a way that hides
+    itself: the first '>' in the file closes `<?xml ... ?>`, so a search for it
+    returns a declaration that carries no namespace at all, and the restoration
+    below silently has nothing to restore.
+    """
+    i = 0
+    while 0 <= i < len(data):
+        i = data.find(b"<", i)
+        if i < 0:
+            return b""
+        if data[i + 1 : i + 2] not in (b"?", b"!"):
+            end = data.find(b">", i)
+            return data[i : end + 1] if end > 0 else b""
+        i = data.find(b">", i) + 1
+    return b""
+
+
+def serialise(root: ET.Element, original: bytes = b"") -> bytes:
+    """The part, with every namespace declaration the original carried.
+
+    Registering the prefixes is not enough on its own: ElementTree only writes
+    a declaration for a namespace it actually used, and a Word document names
+    prefixes in places ElementTree cannot see them, above all the mc:Ignorable
+    attribute whose VALUE is a list of prefix names. Dropping those turns a
+    valid file into one Word offers to repair, so the declarations that went
+    missing are put back on the root tag.
+    """
+    body = ET.tostring(root, encoding="utf-8", xml_declaration=False)
+    if original:
+        want = NS_DECL.findall(root_tag_of(original))
+        end = body.find(b">")
+        if end > 0:
+            head = body[:end]
+            missing = b"".join(
+                b' xmlns:%s="%s"' % (p, u) for p, u in want if b"xmlns:%s=" % p not in head
+            )
+            if missing:
+                body = head + missing + body[end:]
+    return b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' + body
 
 
 def each_text_part(z: zipfile.ZipFile):
@@ -368,7 +524,8 @@ def command_replace(src: str, out: str, needle: str, replacement: str, scope: Sc
     seen = 0  # matches walked past, for --occurrence
     with z:
         for name in each_text_part(z):
-            root = parse_part(z.read(name))
+            data = z.read(name)
+            root = parse_part(data)
             allowed = scope.allowed(list(paragraphs(root)))
             count = 0
             for para in allowed:
@@ -390,7 +547,7 @@ def command_replace(src: str, out: str, needle: str, replacement: str, scope: Sc
                 else:
                     count += replace_in_paragraph(para, needle, replacement)
             if count:
-                edited[name] = serialise(root)
+                edited[name] = serialise(root, data)
                 total += count
             if scope.occurrence and total:
                 break
@@ -414,7 +571,8 @@ def command_insert(src: str, out: str, after: str, text: str) -> None:
     added = 0
     with z:
         for name in each_text_part(z):
-            root = parse_part(z.read(name))
+            data = z.read(name)
+            root = parse_part(data)
             parents = parent_map(root)
             targets = [p for p in paragraphs(root) if after in joined(text_nodes(p))]
             for para in targets:
@@ -425,7 +583,7 @@ def command_insert(src: str, out: str, after: str, text: str) -> None:
                 parent.insert(kids.index(para) + 1, new_paragraph(para, text))
                 added += 1
             if targets:
-                edited[name] = serialise(root)
+                edited[name] = serialise(root, data)
     if added == 0:
         say({"inserted": 0, "parts": []})
         return
@@ -441,7 +599,8 @@ def command_append(src: str, out: str, text: str) -> None:
     with z:
         if name not in z.namelist():
             fail("this .docx has no word/document.xml")
-        root = parse_part(z.read(name))
+        data = z.read(name)
+        root = parse_part(data)
         body = root.find(f"{{{W}}}body")
         if body is None:
             fail("this .docx has no body")
@@ -456,7 +615,7 @@ def command_append(src: str, out: str, text: str) -> None:
             body.insert(list(body).index(section), paragraph)
         else:
             body.append(paragraph)
-        edited = {name: serialise(root)}
+        edited = {name: serialise(root, data)}
     write_docx(src, out, edited)
     say({"appended": 1})
 
@@ -498,6 +657,337 @@ def take_scope(argv: list[str]) -> tuple[list[str], Scope]:
     return rest, Scope(between, paragraph, occurrence)
 
 
+def command_apply(src: str, out: str, plan_path: str) -> None:
+    """Apply a whole batch of edits in ONE pass, and report on every row.
+
+    WHY THIS EXISTS, and it is the difference between a usable tool and a
+    demonstration. Driving edits one call per row through a model costs a
+    prompt round trip each time: on a real job, 93 rows across 15 languages is
+    around 1400 operations, which at thirty to sixty seconds a turn is a night
+    of work with nothing to show halfway through. The model belongs at the
+    start, to read the table and decide WHAT to do; the doing is mechanical and
+    belongs here. The same batch runs in under a second.
+
+    The plan is JSON: {"edits": [{"id": ..., "op": "replace"|"insert",
+    "find": ..., "replace": ..., "text": ..., "between_start": ...,
+    "between_end": ..., "occurrence": N}], "fuzzy": 0.92}. A row that cannot be
+    applied stops nothing: it is reported and the rest proceeds, which is what
+    makes the answer a worklist rather than a failure.
+
+    The answer names the rows that FAILED and the rows that matched only
+    approximately, and counts the rest. Returning all of them was how a
+    successful batch of 414 became an unreadable 37 KB; see the comment on the
+    payload at the end of this function.
+
+    NOTHING IS WRITTEN IF NOTHING APPLIED, for the same reason a single replace
+    writes nothing when it matches nothing: a copy that changed in no way must
+    not be mistaken for a finished job.
+    """
+    try:
+        plan = json.loads(pathlib.Path(plan_path).read_text())
+    except Exception as exc:  # noqa: BLE001
+        fail(f"cannot read the plan: {exc}")
+    edits = plan.get("edits") if isinstance(plan, dict) else plan
+    if not isinstance(edits, list) or not edits:
+        fail("the plan carries no edits")
+    # How close a paragraph must be to stand in for a sentence that was not
+    # found exactly. `"fuzzy": false` turns the repair off, a number moves the
+    # bar; the default is high enough that only a punctuation or a wording
+    # detail gets through, and low enough to catch what a translation table
+    # actually looks like.
+    fuzzy = FUZZY_MIN
+    if isinstance(plan, dict) and "fuzzy" in plan:
+        raw_fuzzy = plan.get("fuzzy")
+        if raw_fuzzy is False:
+            fuzzy = 0.0
+        elif isinstance(raw_fuzzy, (int, float)) and not isinstance(raw_fuzzy, bool):
+            fuzzy = min(1.0, max(0.6, float(raw_fuzzy)))
+
+    z, _ = read_parts(src)
+    with z:
+        raw = {name: z.read(name) for name in each_text_part(z)}
+        parts = {name: parse_part(data) for name, data in raw.items()}
+
+    # The paragraphs and their text, read ONCE.
+    #
+    # WHY THIS IS NOT A DETAIL. Walking the tree and joining the runs costs the
+    # same whether it happens once or four hundred times, and a real batch is
+    # four hundred edits over fifteen thousand paragraphs: measured at 115
+    # seconds recomputing per edit, against a couple of seconds when the text
+    # is read once and refreshed only where something changed. The cache is
+    # invalidated per paragraph, not globally, so an edit still sees what the
+    # edits before it did.
+    index = {name: list(paragraphs(root)) for name, root in parts.items()}
+    cache = {name: [joined(text_nodes(p)) for p in paras] for name, paras in index.items()}
+
+    report = []
+    touched: set[str] = set()
+    for i, e in enumerate(edits):
+        if not isinstance(e, dict):
+            report.append({"id": i, "status": "refused", "why": "not an object"})
+            continue
+        ident = e.get("id", i)
+        op = str(e.get("op") or "replace")
+        needle = str(e.get("find") or "")
+        scope = Scope(
+            between=(str(e.get("between_start") or ""), str(e.get("between_end") or ""))
+            if e.get("between_start")
+            else None,
+            paragraph=int(e.get("paragraph") or 0),
+            occurrence=int(e.get("occurrence") or 0),
+        )
+        if not needle:
+            report.append({"id": ident, "status": "refused", "why": "no text to look for"})
+            continue
+        done = 0
+        where = []
+        for name, root in parts.items():
+            paras = index[name]
+            texts = cache[name]
+            allowed = scope.allowed_indices(paras, texts)
+            if op == "replace":
+                replacement = str(e.get("replace") or "")
+                if not replacement:
+                    break
+                for k in allowed:
+                    if needle not in texts[k]:
+                        continue
+                    n = replace_in_paragraph(paras[k], needle, replacement)
+                    if n:
+                        done += n
+                        where.append(name)
+                        texts[k] = joined(text_nodes(paras[k]))
+            elif op == "insert":
+                text = str(e.get("text") or "")
+                if not text:
+                    break
+                targets = [k for k in allowed if needle in texts[k]]
+                if targets:
+                    parents = parent_map(root)
+                for k in targets:
+                    para = paras[k]
+                    parent = parents.get(para)
+                    if parent is None:
+                        continue
+                    kids = list(parent)
+                    fresh = new_paragraph(para, text)
+                    parent.insert(kids.index(para) + 1, fresh)
+                    # The new paragraph joins the index right after its
+                    # neighbour, so a later edit can find it too.
+                    paras.insert(k + 1, fresh)
+                    texts.insert(k + 1, text)
+                    done += 1
+                    where.append(name)
+            else:
+                report.append({"id": ident, "status": "refused", "why": f"unknown op {op}"})
+                break
+        else:
+            if done:
+                touched.update(where)
+                report.append({"id": ident, "status": "applied", "count": done,
+                               "parts": sorted(set(where))})
+                continue
+            # NOT FOUND EXACTLY. Before giving up, look at what the document
+            # actually says, because the answer is usually one comma away.
+            #
+            # WHY THIS MATTERS MORE THAN IT SOUNDS. On the run that prompted
+            # this, 91 of 414 rows came back "not found" and EVERY ONE of them
+            # carried "closest match 95%" with the exact difference spelled
+            # out: the tool knew where the sentence was, knew what separated
+            # the two, and wrote nothing. A table of translations never quotes
+            # its source document to the character; refusing anything short of
+            # a byte-perfect match is refusing the normal case.
+            #
+            # The repair is deliberately narrow. Only `replace`, only above
+            # FUZZY_MIN, never when the row asked for a numbered occurrence
+            # (whole-paragraph substitution cannot honour "the second match"),
+            # and every one of them is named in the report with its score and
+            # its difference, so a near match is something the user reviews
+            # rather than something that happened to them.
+            replacement = str(e.get("replace") or "")
+            close: list[tuple[float, str, int, str]] = []
+            ambiguous = 0
+            if fuzzy and op == "replace" and replacement and not scope.occurrence:
+                close = [m for m in near(cache, needle) if m[0] >= fuzzy]
+                if close and (scope.start or scope.paragraph):
+                    allow = {
+                        name: set(scope.allowed_indices(index[name], cache[name]))
+                        for name in parts
+                    }
+                    close = [m for m in close if m[2] in allow.get(m[1], ())]
+                # ONE NEAR MATCH, OR NONE. An exact replace may fire everywhere
+                # because every hit is the same string; a near match may not,
+                # because every candidate is by definition a DIFFERENT sentence.
+                # A notice whose boilerplate repeats with a changing reference
+                # number produces forty paragraphs above the bar, and applying
+                # to all of them would overwrite thirty-nine sentences the row
+                # never meant — measured at exactly forty on the fixture that
+                # caught this. So when the runner-up is as close as the winner,
+                # nothing is written and the row says so: the caller narrows it
+                # with between_start, paragraph or occurrence, which is what
+                # those arguments are for.
+                if len(close) > 1 and close[1][0] >= close[0][0] - AMBIGUOUS_BY:
+                    ambiguous = sum(1 for m in close if m[0] >= close[0][0] - AMBIGUOUS_BY)
+                    close = []
+                else:
+                    close = close[:1]
+            for _, name, k, _text in close:
+                paras, texts = index[name], cache[name]
+                if k >= len(paras):
+                    continue
+                if replace_whole_paragraph(paras[k], replacement):
+                    done += 1
+                    where.append(name)
+                    texts[k] = joined(text_nodes(paras[k]))
+            if done:
+                touched.update(where)
+                report.append({"id": ident, "status": "near match", "count": done,
+                               "ratio": round(close[0][0], 3),
+                               "why": gap(needle, close[0][3]),
+                               "parts": sorted(set(where))})
+            elif ambiguous:
+                report.append({"id": ident, "status": "ambiguous", "candidates": ambiguous,
+                               "why": f"{ambiguous} paragraphs are equally close to this sentence and "
+                                      "none is clearly the one meant; narrow the row with "
+                                      "between_start, paragraph or occurrence"})
+            else:
+                # The single most useful thing to say about a row that failed:
+                # WHY it failed, in the document's own words. difflib is in the
+                # standard library and turns "not found" into "the document
+                # says the same sentence with something extra".
+                report.append({"id": ident, "status": "not found",
+                               "why": nearest_hint(cache, needle)})
+            continue
+        if not report or report[-1].get("id") != ident:
+            report.append({"id": ident, "status": "refused", "why": "missing replacement text"})
+
+    exact = [r for r in report if r["status"] == "applied"]
+    fuzzed = [r for r in report if r["status"] == "near match"]
+    failed = [r for r in report if r["status"] not in ("applied", "near match")]
+    written = bool(exact or fuzzed)
+    if written:
+        edited = {name: serialise(root, raw[name]) for name, root in parts.items() if name in touched}
+        write_docx(src, out, edited)
+
+    # WHAT A BATCH REPORT IS FOR, and the previous answer got it backwards.
+    #
+    # It used to return a verdict for all 414 rows, successes included: 37 KB
+    # of JSON, of which 323 entries said "applied" and nothing else. That
+    # overflowed the caller's window, which spilled it to a scratch file,
+    # which the model then tried to read back, which overflowed again. The job
+    # had SUCCEEDED — 323 rows written to disk — and the user was told nothing
+    # at all, because the good news was too long to deliver.
+    #
+    # So: counts for what worked, detail only for what did not, and for the
+    # near matches, which are the rows a human may want to overrule. Both
+    # lists are capped, and when a cap bites it says so with the number it
+    # dropped, because a silently shortened list reads as a complete one.
+    body: dict = {
+        "applied": len(exact) + len(fuzzed),
+        "exact": len(exact),
+        "near_match": len(fuzzed),
+        "failed": len(failed),
+        "total": len(edits),
+        "written": written,
+        "out": out if written else "",
+    }
+    if fuzzed:
+        body["near_matches"] = fuzzed[:REPORT_CAP]
+        if len(fuzzed) > REPORT_CAP:
+            body["near_matches_omitted"] = len(fuzzed) - REPORT_CAP
+    if failed:
+        body["failures"] = failed[:REPORT_CAP]
+        if len(failed) > REPORT_CAP:
+            body["failures_omitted"] = len(failed) - REPORT_CAP
+    say(body)
+
+
+def flatten(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def scan_near(cache: dict, needle: str) -> list[tuple[float, str, int, str]]:
+    """Every paragraph close to `needle`, best first, WITH WHERE IT IS.
+
+    ONE CHEAP FILTER MAKES THIS AFFORDABLE, and without it a batch spends more
+    time on its failures than on its work. Measured on a real notice of fifteen
+    thousand paragraphs with four hundred edits: 87 seconds, nearly all of it
+    here. The full comparison runs only on the handful of paragraphs that
+    survive `quick_ratio`, which bounds the real ratio from above and costs a
+    fraction of it.
+
+    The position travels with the ratio because the caller does two different
+    things with the answer: explain a failure, or repair it in place.
+    """
+    flat = flatten(needle)
+    shortlist: list[tuple[float, str, int, str]] = []
+    for name, texts in cache.items():
+        for k, raw in enumerate(texts):
+            text = flatten(raw)
+            if not text or abs(len(text) - len(flat)) > max(80, len(flat)):
+                continue
+            m = difflib.SequenceMatcher(None, flat, text)
+            if m.quick_ratio() < 0.6:
+                continue
+            shortlist.append((m.quick_ratio(), name, k, text))
+    shortlist.sort(key=lambda row: -row[0])
+    scored = [
+        (difflib.SequenceMatcher(None, flat, text).ratio(), name, k, text)
+        for _, name, k, text in shortlist[:40]
+    ]
+    scored.sort(key=lambda row: -row[0])
+    return scored
+
+
+_NEAR: dict[str, list[tuple[float, str, int, str]]] = {}
+
+
+def near(cache: dict, needle: str) -> list[tuple[float, str, int, str]]:
+    """`scan_near`, memoised on the sentence and revalidated against the cache.
+
+    A translation matrix asks for the same source sentence once per language:
+    fourteen identical scans where one is needed. But the answer carries
+    positions, and an earlier edit may have changed the very paragraph it points
+    at, so the memo is trusted only while the text it remembered is still there.
+    Anything else, and it is computed again rather than applied to a paragraph
+    that has moved on.
+    """
+    remembered = _NEAR.get(needle)
+    if remembered is not None:
+        for _, name, k, text in remembered:
+            texts = cache.get(name)
+            if texts is None or k >= len(texts) or flatten(texts[k]) != text:
+                remembered = None
+                break
+    if remembered is None:
+        remembered = scan_near(cache, needle)
+        _NEAR[needle] = remembered
+    return remembered
+
+
+def nearest_hint(cache: dict, needle: str) -> str:
+    """The closest paragraph to a sentence that was not found, and the gap."""
+    matches = near(cache, needle)
+    if not matches or matches[0][0] < 0.6:
+        return "nothing close to it in this document"
+    best_ratio, _, _, best = matches[0]
+    return f"closest match {best_ratio:.0%}: " + gap(needle, best)
+
+
+def gap(needle: str, other: str) -> str:
+    """What separates two sentences, in words rather than in opcodes."""
+    flat = flatten(needle)
+    diff = []
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, flat, other).get_opcodes():
+        if tag == "delete":
+            diff.append(f"the document lacks {flat[i1:i2][:40]!r}")
+        elif tag == "insert":
+            diff.append(f"the document adds {other[j1:j2][:40]!r}")
+        elif tag == "replace":
+            diff.append(f"{flat[i1:i2][:30]!r} is {other[j1:j2][:30]!r} in the document")
+    return "; ".join(diff[:3]) or "no visible difference"
+
+
 def main(raw: list[str]) -> None:
     argv, scope = take_scope(raw)
     if len(argv) < 3:
@@ -519,6 +1009,10 @@ def main(raw: list[str]) -> None:
         if len(argv) < 5:
             fail("usage: append <in.docx> <out.docx> <text>")
         command_append(path, argv[3], argv[4])
+    elif op == "apply":
+        if len(argv) < 5:
+            fail("usage: apply <in.docx> <out.docx> <plan.json>")
+        command_apply(path, argv[3], argv[4])
     else:
         fail(f"unknown operation: {op}")
 

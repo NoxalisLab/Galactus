@@ -99,11 +99,56 @@ Pour `insert`, `x` et `y` sont en points depuis le coin **bas gauche**, et une p
 
 `append` ajoute une page en fin de document et conserve la taille de la dernière page. C'est la bonne réponse quand le tableau apporte plus de texte qu'une phrase.
 
-## 5. En série
+## 5. Tout le lot en un seul appel : `apply`
+
+Sur un Word, n'enchaîne pas quatre cents `replace`. Chacun coûte un aller-retour au modèle, soit une nuit de travail pour un tableau ordinaire. Écris le lot dans un fichier JSON et donne-le à `apply`, qui le passe en une fois :
+
+```
+edit_document(operation: "apply", path, out, plan: "/chemin/plan.json")
+```
+
+```json
+{"edits": [
+  {"id": "ligne 2 ES", "op": "replace", "find": "…", "replace": "…"},
+  {"id": "ligne 3 ES", "op": "insert",  "find": "…", "text": "…"}
+]}
+```
+
+L'`id` est à toi : mets-y la coordonnée de la ligne dans le tableau, c'est ce qui rendra le rapport lisible pour l'utilisateur.
+
+### Lire la réponse
+
+Elle est volontairement courte : des compteurs pour ce qui a marché, le détail **seulement** pour ce qui n'a pas marché.
+
+| Champ | Ce qu'il dit |
+|---|---|
+| `applied` / `total` | combien de lignes sur combien |
+| `exact` | appliquées au caractère près |
+| `near_match` | appliquées sur une **quasi-correspondance** |
+| `failed` | non appliquées, inchangées dans la sortie |
+| `written` | `false` signifie **qu'aucun fichier n'existe** |
+| `out` | le chemin du fichier produit |
+| `near_matches`, `failures` | le détail, ligne par ligne, plafonné |
+
+Une **quasi-correspondance** est une ligne dont le document dit presque la phrase du tableau : une virgule en plus, un mot d'écart. C'est le cas normal, pas l'exception : une table de traduction ne cite jamais son document au caractère près. L'outil remplace alors le paragraphe entier et te donne son score et l'écart exact. **Annonce leur nombre à l'utilisateur** : ce sont les lignes qu'il voudra peut-être revoir.
+
+Un statut `ambiguous` veut dire que plusieurs paragraphes sont aussi proches les uns que les autres, donc qu'aucun n'est clairement celui visé. Rien n'est écrit pour cette ligne, et c'est délibéré : resserre-la avec `between_start`, `paragraph` ou `occurrence`, ou pose la question.
+
+Si le rapport te paraît tronqué, il ne l'est pas : `failures_omitted` et `near_matches_omitted` disent combien de lignes ne sont pas nommées. N'essaie pas de récupérer la liste complète, elle n'existe pas ; les compteurs sont la réponse.
+
+## 6. En série
 
 Une ligne du tableau, un fichier de sortie. Nomme les sorties de façon prévisible (`facture-042-modifiee.pdf`) et tiens un compte : traités, ignorés, et pour quelle raison. À la fin, donne ce décompte plutôt qu'un « c'est fait ».
 
 Après chaque écriture, **relis le résultat** avec `read_document` sur le fichier produit. Sur une page remplacée, la couche texte est vide (la page est devenue une image) : c'est le signe que le remplacement a bien effacé l'ancien texte. Utilise alors `read_document(path, mode: "ocr")` pour vérifier ce qui est réellement visible.
+
+## 7. Vérifie le fichier produit, toujours
+
+Un document peut être écrit sans erreur et rester illisible pour Word. C'est déjà arrivé sur cette chaîne : les préfixes de namespace du fichier avaient été renommés à la réécriture, si bien que Word ouvrait le document, annonçait « contenu illisible » et proposait de le réparer. Rien ne l'avait signalé côté outil, puisque le XML restait valide.
+
+Donc, après chaque écriture, relis le résultat avec `read_document`. Si le texte revient normalement, le fichier s'ouvre. Si la lecture échoue ou revient vide alors que le rapport annonce des opérations appliquées, **ne dis pas que c'est fait** : signale que le fichier produit est suspect et arrête-toi là.
+
+Sur un lot, cette relecture se fait une fois, à la fin, sur le document produit. Elle coûte un appel et elle est la seule preuve que le travail est utilisable.
 
 ## Garde-fous
 
@@ -112,3 +157,4 @@ Après chaque écriture, **relis le résultat** avec `read_document` sur le fich
 - Un rétrécissement sous 0,7 se signale ; ne laisse pas l'utilisateur le découvrir à l'impression.
 - Un PDF scanné ne peut pas être modifié par recherche de texte : constate-le et propose l'ajout d'une page ou d'une mention à une position donnée.
 - Sur un lot, arrête-toi à la première anomalie inattendue et rends compte, plutôt que de produire deux cents fichiers douteux.
+- Un fichier écrit n'est pas un fichier valide : relis-le avant de conclure.

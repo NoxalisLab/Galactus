@@ -231,7 +231,22 @@ const dict: Record<string, { en: string; fr: string }> = {
     en: "Galactus engine: CPU experts, bit-exact cross-check regime (certified numerics)",
     fr: "Moteur Galactus : experts CPU, régime de contre-vérification bit-exact (numérique certifiée)",
   },
+  "engine.residentFast": {
+    en: "Galactus engine: every expert cache-resident, standard Metal kernels (numerics not certified)",
+    fr: "Moteur Galactus : tous les experts résidents en cache, noyaux Metal standard (numérique non certifiée)",
+  },
+  "engine.streamedFast": {
+    en: "Galactus engine: experts streamed from SSD, standard Metal kernels (numerics not certified)",
+    fr: "Moteur Galactus : experts streamés du SSD, noyaux Metal standard (numérique non certifiée)",
+  },
   "engine.residentShort": { en: "resident", fr: "résident" },
+  "settings.numerics": { en: "Expert numerics", fr: "Numérique des experts" },
+  "settings.numericsHint": {
+    en: "Bit-exact replays the CPU algorithm on the GPU: certified numerics, and far slower to read a long prompt: measured 147 tokens a second against 5500 on the same model. Standard uses llama.cpp's own Metal kernels; answers are as good, they just are not bit-for-bit reproducible. Applied at the next model start.",
+    fr: "Bit-exact rejoue l'algorithme CPU sur le GPU : numérique certifiée, et beaucoup plus lent à lire un long prompt : mesuré à 147 tokens par seconde contre 5500 sur le même modèle. Standard utilise les noyaux Metal de llama.cpp ; les réponses sont d'aussi bonne qualité, elles ne sont simplement pas reproductibles au bit près. Pris en compte au prochain démarrage du modèle.",
+  },
+  "settings.numericsExact": { en: "Bit-exact", fr: "Bit-exact" },
+  "settings.numericsFast": { en: "Standard", fr: "Standard" },
   "load.title": { en: "Loading %m", fr: "Chargement de %m" },
   "load.hint": {
     en: "The expert cache is warming up; the first load is the longest.",

@@ -15,7 +15,7 @@ import {
 } from "./api";
 import type { SearchEvent, SearchOptsWire } from "./api";
 import { getLang, t } from "./i18n";
-import { wholeTurnsOnly } from "./agent-history";
+import { isSummaryMessage, liveFrom, placeSummary, stripSummary, wholeTurnsOnly } from "./agent-history";
 import {
   isElevatedCommand,
   isElevatedMcp,
@@ -24,6 +24,7 @@ import {
   isNetworkGitCommand,
 } from "./sensitive";
 import { runToolCalls } from "./toolsched";
+import { RepeatGuard, contentTag, isSpillPath, looksMissing, missingPathHint, spillWindow } from "./toolloop";
 import { SAMPLING_DEFAULT, samplingFor, type Sampling } from "./sampling";
 
 /**
@@ -73,6 +74,12 @@ import {
  * markdown and the densest record measured 1.99, so an estimate built on 4.0
  * is exactly how a request the caller believed fitted comes back as a 400.
  */
+/**
+ * Handed out in creation order so each agent gets its own engine slot when the
+ * engine serves more than one. See `Agent.ensureSlot`.
+ */
+let nextSeat = 0;
+
 const BYTES_PER_TOKEN = 3.0;
 /** Room held back for the reply and the tool schemas, in tokens. */
 const REPLY_RESERVE_TOKENS = 900;
@@ -791,7 +798,16 @@ function builtinTools(
           "(-y, --yes) when a tool would ask. A command that never exits on its own, " +
           "a server such as uvicorn or npm run dev, MUST be backgrounded or it will be " +
           "stopped at the deadline: run `<cmd> >/tmp/out.log 2>&1 &`, then read " +
-          "/tmp/out.log to see whether it came up.",
+          "/tmp/out.log to see whether it came up. " +
+          // Written here because the failure it prevents cost a user an hour:
+          // an agent shelled out to convert a spreadsheet, installed a package
+          // into the machine's Python to do it, and spent five round trips
+          // guessing a filename, all to reach something read_document returns
+          // in one call.
+          "DO NOT use this to read a document, a spreadsheet or a PDF: read_document already " +
+          "returns .xlsx, .csv, .docx, .pptx and .pdf as text, and never needs anything installed. " +
+          "Do not install packages to reach a file a tool already opens. If you do need a Python " +
+          "package, create a virtualenv for it rather than writing into the machine's Python.",
         parameters: {
           type: "object",
           properties: { command: { type: "string" } },
@@ -838,7 +854,9 @@ function builtinTools(
       function: {
         name: "read_document",
         description:
-          "Read the text of a document: PDF (including scanned ones, via OCR), image (png/jpg/heic/tiff, text is extracted with OCR), Word/PowerPoint/Excel, RTF, HTML, or any plain-text file. Use this instead of read_file for anything that is not source code or plain text.",
+          "Read the text of a document: PDF (including scanned ones, via OCR), image (png/jpg/heic/tiff, text is extracted with OCR), Word/PowerPoint/Excel, RTF, HTML, or any plain-text file. " +
+          "A spreadsheet (.xlsx, .csv) comes back as a real table, with its Excel row numbers and its sheets named as their tabs. " +
+          "Use this instead of read_file for anything that is not source code or plain text, and instead of run_command for every one of these formats: it needs nothing installed.",
         parameters: {
           type: "object",
           properties: {
@@ -858,54 +876,38 @@ function builtinTools(
       function: {
         name: "edit_document",
         description:
-          "Change a .docx or a .pdf and write the result to a SECOND file, never over the original " +
-          "(the result must have the same extension: this edits documents, it does not convert them). " +
-          "operation=find reports where a sentence is and writes nothing; run it first, because it is " +
-          "what tells you whether the text is findable at all. operation=replace changes every " +
-          "occurrence of `find` into `replace`. operation=append adds text at the end. " +
-          "WORD (.docx) IS THE BETTER TARGET WHENEVER THE FILE EXISTS: the layout, styles, images, " +
-          "headers and tables are kept exactly, a sentence split across bold and non-bold runs is still " +
-          "found, and operation=insert adds a paragraph after the one holding `find`. " +
-          "PDF cannot do that, because a PDF has no paragraphs: replacing covers the old words and draws " +
-          "the new ones in the same box, the page that changed is re-drawn as an image (so it loses its " +
-          "selectable text, while every other page keeps it), and operation=insert draws `text` at x,y in " +
-          "points from the bottom left of page `page`. " +
-          "A .docx HAS NO PAGES: Word computes them when it lays the file out, so nothing in it says " +
-          "page 3 and there is no page option for Word. To reach one part of a document, use " +
-          "between_start and between_end (two headings, for instance \"Article 4\" and \"Article 5\"), " +
-          "or paragraph, or occurrence. The `page` field is for PDF only. " +
-          "The answer is JSON. Read it before reporting: replaced=0 means NOTHING was written, and for a " +
-          "PDF, smallest_scale below about 0.7 means the new sentence had to be shrunk to fit the space " +
-          "the old one occupied. Say either of those to the user rather than claiming a clean result.",
+          "Change a .docx or .pdf, writing the result to a second file with the same extension. " +
+          "find reports where a sentence is and writes nothing: run it first. replace changes every " +
+          "occurrence. insert adds text (a paragraph after `find` in Word; at x,y on `page` in a PDF). " +
+          "append adds at the end. apply runs a whole batch from a JSON plan file in one pass, which is " +
+          "what a table of edits needs: hundreds of rows in seconds. Its answer counts what worked and " +
+          "details only what did not; near_match rows were applied on a close but not identical " +
+          "sentence and are worth telling the user about. " +
+          "Read the JSON answer before reporting: replaced=0 (or written=false) means nothing was written. " +
+          "Word keeps its layout; a PDF page that changes is flattened and loses its selectable text. " +
+          "Load the documents-depuis-tableau skill before a batch.",
         parameters: {
           type: "object",
           properties: {
-            operation: { type: "string", enum: ["find", "replace", "insert", "append"] },
-            path: { type: "string", description: "Absolute path to the .docx or .pdf to read" },
-            out: { type: "string", description: "Absolute path to write, same extension, required except for find" },
-            find: {
-              type: "string",
-              description:
-                "The text to look for. For find and replace; in a .docx it is also what insert adds a paragraph after",
-            },
+            operation: { type: "string", enum: ["find", "replace", "insert", "append", "apply"] },
+            path: { type: "string", description: "Absolute path of the .docx or .pdf to read" },
+            out: { type: "string", description: "Absolute path to write, same extension. Not for find" },
+            find: { type: "string", description: "Text to look for; in Word, insert adds after it" },
             replace: { type: "string", description: "What to put in its place" },
-            page: { type: "number", description: "PDF only: page number for insert, counting from 1" },
-            x: { type: "number", description: "PDF only: points from the left edge, for insert" },
-            y: { type: "number", description: "PDF only: points from the bottom edge, for insert" },
-            size: { type: "number", description: "PDF only: font size in points, 11 by default" },
-            text: { type: "string", description: "The text to add, for insert and append" },
-            between_start: {
+            text: { type: "string", description: "Text to add, for insert and append" },
+            plan: {
               type: "string",
               description:
-                "Word only: limit the edit to the paragraphs starting at the one holding this text, " +
-                "typically a heading such as \"Article 4\"",
+                'For apply: path of a JSON file you wrote, {"edits":[{"id":"row 2 ES","op":"replace","find":"...","replace":"..."}]}',
             },
-            between_end: {
-              type: "string",
-              description: "Word only: where that range stops, typically the next heading. Omit for the end of the document",
-            },
-            paragraph: { type: "number", description: "Word only: a single paragraph, numbered as find numbers them" },
-            occurrence: { type: "number", description: "Word only: change only the Nth match, in reading order" },
+            between_start: { type: "string", description: "Word: limit to paragraphs from this text (a heading)" },
+            between_end: { type: "string", description: "Word: where that range stops" },
+            paragraph: { type: "number", description: "Word: a single paragraph, as find numbers them" },
+            occurrence: { type: "number", description: "Word: only the Nth match" },
+            page: { type: "number", description: "PDF only: page for insert, from 1. Word has no pages" },
+            x: { type: "number", description: "PDF only: points from the left" },
+            y: { type: "number", description: "PDF only: points from the bottom" },
+            size: { type: "number", description: "PDF only: font size, 11 by default" },
           },
           required: ["operation", "path"],
         },
@@ -1169,6 +1171,16 @@ export class Agent {
   private authoredLoaded = false;
   /** The user's request for this turn, verbatim, for the authoring call. */
   private lastRequest = "";
+  /**
+   * Scratch files THIS agent produced by spilling an oversized tool output.
+   *
+   * Reading one back must never spill again; see `rereadOfSpill`.
+   */
+  private spilled = new Set<string>();
+  /**
+   * Identical calls within this turn. See toolloop.ts for what it stops and why.
+   */
+  private repeats = new RepeatGuard();
 
   constructor(
     private hooks: AgentHooks,
@@ -1318,7 +1330,13 @@ export class Agent {
       "You can read and write files, list folders and run shell commands through tools; every action " +
       "is gated by the user's explicit permission, so ask for what you need and use tools freely when helpful. " +
       "You can remember lasting facts with the remember tool. " +
-      "Be concise and warm. Answer in " + lang + " unless the user writes in another language. " +
+      // Concision has to be a budget, not an adjective. "Be concise" left a
+      // local 27B writing fifteen hundred token answers to one line questions,
+      // which is half a minute of generation nobody asked for.
+      "Answer in " + lang + " unless the user writes in another language. " +
+      "Be warm and BRIEF: a few sentences by default, and never more than a short paragraph unless " +
+      "the user asks for detail, for a document, or for code. No preamble, no restating the question, " +
+      "no summary of what you just said. " +
       "Today is " + today + "; treat anything after your training data as unknown and verify time-sensitive facts with tools.";
     if (this.hasVault) {
       p +=
@@ -1416,12 +1434,20 @@ export class Agent {
     if (this.memory.trim().length > 0) {
       p += "\n\nWhat you remember about the user:\n" + this.memory.trim();
     }
-    if (this.contextSummary.trim().length > 0) {
-      p +=
-        "\n\nFaithful summary of the EARLIER part of this conversation (auto-condensed to keep the context clean; treat as established facts, do not re-derive or embellish them):\n" +
-        this.contextSummary.trim();
-    }
+    // The condensed history used to be appended HERE, and that was expensive
+    // in a way nothing showed. The system prompt is the first thing the engine
+    // tokenises, so changing it moves the point where the KV cache diverges all
+    // the way back to token zero: every turn after the first compaction re-read
+    // the whole system prompt and all 25 tool schemas, some eight to nine
+    // thousand tokens, at 171 tokens a second. It now travels as its own
+    // message right after this one (see `summaryMessage`), so the divergence
+    // starts after the cached block instead of before it.
     return p;
+  }
+
+  /** Put the condensed history in place, or refresh it. See agent-history.ts. */
+  private placeSummary(): void {
+    placeSummary(this.messages, this.contextSummary);
   }
 
   stop() {
@@ -1447,15 +1473,19 @@ export class Agent {
   }
 
   /**
-   * Restore a saved thread: system prompt is rebuilt, the rest replayed. The
-   * digest summary has to come back BEFORE the system prompt is built, since
-   * that prompt embeds it; without it a digested thread reopens knowing only
-   * its last few messages.
+   * Restore a saved thread: system prompt is rebuilt, the rest replayed.
+   *
+   * The saved thread may already contain a condensed-history carrier, because
+   * `history()` returns the messages as they stand. It is dropped and rebuilt
+   * from `contextSummary` rather than replayed: the summary is the source of
+   * truth, and replaying the old carrier while also placing a new one would
+   * put the earlier part of the conversation in twice.
    */
   loadHistory(messages: ChatMessage[], contextSummary = ""): void {
     if (contextSummary) this.contextSummary = contextSummary;
-    const body = wholeTurnsOnly(messages.filter((m) => m.role !== "system"));
+    const body = wholeTurnsOnly(stripSummary(messages.filter((m) => m.role !== "system")));
     this.messages = [{ role: "system", content: this.systemPrompt() }, ...body];
+    this.placeSummary();
   }
 
   /**
@@ -1468,6 +1498,7 @@ export class Agent {
    */
   private beginTurn(request: string, underSkill: boolean): void {
     this.steps = [];
+    this.repeats.clear();
     this.underSkill = underSkill;
     this.authoredLoaded = false;
     this.lastRequest = request;
@@ -1517,6 +1548,10 @@ export class Agent {
   // folded into the system prompt. Blind truncation is the last resort only.
 
   private nCtx: number | null = null;
+  /** This agent's place in the queue for engine slots. See `ensureSlot`. */
+  private readonly seat = nextSeat++;
+  /** Resolved from `seat` once the slot count is known; cleared on restart. */
+  private slot: number | null = null;
   private contextSummary = "";
 
   private async ensureCtxSize(): Promise<number> {
@@ -1527,6 +1562,27 @@ export class Agent {
       this.nCtx = 32768;
     }
     return this.nCtx;
+  }
+
+  /**
+   * The engine slot this agent keeps for its whole life.
+   *
+   * Seats are handed out in order of creation and wrapped onto whatever the
+   * engine is actually serving, so two conversations land on two slots when
+   * there are two, and share one when there is one. Stability is the whole
+   * point: a conversation that keeps its slot keeps its KV cache, and see the
+   * note on `idSlot` in api.ts for what that was costing.
+   */
+  private async ensureSlot(): Promise<number> {
+    if (this.slot !== null) return this.slot;
+    let count = 1;
+    try {
+      count = Math.max(1, Math.floor(Number((await api.serverStatus()).slots ?? 1)));
+    } catch {
+      count = 1; // the engine will pick for us; one seat is a safe assumption
+    }
+    this.slot = this.seat % count;
+    return this.slot;
   }
 
   /**
@@ -1598,13 +1654,31 @@ export class Agent {
    * honest: a head slice that says, in the text itself, that it is a head
    * slice and how much is missing.
    */
-  private async digestOversized(toolName: string, result: string, allowance: number): Promise<string> {
+  private async digestOversized(call: ToolCall, result: string, allowance: number): Promise<string> {
+    const toolName = call.function.name;
+    // Reading a spill back must NEVER spill again, and getting this wrong cost
+    // a user their whole morning. A 37 KB batch report was spilled to scratch;
+    // the model read that file; the re-read was oversized in its own right, so
+    // it was spilled to a SECOND scratch file with a fresh timestamped name and
+    // digested into the same words. Same answer, new path, no signal that
+    // anything had gone round in a circle, and no way out, because every
+    // attempt manufactured a new file to try next. The work had already
+    // succeeded and the user was told nothing.
+    //
+    // So a re-read gets a plain window instead: this slice, where it starts and
+    // ends in the file, and the exact call that advances it.
+    const reread = this.rereadOfSpill(call);
+    if (reread) return spillWindow(result, allowance, reread.path, reread.offset);
+
     const budget = Math.max(MIN_TOOL_TOKENS, Math.floor(allowance / BYTES_PER_TOKEN));
     let path = "";
     try {
-      const stamp = Date.now().toString(36);
+      // Named for its CONTENT, not for the clock: identical output must land on
+      // one path, or the history holds a new prefix and the engine's KV cache
+      // is discarded for the rest of the conversation. See contentTag.
       const safe = toolName.replace(/[^\w-]/g, "_").slice(0, 40);
-      path = await api.scratchWrite(`tool-${stamp}-${safe}.txt`, result);
+      path = await api.scratchWrite(`tool-${contentTag(result)}-${safe}.txt`, result);
+      this.spilled.add(path);
     } catch {
       return (
         result.slice(0, allowance) +
@@ -1633,10 +1707,35 @@ export class Agent {
     );
   }
 
+  /**
+   * Is this call a re-read of a file we ourselves spilled? If so, from where.
+   *
+   * Both tests earn their place. The set is exact and covers this agent's own
+   * spills; the name test covers a scratch file from an earlier turn, or one a
+   * teammate produced, which the model may still be holding a path to.
+   */
+  private rereadOfSpill(call: ToolCall): { path: string; offset: number } | null {
+    const name = call.function.name;
+    if (name !== "read_file" && name !== "read_document") return null;
+    let args: any;
+    try {
+      args = JSON.parse(call.function.arguments || "{}");
+    } catch {
+      return null;
+    }
+    const path = normalizePath(String(args.path ?? ""));
+    if (!path) return null;
+    if (!this.spilled.has(path) && !isSpillPath(path)) return null;
+    const offset = Number(args.offset) > 0 ? Math.floor(Number(args.offset)) : 0;
+    return { path, offset };
+  }
+
   /** The question the retrieval should answer: the user's most recent turn. */
   private lastUserQuestion(): string {
     for (let i = this.messages.length - 1; i >= 0; i--) {
       const m = this.messages[i];
+      // The condensed-history carrier is a user message but not a question.
+      if (isSummaryMessage(m)) continue;
       if (m.role === "user" && typeof m.content === "string" && m.content.trim()) {
         return m.content.trim().slice(0, 1000);
       }
@@ -1647,7 +1746,12 @@ export class Agent {
   private async digestHistory(): Promise<boolean> {
     const msgs = this.messages;
     if (msgs.length < 6) return this.compactHistory();
-    let cut = 1 + Math.floor((msgs.length - 1) * 0.6);
+    // Everything from here on counts from the first LIVE message, which is past
+    // the system prompt and past the condensed-history carrier when one exists.
+    // Folding the carrier back into itself would summarise a summary once per
+    // compaction and lose a little more of the original each time.
+    const live = liveFrom(msgs);
+    let cut = live + Math.floor((msgs.length - live) * 0.6);
     // Never split an assistant tool_calls / tool-results pair.
     while (cut < msgs.length - 1 && msgs[cut].role === "tool") cut++;
     if (cut >= msgs.length - 1) {
@@ -1658,16 +1762,16 @@ export class Agent {
       // boundary that is neither a tool result nor an assistant carrying
       // tool_calls.
       while (
-        cut > 1 &&
+        cut > live &&
         (msgs[cut].role === "tool" ||
           (msgs[cut].role === "assistant" && (msgs[cut].tool_calls?.length ?? 0) > 0))
       ) {
         cut--;
       }
     }
-    if (cut <= 1) return this.compactHistory();
+    if (cut <= live) return this.compactHistory();
 
-    const chunk = msgs.slice(1, cut);
+    const chunk = msgs.slice(live, cut);
     const rendered = chunk
       .map((m) => {
         let c = typeof m.content === "string" ? m.content : "";
@@ -1689,8 +1793,11 @@ export class Agent {
       const keep = Math.max(1200, Math.floor(ctx * 0.12 * BYTES_PER_TOKEN));
       this.contextSummary = (this.contextSummary ? this.contextSummary + "\n" : "") + summary.trim();
       if (this.contextSummary.length > keep) this.contextSummary = this.contextSummary.slice(-keep);
+      // The system prompt is NOT rebuilt: it no longer carries the summary, so
+      // it is the same bytes it has been since the conversation opened and the
+      // engine keeps its cache of it. Only the carrier and what follows change.
       this.messages = [msgs[0], ...msgs.slice(cut)];
-      if (this.messages[0].role === "system") this.messages[0].content = this.systemPrompt();
+      this.placeSummary();
       return true;
     } catch {
       return this.compactHistory();
@@ -1824,6 +1931,8 @@ export class Agent {
       chosen.temperature,
       { top_p: chosen.top_p, top_k: chosen.top_k },
       thinkingEnabled,
+      undefined,
+      await this.ensureSlot(),
     );
     if (!ok && !this.abort.signal.aborted) {
       // Context overflow (huge tool outputs, long thread): shrink and retry
@@ -1912,7 +2021,7 @@ export class Agent {
       let hist = result && result.length > 0 ? result : "(no output)";
       const allowance = await this.toolAllowanceChars(call.function.name);
       if (hist.length > allowance) {
-        hist = await this.digestOversized(call.function.name, result, allowance);
+        hist = await this.digestOversized(call, result, allowance);
       }
       this.messages.push({
         role: "tool",
@@ -1975,7 +2084,7 @@ export class Agent {
     const op = String(args.operation ?? "");
     try {
       const raw = await api.docEdit({
-        op: op as "find" | "replace" | "insert" | "append",
+        op: op as "find" | "replace" | "insert" | "append" | "apply",
         path: String(args.path ?? ""),
         out: String(args.out ?? ""),
         find: String(args.find ?? ""),
@@ -1985,6 +2094,7 @@ export class Agent {
         y: Number(args.y ?? 0),
         size: Number(args.size ?? 0),
         text: String(args.text ?? ""),
+        plan: String(args.plan ?? ""),
         between_start: String(args.between_start ?? ""),
         between_end: String(args.between_end ?? ""),
         paragraph: Number(args.paragraph ?? 0),
@@ -2004,6 +2114,31 @@ export class Agent {
           } else if (typeof j.smallest_scale === "number" && j.smallest_scale < 0.7) {
             said += `\n\nThe replacement had to be shrunk to ${Math.round(j.smallest_scale * 100)}% `
               + "of the original size to fit the space the old text occupied. Tell the user: it will look smaller.";
+          }
+        }
+        // A batch: say what happened, in words, in the tool result. The JSON
+        // above is a worklist and a model reading it reports what it asked for
+        // rather than what it got, which on the run that prompted this meant a
+        // user hearing nothing at all about 323 rows that had been written to
+        // disk. The sentence the user needs is written here, where it cannot be
+        // skipped, and it is the LAST thing in the result on purpose.
+        if (op === "apply" && typeof j.applied === "number") {
+          if (!j.written) {
+            said += `\n\nNothing was applied out of ${j.total} rows and NO FILE WAS WRITTEN. `
+              + "Look at `failures` above: each one says what the document actually reads. "
+              + "Report that to the user rather than claiming the batch ran.";
+          } else {
+            said += `\n\n${j.applied} of ${j.total} rows were applied and the file was written to ${j.out}. `;
+            if (j.near_match > 0) {
+              said += `${j.near_match} of them matched only approximately and replaced the whole `
+                + "paragraph: they are listed under `near_matches` with their score, and the user "
+                + "should be told the count so they can check them. ";
+            }
+            if (j.failed > 0) {
+              said += `${j.failed} rows could not be applied and are unchanged in the output. `;
+            }
+            said += "Tell the user these numbers and the path. Then read the result back with "
+              + "read_document to confirm the file opens, before saying the job is done.";
           }
         }
       } catch {
@@ -2214,9 +2349,19 @@ export class Agent {
    * the run's own gate, so nothing appeared in the transcript at all, and a run
    * whose record shows nothing is a run nobody can audit.
    */
-  /** Point this agent at the engine's current port. */
+  /**
+   * Point this agent at the engine's current port.
+   *
+   * A new port means a new engine, and everything measured from the old one is
+   * now a guess: the window, because a different model has a different one, and
+   * the slot, because a different plan may serve a different number of them.
+   * Both are dropped here rather than carried, which is how the window ended up
+   * stale across a model swap.
+   */
   setPort(port: number): void {
     this.port = port;
+    this.nCtx = null;
+    this.slot = null;
   }
 
   /**
@@ -2395,6 +2540,14 @@ export class Agent {
 
     this.hooks.onToolStart(name, JSON.stringify(args).slice(0, 300));
     this.hooks.onActivity?.(activityModeFor(name), name);
+
+    // Same tool, same arguments, again. Warn once, then refuse.
+    const again = this.repeats.verdict(name, args);
+    if (again.stop) {
+      this.hooks.onToolResult(name, again.stop);
+      this.recordStep(name, Agent.stepDetail(name, args), again.stop);
+      return again.stop;
+    }
 
     // Path-taking tools: reject ".." BEFORE any gate check. A standing folder
     // grant is matched by prefix, so "granted/../../.ssh/id_ed25519" would
@@ -2730,12 +2883,17 @@ export class Agent {
       } else {
         result = `error: unknown tool ${name}`;
       }
+      if (again.note) result += again.note;
       const shown = result.length > 4000 ? result.slice(0, 4000) + "\n…(truncated)" : result;
       this.hooks.onToolResult(name, shown);
       this.recordStep(name, Agent.stepDetail(name, args), result);
       return result;
     } catch (e: any) {
-      const msg = `error: ${String(e?.message ?? e)}`;
+      let msg = `error: ${String(e?.message ?? e)}`;
+      // A path that is not there is the one error with a known, single-call
+      // recovery. Saying which call it is turns five guessing rounds into one.
+      const wanted = typeof args?.path === "string" ? args.path : "";
+      if (wanted && looksMissing(msg)) msg += missingPathHint(wanted);
       this.hooks.onToolResult(name, msg);
       this.recordStep(name, Agent.stepDetail(name, args), msg);
       return msg;

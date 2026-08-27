@@ -159,7 +159,9 @@ export interface ServerStatus {
   model_id?: string;
   port: number;
   phase: string; // stopped | starting | ready
-  mode?: string; // resident-bit-exact | streamed-bit-exact | cpu-bit-exact | stock-llamacpp
+  // resident-bit-exact | streamed-bit-exact | cpu-bit-exact | stock-llamacpp
+  // | resident-fast | streamed-fast (the last two: numerics = standard)
+  mode?: string;
   /**
    * Concurrent decode streams the engine serves (llama-server --parallel).
    * The hard bound on how many conversations may generate at the same time.
@@ -345,7 +347,7 @@ export interface ImageModelInfo {
 
 /** One edit asked of a PDF. Mirrors DocEdit in lib.rs field for field. */
 export interface DocEditRequest {
-  op: "find" | "replace" | "insert" | "append";
+  op: "find" | "replace" | "insert" | "append" | "apply";
   path: string;
   out?: string;
   find?: string;
@@ -362,6 +364,8 @@ export interface DocEditRequest {
   /** Word only: a single paragraph, or a single match, by number. */
   paragraph?: number;
   occurrence?: number;
+  /** Word only, for op "apply": path of a JSON file holding the whole batch. */
+  plan?: string;
 }
 
 export interface ImageRequest {
@@ -906,13 +910,41 @@ export async function streamChat(
   // templates that do not simply ignore an unknown key, which is why it is sent
   // rather than guarded by a per-model list that would go stale.
   thinking = true,
+  // A ceiling on ONE answer, not on the conversation.
+  //
+  // Nothing bounded this before, so an answer could run until the context
+  // window did. The first cap here was 2048 and that was a mistake with a
+  // cost: a model writing a long structured file, which is exactly what a
+  // batch plan is, was cut mid-output and started the whole answer again.
+  // A cap that truncates legitimate work is worse than no cap at all, so this
+  // one sits far above any honest answer and exists only to stop a loop.
+  // Brevity is asked for in the system prompt, where it belongs, and where it
+  // costs nothing when the task really needs length.
+  maxTokens = 8192,
+  // Which engine slot serves this conversation. -1 lets llama-server choose.
+  //
+  // WHY CHOOSING MATTERS. A slot holds the KV cache of whatever it last served,
+  // and llama-server picks one by longest common prefix: usually right, and
+  // catastrophically wrong when the conversation's own slot has been taken by
+  // something else in the meantime. Measured over one working session: of 52
+  // slot selections, 14 started cold and 11 more matched below 0.9, one as low
+  // as 0.218. Those 25 requests carried 95% of all the prompt ingestion in the
+  // session, tens of thousands of tokens re-read at 171 tokens a second.
+  //
+  // Pinning costs nothing when the slot is free and makes a busy slot queue
+  // rather than evict, which for one user at one keyboard is the right trade.
+  // An id past the end wraps modulo the slot count in llama-server, so a stale
+  // one degrades to a different slot instead of an error.
+  idSlot = -1,
 ): Promise<boolean> {
   const body: any = {
     model: "galactus-local",
     messages,
     stream: true,
     temperature,
+    max_tokens: maxTokens,
   };
+  if (idSlot >= 0) body.id_slot = idSlot;
   if (sampling) {
     body.top_p = sampling.top_p;
     body.top_k = sampling.top_k;

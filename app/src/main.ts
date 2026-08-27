@@ -786,6 +786,8 @@ function engineModeLabel(mode?: string): string {
   if (mode === "resident-bit-exact") return t("engine.resident");
   if (mode === "streamed-bit-exact") return t("engine.streamed");
   if (mode === "cpu-bit-exact") return t("engine.cpu");
+  if (mode === "resident-fast") return t("engine.residentFast");
+  if (mode === "streamed-fast") return t("engine.streamedFast");
   return "";
 }
 
@@ -4173,6 +4175,12 @@ function settingsView(): HTMLElement {
           <button data-rm="perf">${esc(t("settings.ramPerf"))}</button>
         </div>
       </div>
+      <div class="set-row"><div class="grow"><b>${esc(t("settings.numerics"))}</b><span>${esc(t("settings.numericsHint"))}</span></div>
+        <div class="seg" id="numseg">
+          <button data-nm="bitexact">${esc(t("settings.numericsExact"))}</button>
+          <button data-nm="standard">${esc(t("settings.numericsFast"))}</button>
+        </div>
+      </div>
       <div class="set-row"><div class="grow"><b>${esc(t("settings.slots"))}</b><span>${esc(t("settings.slotsHint"))}</span><span>${esc(t("brief.autoHint"))}</span></div>
         <div class="seg" id="slotseg">
           <button data-sl="">${esc(t("brief.auto"))}</button>
@@ -4413,6 +4421,22 @@ function settingsView(): HTMLElement {
         paintTh(on);
         await api.settingsSet("thinking", on ? "1" : "0");
         configureThinking(on);
+      });
+    }
+    // Expert numerics: the certified parity path, or llama.cpp's own Metal
+    // kernels. Applied on the next model start, like every engine setting here.
+    {
+      const nseg = wrap.querySelector<HTMLElement>("#numseg")!;
+      const paintNum = (m: string) =>
+        nseg.querySelectorAll("button").forEach((b) =>
+          b.classList.toggle("on", (b as HTMLElement).dataset.nm === m)
+        );
+      api.settingsGet().then((s) => paintNum(s["numerics"] === "standard" ? "standard" : "bitexact"));
+      nseg.addEventListener("click", async (e) => {
+        const b = (e.target as HTMLElement).closest("[data-nm]") as HTMLElement | null;
+        if (!b) return;
+        paintNum(b.dataset.nm!);
+        await api.settingsSet("numerics", b.dataset.nm!);
       });
     }
     const seg = wrap.querySelector<HTMLElement>("#ramseg")!;
