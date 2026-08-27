@@ -91,13 +91,13 @@ fn serve(root: &Path, model_id: &str, args: &[String]) -> Result<(), String> {
         .find(|w| w[0] == "--slots")
         .and_then(|w| w[1].parse::<u32>().ok())
         .map(|n| n.clamp(1, MAX_SLOTS))
-        .unwrap_or_else(|| resolved_slots(&entry, machine, &ram_mode, cpu_moe));
+        .unwrap_or_else(|| crate::planner::resolved_slots(&entry, machine, &ram_mode, cpu_moe));
     // Meme decision que l'app : la memoire REELLEMENT disponible (vm_stat), pas
     // celle marquee sur la boite. Un `serve` qui planifierait sur la RAM
     // installee pendant que l'app se rabat sur eco mesurerait autre chose que
     // ce que l'utilisateur execute.
-    let ctx_slot = ctx_per_slot_for(&entry);
-    let plan = plan_cache(&entry, machine, None, &ram_mode, cpu_moe, slots, ctx_slot)?;
+    let ctx_slot = crate::planner::ctx_per_slot_for(&entry);
+    let plan = crate::planner::plan_cache(&entry, machine, None, &ram_mode, cpu_moe, slots, ctx_slot)?;
     let (cache_bytes, fraction, ubatch) = (plan.cache_bytes, plan.protected, plan.ubatch);
     let port: u16 = args
         .windows(2)
@@ -205,7 +205,7 @@ fn history(args: &[String]) -> Result<(), String> {
                 .windows(2)
                 .find(|w| w[0] == "--max")
                 .and_then(|w| w[1].parse::<usize>().ok());
-            println!("{}", conv_read(id.clone(), cap)?);
+            println!("{}", crate::conversations::conv_read(id.clone(), cap)?);
             Ok(())
         }
         Some("search") | None => {
@@ -222,7 +222,7 @@ fn history(args: &[String]) -> Result<(), String> {
                 .windows(2)
                 .find(|w| w[0] == "-k")
                 .and_then(|w| w[1].parse::<usize>().ok());
-            let hits = conv_search(terms.join(" "), k);
+            let hits = crate::conversations::conv_search(terms.join(" "), k);
             if hits.is_empty() {
                 println!("aucune correspondance dans les discussions enregistrees");
             }
@@ -355,7 +355,7 @@ fn install_cli(root: &Path, id: &str) -> Result<(), String> {
     let total = entry["gguf_bytes"].as_u64().unwrap_or(0);
     require_download_space(root, id, &files, total)?;
     let cancel = std::sync::atomic::AtomicBool::new(false);
-    install_pipeline_with(root, id, &base, &files, total, None, &cancel, &|_phase, pct, label| {
+    crate::install::install_pipeline_with(root, id, &base, &files, total, None, &cancel, &|_phase, pct, label| {
         print!("\r  {pct:5.1}%  {label:<48}");
         let _ = std::io::stdout().flush();
     })?;
@@ -377,7 +377,7 @@ fn remove_cli(id: &str) -> Result<(), String> {
     if line.trim() != id {
         return Err("confirmation refusee (nom different), rien n'a ete supprime".into());
     }
-    let summary = delete_model_impl(id)?;
+    let summary = crate::install::delete_model_impl(id)?;
     println!("{summary}");
     Ok(())
 }

@@ -740,7 +740,7 @@ pub fn video_plan(
     v: &VideoSpec,
 ) -> ImagePlan {
     let installed = ram_gb * GB;
-    let budget = installed.saturating_sub(crate::system_reserve_bytes(installed));
+    let budget = installed.saturating_sub(crate::planner::system_reserve_bytes(installed));
     let shortest = v.frame_step.max(1) + v.frame_base;
     let floor = bytes.saturating_add(video_activation_bytes(w, h, shortest));
     let need_gb = min_ram_gb.max((floor + 2 * GB).div_ceil(GB));
@@ -796,7 +796,7 @@ pub fn video_plan(
 /// that allocates worse for one architecture than the model's size says.
 pub fn image_plan(bytes: u64, min_ram_gb: u64, ram_gb: u64, default_steps: u32) -> ImagePlan {
     let installed = ram_gb * GB;
-    let budget = installed.saturating_sub(crate::system_reserve_bytes(installed));
+    let budget = installed.saturating_sub(crate::planner::system_reserve_bytes(installed));
     let floor = bytes.saturating_add(activation_bytes(SIDE_LADDER[SIDE_LADDER.len() - 1]));
     // What a Mac must have INSTALLED for the smallest side: the peak, plus
     // the 2 GB reserve a Mac of that size would keep, rounded up. The
