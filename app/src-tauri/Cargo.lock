@@ -920,7 +920,7 @@ dependencies = [
 
 [[package]]
 name = "galactus-app"
-version = "0.1.25"
+version = "0.1.26"
 dependencies = [
  "serde",
  "serde_json",
