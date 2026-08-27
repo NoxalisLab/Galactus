@@ -216,8 +216,8 @@ const dict: Record<string, { en: string; fr: string }> = {
   "models.installed": { en: "Installed", fr: "Installé" },
   "models.tooSmall": { en: "Below the minimum for this Mac", fr: "Sous le minimum pour ce Mac" },
   "models.nativeFit": {
-    en: "Fully cache-resident on this Mac, bit-exact",
-    fr: "Résidence totale en cache sur ce Mac, bit-exact",
+    en: "Fully cache-resident on this Mac",
+    fr: "Résidence totale en cache sur ce Mac",
   },
   "engine.resident": {
     en: "Galactus engine: every expert cache-resident, bit-exact (certified numerics)",
@@ -242,8 +242,8 @@ const dict: Record<string, { en: string; fr: string }> = {
   "engine.residentShort": { en: "resident", fr: "résident" },
   "settings.numerics": { en: "Expert numerics", fr: "Numérique des experts" },
   "settings.numericsHint": {
-    en: "Bit-exact replays the CPU algorithm on the GPU: certified numerics, and far slower to read a long prompt: measured 147 tokens a second against 5500 on the same model. Standard uses llama.cpp's own Metal kernels; answers are as good, they just are not bit-for-bit reproducible. Applied at the next model start.",
-    fr: "Bit-exact rejoue l'algorithme CPU sur le GPU : numérique certifiée, et beaucoup plus lent à lire un long prompt : mesuré à 147 tokens par seconde contre 5500 sur le même modèle. Standard utilise les noyaux Metal de llama.cpp ; les réponses sont d'aussi bonne qualité, elles ne sont simplement pas reproductibles au bit près. Pris en compte au prochain démarrage du modèle.",
+    en: "Standard is the default and uses llama.cpp's own Metal kernels. Bit-exact replays the CPU algorithm on the GPU instead: reproducible bit for bit, and far slower to read a long prompt, measured at 147 tokens a second against 5500 on the same model. Answers are as good either way. Choose bit-exact to verify numerics, not to work. Applied at the next model start.",
+    fr: "Standard est le défaut et utilise les noyaux Metal de llama.cpp. Bit-exact rejoue l'algorithme CPU sur le GPU : reproductible au bit près, et beaucoup plus lent à lire un long prompt, mesuré à 147 tokens par seconde contre 5500 sur le même modèle. Les réponses sont d'aussi bonne qualité dans les deux cas. Choisis bit-exact pour vérifier la numérique, pas pour travailler. Pris en compte au prochain démarrage du modèle.",
   },
   "settings.numericsExact": { en: "Bit-exact", fr: "Bit-exact" },
   "settings.numericsFast": { en: "Standard", fr: "Standard" },

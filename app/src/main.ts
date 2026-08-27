@@ -1460,7 +1460,7 @@ function chatView(): HTMLElement {
       <div class="right">
         <div class="livebar" id="livebar"></div>
         ${sub ? "" : taskBarHtml()}
-        ${running ? `<div class="mpill" title="${esc(engineModeLabel(server.mode))}"><span class="d"></span><span class="n">${esc(running.name.split(" ")[0])}</span>${server.mode === "resident-bit-exact" ? `<span class="s">${esc(t("engine.residentShort"))}</span>` : ""}${tps ? `<span class="s">~${tps.toFixed(0)} tok/s</span>` : ""}</div>` : ""}
+        ${running ? `<div class="mpill" title="${esc(engineModeLabel(server.mode))}"><span class="d"></span><span class="n">${esc(running.name.split(" ")[0])}</span>${(server.mode === "resident-bit-exact" || server.mode === "resident-fast") ? `<span class="s">${esc(t("engine.residentShort"))}</span>` : ""}${tps ? `<span class="s">~${tps.toFixed(0)} tok/s</span>` : ""}</div>` : ""}
         <div class="iconbtn" id="newchat" title="${esc(t("nav.newchat"))}">${I.plus}</div>
       </div>
     </div>
@@ -4431,7 +4431,11 @@ function settingsView(): HTMLElement {
         nseg.querySelectorAll("button").forEach((b) =>
           b.classList.toggle("on", (b as HTMLElement).dataset.nm === m)
         );
-      api.settingsGet().then((s) => paintNum(s["numerics"] === "standard" ? "standard" : "bitexact"));
+      // The default is standard now, so anything that is not an explicit
+      // opt-in paints standard. Mirrors bit_exact_numerics in lib.rs.
+      api.settingsGet().then((s) =>
+        paintNum(/^\s*(bitexact|bit-exact|exact|certified)\s*$/.test(s["numerics"] ?? "") ? "bitexact" : "standard")
+      );
       nseg.addEventListener("click", async (e) => {
         const b = (e.target as HTMLElement).closest("[data-nm]") as HTMLElement | null;
         if (!b) return;

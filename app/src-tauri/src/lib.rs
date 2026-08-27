@@ -2064,13 +2064,36 @@ pub(crate) fn chat_parsing_args() -> [&'static str; 3] {
 
 /// Does the `numerics` setting ask for the bit-exact expert path?
 ///
-/// ONLY the exact word "standard" gives it up. Anything else (unset, empty,
-/// a value written by a future version, a typo) keeps the certified path,
-/// because losing certified numerics has to be something the user chose and
-/// not something that happened to a settings file. See the measurement at the
-/// call site for what the choice is worth.
+/// THE DEFAULT IS NOW STANDARD, and this reversal was made on measurements
+/// rather than a preference. The parity flag as the only difference:
+///
+///     olmoe-1b-7b, q4_K/q6_K experts, 3061 tokens, ubatch 512
+///       bit-exact      147 tok/s prefill      74-108 tok/s decode
+///       standard      5567-8584 tok/s        187-225 tok/s decode
+///
+///     gpt-oss-120b, mxfp4 experts, 3521 tokens, ubatch 512
+///       bit-exact       61-68 tok/s prefill        29 tok/s decode
+///       standard         2286 tok/s              53.6 tok/s decode
+///
+/// Prefill is 35 to 58 times slower on the parity path, and generation about
+/// twice. On the 120B that is the difference between reading a 7256-token
+/// thread in 3.2 seconds and in 118, which is what the app felt like: two
+/// minutes of nothing before the first word. The answers are as good either
+/// way; what the parity path buys is that they are reproducible bit for bit,
+/// which matters when certifying kernels and not when answering a question.
+///
+/// So it becomes what it always was: a verification mode, chosen deliberately.
+/// The badge names the running regime either way, so nobody is told they have
+/// certified numerics when they do not.
+///
+/// Opt-in is read generously (a hyphen or a shorter word still means yes)
+/// because asking for it costs only speed, while failing to grant it would
+/// quietly deny a request somebody made on purpose.
 pub(crate) fn bit_exact_numerics(setting: Option<&str>) -> bool {
-    setting.map(|v| v.trim() != "standard").unwrap_or(true)
+    matches!(
+        setting.map(|v| v.trim()),
+        Some("bitexact") | Some("bit-exact") | Some("exact") | Some("certified")
+    )
 }
 /// Hard ceiling on slots: past this the KV cache stops being free and a Mac
 /// with a big model would pay it in evictions.
@@ -2996,19 +3019,22 @@ mod chat_parsing_tests {
     }
 
     #[test]
-    fn certified_numerics_are_given_up_only_on_purpose() {
-        // The default, and every way of not having chosen.
-        assert!(bit_exact_numerics(None));
-        assert!(bit_exact_numerics(Some("")));
-        assert!(bit_exact_numerics(Some("   ")));
-        assert!(bit_exact_numerics(Some("bitexact")));
-        // A value some future version writes, or a typo, must not silently cost
-        // the user certified numerics.
-        assert!(bit_exact_numerics(Some("standrad")));
-        assert!(bit_exact_numerics(Some("fast")));
-        // The one word that gives it up, whitespace tolerated.
+    fn the_parity_path_is_entered_only_on_purpose() {
+        // The default, and every way of not having chosen: standard kernels.
+        // This is the reversal, and the reason is at the function.
+        assert!(!bit_exact_numerics(None));
+        assert!(!bit_exact_numerics(Some("")));
+        assert!(!bit_exact_numerics(Some("   ")));
         assert!(!bit_exact_numerics(Some("standard")));
-        assert!(!bit_exact_numerics(Some(" standard ")));
+        // Asking for it is read generously: it costs only speed, so a hyphen
+        // or a shorter word must not silently deny a deliberate request.
+        assert!(bit_exact_numerics(Some("bitexact")));
+        assert!(bit_exact_numerics(Some(" bit-exact ")));
+        assert!(bit_exact_numerics(Some("exact")));
+        assert!(bit_exact_numerics(Some("certified")));
+        // Anything nobody meant is the default, not a slow surprise.
+        assert!(!bit_exact_numerics(Some("bitexcat")));
+        assert!(!bit_exact_numerics(Some("fast")));
     }
 
     #[test]
