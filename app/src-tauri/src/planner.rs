@@ -1662,3 +1662,182 @@ mod ctx_window_tests {
         );
     }
 }
+
+// ---------------------------------------------------------------- les types
+//
+// Ce que le planificateur produit et consomme. Ils etaient restes dans lib.rs
+// quand leurs fonctions en sont parties: un type separe de la seule chose qui
+// le fabrique est une invitation a le faire diverger.
+
+/// Context window every slot keeps by default, whatever the slot count.
+///
+/// This was the ONLY value for two years, and it is the one every memory figure
+/// in this file was measured at. It stays the default and the unit the KV cost
+/// below is expressed in.
+pub(crate) const CTX_PER_SLOT: u32 = 8192;
+
+/// The largest window offered to a model whose training context nobody recorded.
+///
+/// Asking for more than a model was trained on does not fail: llama.cpp extends
+/// the rope and the answers quietly get worse, which is the failure mode this
+/// project exists to avoid. A registry entry that states its own
+/// `context_length` is believed; anything else is held here, comfortably inside
+/// what every model in the catalogue was trained on.
+pub(crate) const CTX_CEILING_UNKNOWN: u32 = 32_768;
+
+/// Hard ceiling on slots: past this the KV cache stops being free and a Mac
+/// with a big model would pay it in evictions.
+pub(crate) const MAX_SLOTS: u32 = 4;
+
+/// Resident cost of one decode slot beyond the first, from the measurements
+/// above: 29.6 GB at one slot, 30.4 at two, 32.0 at four. The planner has to
+/// pay it, or a two-slot default silently spends 0.8 GB it never budgeted.
+pub(crate) const KV_BYTES_PER_EXTRA_SLOT: u64 = 800_000_000;
+
+/// What a dense model pays beyond its own weights.
+///
+/// The graph, the compute buffers and the scratch every engine allocates,
+/// whatever the architecture. It is the same 2.5 GB the MoE branch charges as
+/// its fixed term; a dense model does not escape it for having no experts.
+pub(crate) const DENSE_RUNTIME_OVERHEAD: u64 = 2_500_000_000;
+
+/// Share of the measured free pool the engine may claim: four fifths.
+///
+/// The reading is a snapshot taken seconds before llama-server starts
+/// allocating, and the machine does not hold still in between: a tab opens,
+/// Spotlight indexes, this app's own webview grows. One fifth of the pool is
+/// what absorbs that drift, and it is also the honest price of counting
+/// inactive pages as available, since macOS hands them over readily but
+/// neither instantly nor always in full.
+///
+/// A FRACTION of the measured pool, not a constant, and that is the whole
+/// point: a constant is exactly the mistake being replaced here. A fifth of
+/// 4 GB free is a 0.8 GB cushion on a machine with nothing to spare, and a
+/// fifth of 100 GB free is 20 GB on a machine that has plenty. The cushion has
+/// to scale with the thing it is cushioning.
+pub(crate) const AVAILABLE_CLAIM_NUM: u64 = 4;
+
+pub(crate) const AVAILABLE_CLAIM_DEN: u64 = 5;
+
+/// Total resident bytes the engine may occupy: non-expert weights, runtime
+/// overhead and expert arena TOGETHER, not one of the three.
+///
+/// `available` is what `available_memory_bytes()` measured, and None when
+/// vm_stat could not be read or parsed. A missing measurement falls back to
+/// the hardware bound instead of refusing everything: no worse than the
+/// behaviour this replaces, and a broken probe must never make the app
+/// unusable.
+///
+/// `installed` reaches this from `ram_gb * 1e9`, which understates a machine
+/// sold in GiB by about 7 percent, while `available` is real bytes from
+/// vm_stat. The mismatch only ever makes the hardware bound smaller than the
+/// truth, and a bound that errs toward leaving memory free is the one to keep.
+/// The three readings that bound a start, and the one number every registry
+/// `min_ram_gb` is written against.
+///
+/// Grouped rather than passed one by one because they answer the same
+/// question, "what can this Mac give", and because they arrive together: one
+/// is a property of the hardware, one is a measurement taken seconds before
+/// the engine allocates, and one is what the GPU driver will actually let the
+/// process hold.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct MachineLimits {
+    /// `hw.memsize >> 30`. GiB, because that is the unit every `min_ram_gb`
+    /// in the registry is written in.
+    pub(crate) ram_gb: u64,
+    /// vm_stat free plus inactive plus speculative. `None` when vm_stat could
+    /// not be read.
+    pub(crate) available: Option<u64>,
+    /// `MTLDevice.recommendedMaxWorkingSetSize`. `None` when there is no Metal
+    /// device (headless CI, a VM without GPU passthrough).
+    pub(crate) gpu_working_set: Option<u64>,
+}
+
+/// The footprint modes, from the hungriest to the leanest. The step-down walks
+/// this array, so its order IS the policy.
+pub(crate) const MODE_LADDER: [&str; 3] = ["perf", "balanced", "eco"];
+
+/// What the engine would hold resident in each mode, for one model on one
+/// machine. Bytes, weights and runtime overhead included, not just the arena.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ModeFootprints {
+    pub(crate) eco: u64,
+    pub(crate) balanced: u64,
+    pub(crate) perf: u64,
+}
+
+/// The mode a start will actually use, and the numbers that justify it.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ModeDecision {
+    /// The mode the engine is started in.
+    pub(crate) mode: String,
+    /// The mode the user asked for. Different from `mode` after a step-down.
+    pub(crate) requested: String,
+    /// True when not even eco fits. The start is then refused with a sentence
+    /// about memory, rather than spawning an engine that will die mid-graph.
+    pub(crate) impossible: bool,
+    /// What the engine will hold, all three terms together.
+    pub(crate) resident_bytes: u64,
+    /// What the machine can give right now.
+    pub(crate) budget_bytes: u64,
+}
+
+/// Everything a start needs from the planner: the numbers the engine is given,
+/// and the mode decision that produced them.
+#[derive(Clone, Debug)]
+pub(crate) struct CachePlan {
+    pub(crate) cache_bytes: u64,
+    /// SLRU protected fraction.
+    pub(crate) protected: f64,
+    /// Physical micro-batch.
+    pub(crate) ubatch: u32,
+    pub(crate) decision: ModeDecision,
+}
+
+/// The most decode slots the app will ever recommend on its own.
+///
+/// A slot past the first is a whole extra KV cache: `KV_BYTES_PER_EXTRA_SLOT`,
+/// 0.8 GB, measured. Above two, nothing the app can read tells it the user
+/// wants a third conversation generating at the same time, so that stays an
+/// explicit choice in Settings rather than a guess the machine pays for.
+pub(crate) const RECOMMENDED_SLOT_CAP: u32 = 2;
+
+/// A volume the installer could write a pack to.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PackVolume {
+    pub(crate) mount: String,
+    pub(crate) free_bytes: u64,
+    /// Measured sequential read bandwidth, GB/s, from `volume_bandwidth`.
+    /// `None` when this volume has not been probed, and an unprobed volume is
+    /// never chosen as the second half of a dual pack: the split ratio is
+    /// computed FROM the two bandwidths, so guessing one would write a pack
+    /// cut at the wrong place for the life of the install.
+    pub(crate) bandwidth_gbs: Option<f64>,
+}
+
+/// Where a model's pack should be written.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub(crate) enum PackLayout {
+    /// One volume carries the whole pack.
+    Single { mount: String },
+    /// Both volumes carry a share of every record and are read in parallel.
+    /// `internal` is the faster of the two and takes the larger share.
+    Dual { internal: String, external: String },
+    /// No arrangement of the mounted volumes has room for this model.
+    NoRoom,
+}
+
+/// Bytes left free on a volume beyond the share it carries. Same 2 GiB the
+/// download preflight keeps (`INSTALL_DOWNLOAD_RESERVE_GIB`): a volume filled
+/// to its last byte is a volume macOS cannot work on.
+pub(crate) const PACK_VOLUME_RESERVE: u64 = INSTALL_DOWNLOAD_RESERVE_GIB * 1024 * 1024 * 1024;
+
+/// The slowest a second volume may be before splitting the pack across it
+/// costs more than it buys.
+///
+/// Not a new number: it is the threshold the install pipeline already applies
+/// as a fallback, and the one the install dialog already paints as its
+/// bottleneck verdict. What was missing is that the user had to reach that
+/// verdict by hand, by choosing dual and pressing Measure.
+pub(crate) const DUAL_BANDWIDTH_FLOOR: f64 = 0.35;
