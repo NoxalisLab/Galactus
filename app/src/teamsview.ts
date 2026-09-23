@@ -253,7 +253,10 @@ export function teamsSection(d: TeamsViewDeps): HTMLElement {
     }
     const spend = st.usage
       ? t("cloud.spend")
-          .replaceAll("%t", st.usage.total_usd.toFixed(2))
+          // Four decimals under a cent, as the per-call notices do: a day of
+          // cheap calls read "$0.00 of $5.00, 2 calls" while it had cost
+          // $0.00016, which looked like the ledger had missed them.
+          .replaceAll("%t", st.usage.total_usd.toFixed(st.usage.total_usd > 0 && st.usage.total_usd < 0.01 ? 4 : 2))
           .replaceAll("%c", st.usage.cap_usd.toFixed(2))
           .replaceAll("%n", String(st.usage.calls))
       : t("cloud.spendUnknown");
