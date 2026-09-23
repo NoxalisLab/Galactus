@@ -2,7 +2,7 @@
 
 # Galactus, your RAM stops being the limit
 
-![app](https://img.shields.io/badge/app-macOS%20Apple%20Silicon-1a7f37) ![dmg](https://img.shields.io/badge/download-55%20MB%20dmg-4a90d9) ![models](https://img.shields.io/badge/catalog-12%20certified%20MoE%20models-7c60e6) ![exact](https://img.shields.io/badge/output-bit--exact-2ea44f) ![offline](https://img.shields.io/badge/network-only%20when%20you%20ask-38b2ac)
+![app](https://img.shields.io/badge/app-macOS%20Apple%20Silicon-1a7f37) ![dmg](https://img.shields.io/badge/download-55%20MB%20dmg-4a90d9) ![models](https://img.shields.io/badge/catalog-16%20certified%20MoE%20models-7c60e6) ![exact](https://img.shields.io/badge/output-bit--exact-2ea44f) ![offline](https://img.shields.io/badge/network-only%20when%20you%20ask-38b2ac)
 
 A local AI app for macOS that runs Mixture-of-Experts models **several times larger than your Mac's memory**, at usable speed, with output identical bit for bit to stock llama.cpp.
 
@@ -32,27 +32,33 @@ That last point is not a slogan. A differential probe fingerprints every MoE ten
 
 ### What that buys, measured
 
-Every throughput below was measured on real hardware and lives in the model registry the app reads at runtime. One entry carries no curve yet, GLM-5.2 744B, which has a single measured point: it is certified bit-transparent, which is a different claim and the one that gates availability. Minimum RAM is what the app will let you install on, derived from measured resident footprint, not from arithmetic.
+Every throughput below was measured on real hardware and lives in the model registry the app reads at runtime. Most curves were taken in August on the bit-exact Metal kernels, which the app no longer runs by default (see below): they understate today's app, and are being re-measured. The rows marked *shipped kernels* are the new ones. Entries without a curve are certified bit-transparent, which is a different claim and the one that gates availability. Minimum RAM is what the app will let you install on, derived from measured resident footprint, not from arithmetic.
 
 | model | on disk | min RAM | measured throughput |
 |---|---|---|---|
 | GLM-5.2 744B (UD-IQ1_S) | 202 GB | 128 GB | 5.9 tok/s at 92 GB cache |
+| DeepSeek-V4-Flash 284B-A13B (UD-Q4_K_XL) | 155 GB | 128 GB | certified, curve being measured |
 | Qwen3-235B-A22B (Q4_K_M) | 142 GB | 24 GB | 0.6 tok/s at 12.5 GB, 1.0 at 24.2, 2.4 at 44.8 |
 | GLM-4.5-Air 106B (Q4_K_M) | 73 GB | 32 GB | 1.8 tok/s at 11.8 GB, 3.4 at 33.6, 15.4 at 66 |
 | gpt-oss-120b | 65 GB | 16 GB | 3.2 tok/s at 5.06 GB, 6.0 at 24.8, 20.6 at 60.9 |
 | Llama-4 Scout 17B-16E (Q4_K_M) | 65 GB | 24 GB | 2.8 tok/s at 9.59 GB, 10.0 at 32.6, 12.4 at 58.5 |
 | Qwen3-Next-80B-A3B (Q4_K_M) | 48 GB | 16 GB | 9.3 tok/s at 9.05 GB, 17.8 at 25.2, 18.2 at 46.9 |
+| Qwen3-Coder-Next 80B-A3B (UD-Q4_K_XL) | 50 GB | 16 GB | 29.5 tok/s at 7.6 GB, 41.1 at 22.4, 41.7 at 46.9, *shipped kernels, provisional* |
 | Qwen3-30B-A3B (Q8_0) | 32 GB | 16 GB | 7.1 tok/s at 9.07 GB, 25.5 at 22.4, 26.9 at 30.8 |
 | Qwen3-Coder-30B (Q8_0) | 32 GB | 16 GB | 4.3 tok/s at 9.07 GB, 27.9 at 22.4, 28.5 at 30.8 |
+| Nemotron-3.5 Lightning 30B-A3B (UD-Q4_K_M, hybrid Mamba) | 25 GB | 16 GB | certified, curve being measured |
 | Phi-3.5-MoE instruct (Q4_K_M) | 25 GB | 16 GB | 13.2 tok/s at 10.1 GB, 22.7 at 22.4, 23.8 at 24.4 |
 | OLMoE 1B-7B 0924 (Q4_K_M) | 4 GB | 16 GB | 11.0 tok/s at 0.98 GB, 52.4 at 2.93, 77.2 at 3.9 |
-| Qwen3.6 35B-A3B (UD-Q4_K_M) | 22 GB | 16 GB | 37.2 tok/s at 2.45 GB, 41.2 at 7.8, 46.1 at 19.57 |
+| Qwen3.6 35B-A3B (UD-Q4_K_M, MTP) | 22 GB | 16 GB | 37.2 tok/s at 2.45 GB, 41.2 at 7.8, 46.1 at 19.57 (before MTP; MTP adds 7 to 35 %) |
+| gpt-oss-20b (Q4_K_M) | 12 GB | 16 GB | 8.4 tok/s at 2.54 GB, 43.8 at 7.62, 85.5 at 10.15, *shipped kernels* |
 | Mellum2 12B-A2.5B Thinking (Q4_K_M) | 8 GB | 16 GB | 42.1 tok/s at 1.85 GB, 55.4 at 5.56, 62.6 at 7.41 |
 | Qwen3.8 27B (Q4_K_M, dense) | 17 GB | 32 GB | not accelerated: no experts to stream |
 
 The last row is the odd one out and is meant to be: Qwen3.8 27B is a dense model, so it has no experts to stream and the engine does not apply to it. It is offered because it is worth running, and its card says plainly that it is not accelerated and must fit in memory like anywhere else.
 
-Read the second and third columns together: a 142 GB model is usable on a 24 GB Mac, a 65 GB model on 16 GB. The app picks the regime for your machine on its own, every expert resident when the cache fits them all, streamed from SSD when it does not, or CPU experts for counter-verification. **All three regimes are bit-exact.** There is no fast-but-approximate mode, because a mode that changes the answer is not the same model.
+Read the second and third columns together: a 142 GB model is usable on a 24 GB Mac, a 65 GB model on 16 GB. The app picks the regime for your machine on its own, every expert resident when the cache fits them all, streamed from SSD when it does not, or CPU experts for counter-verification.
+
+**What is bit-exact, precisely.** The Galactus wiring itself never changes a number: streaming, caching and remapping experts is certified bit-transparent against stock llama.cpp for every model in the catalogue. The GPU kernels are a separate choice. By default the app runs llama.cpp's standard Metal expert kernels, which are 35 to 58 times faster at reading a prompt and about twice as fast at writing; their answers are as good, but not reproducible bit for bit against the CPU. The bit-exact Metal kernels, which replay the CPU integer pipeline exactly, are one setting away (Settings, numerics) for when reproducibility is the point.
 
 ---
 
@@ -60,7 +66,7 @@ Read the second and third columns together: a 142 GB model is usable on a 24 GB 
 
 A native macOS app for Apple Silicon, self-contained. The patched engine and its libraries, a private Python 3.12 runtime, the on-device dictation and document helpers, the model registry, 30 skills and a 50-note starter vault all ship inside the bundle. No Homebrew, no Python install, no account.
 
-**What reaches the network, precisely.** No telemetry, no analytics, no account, no phone-home of any kind. Inference is always local. One connection is opened on the app's own initiative, and only one: eight seconds after launch, in assistant mode, Galactus asks GitHub whether a newer version exists. It sends nothing but the request, downloads nothing, and a settings row turns it off. Server mode never checks at all, because an offer on a screen nobody watches can only get an accidental answer. The answer to your question is computed on your Mac and nowhere else. Three things do reach the internet, and each one only because you asked for it: downloading a model from Hugging Face when you install it; the agent fetching a page, running deep research, or executing a shell command that you allowed, each shown as a tool card with the exact URL or command before it runs; and any MCP connector you enable, which fetches its own server package. Turn none of them on and the app is fully offline. That is a weaker claim than "nothing ever leaves your Mac", and it is the true one.
+**What reaches the network, precisely.** No telemetry, no analytics, no account, no phone-home of any kind. Inference is local, unless you give a role in a model team to a cloud provider yourself. One connection is opened on the app's own initiative, and only one: eight seconds after launch, in assistant mode, Galactus asks GitHub whether a newer version exists. It sends nothing but the request, downloads nothing, and a settings row turns it off. Server mode never checks at all, because an offer on a screen nobody watches can only get an accidental answer. The answer to your question is computed on your Mac and nowhere else. Four things do reach the internet, and each one only because you asked for it: downloading a model from Hugging Face when you install it; the agent fetching a page, running deep research, or executing a shell command that you allowed, each shown as a tool card with the exact URL or command before it runs; any MCP connector you enable, which fetches its own server package; and a cloud role in a model team, which sends the tasks given to that role to the provider you configured. Turn none of them on and the app is fully offline. That is a weaker claim than "nothing ever leaves your Mac", and it is the true one.
 
 Grab `Galactus_x.y.z_aarch64.dmg` from the Releases page, drag it to Applications, launch it.
 
@@ -87,6 +93,10 @@ The chat is a full agent loop with three autonomy levels, manual, assisted and a
 *Nothing runs unasked: the diff is on screen before you allow it. 4x.*
 
 **Teams of sub-agents.** The agent can spawn teammates, brief them, and ask them questions. Each teammate gets a clean context and **its own visible thread**, so a team of engineers working in parallel is something you read, not something you infer from a summary. Delegation depth is bounded and cycles are refused.
+
+**Teams of models.** A team preset gives each role its own model: Qwen3.8 27B plans and reviews while Qwen3-Coder-Next writes the code, both resident side by side. Four presets ship and every one is editable in Settings, Model teams: a model per role, roles added or removed, with a memory estimate that says whether the team fits this Mac before anything starts. Engines share one memory budget; a model that does not fit beside the others is refused with the missing gigabytes and who holds them. Teams are off until you pick one. Two models generating at the same moment share the GPU, so each runs slower than alone.
+
+**Cloud roles, only if you want them.** A role can also be a model reached through an API, OpenRouter today, for the tasks the local team does badly. It is off by default. When you turn it on, your key goes to the macOS Keychain and never to the interface, a daily spending cap is enforced before the provider is contacted, secrets are masked from what is sent, and every call appears in the thread with its tokens and its cost.
 
 While the model is writing you keep typing. Messages queue, appear in the thread immediately, and run turn by turn. Context is managed adaptively: large tool outputs spill to scratch files the model rereads on demand, knowledge-base results are fitted to a token budget computed from the live window, and long threads are summarized by the model itself before the window overflows. Conversations do not die at the context edge, and they survive a restart.
 
