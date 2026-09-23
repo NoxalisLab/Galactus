@@ -13,8 +13,13 @@
 import { t } from "./i18n";
 import type { CloudUsage } from "./api";
 import {
+  CLOUD_PROVIDERS,
+  cloudBlock,
+  cloudProviderInfo,
   copyId,
   isCloud,
+  priceFor,
+  type CloudState,
   presetFootprint,
   roleKey,
   type SizedModel,
@@ -42,28 +47,30 @@ export interface TeamsViewDeps {
   cloud: CloudDeps;
 }
 
-/** The OpenRouter block. The key is write-only: nothing here can read it back. */
+/** The cloud providers block. Keys are write-only: nothing here can read one back. */
 export interface CloudDeps {
-  status(): Promise<{ enabled: boolean; keyed: boolean; redact: boolean; cap: string; usage: CloudUsage | null }>;
-  setEnabled(on: boolean): Promise<void>;
-  saveKey(key: string): Promise<void>;
-  clearKey(): Promise<void>;
+  /** A fresh status: keys from the Keychain, spend from the backend's ledger. */
+  status(): Promise<{ state: CloudState; redact: boolean; cap: string; usage: CloudUsage | null }>;
+  /** The last known state, for painting the cards synchronously. */
+  state(): CloudState;
+  setEnabled(provider: string, on: boolean): Promise<void>;
+  saveKey(provider: string, key: string): Promise<void>;
+  clearKey(provider: string): Promise<void>;
+  /** USD per million tokens, written to the user's own price table. */
+  setPrice(provider: string, model: string, input: number, output: number): Promise<void>;
   setCap(usd: string): Promise<void>;
   setRedact(on: boolean): Promise<void>;
   /** Asks the provider for its catalogue: a network call, so only on click. */
-  listModels(): Promise<string[]>;
+  listModels(provider: string): Promise<string[]>;
 }
 
-/** The only provider wired today. Roles carry theirs, so a second one is data. */
-const PROVIDER = "openrouter";
 /**
- * Offered before the user lists the catalogue: none. A hard-coded list of
- * provider slugs is out of date within months and would put a retired model
- * in front of the user as a suggestion. "Lister les modèles" fetches the live
- * catalogue on click, and any slug can be typed.
+ * Model suggestions per provider: none written here beyond each provider's
+ * single `suggested` default. A hard-coded list of slugs is out of date within
+ * months and would put a retired model in front of the user. "Lister les
+ * modèles" fetches the live catalogue on click, and any model can be typed.
  */
-const SLUG_HINTS: string[] = [];
-const CLOUD_OPTION = "__cloud__";
+const CLOUD_OPTION = "__cloud__:";
 
 const gb = (b: number): string => (b / 1e9).toFixed(b >= 10e9 ? 0 : 1);
 
@@ -71,8 +78,12 @@ export function teamsSection(d: TeamsViewDeps): HTMLElement {
   const box = document.createElement("div");
   box.className = "teams";
   const esc = d.esc;
-  /** Slugs for the datalist: the hints, then whatever "list models" brought back. */
-  let slugs: string[] = SLUG_HINTS;
+  /** Per provider, whatever "list models" brought back this session. */
+  const slugs: Record<string, string[]> = {};
+  const datalist = (provider: string): string => {
+    const list = slugs[provider] ?? [cloudProviderInfo(provider).suggested].filter(Boolean);
+    return `<datalist id="cloudslugs-${esc(provider)}">${list.map((x) => `<option value="${esc(x)}"></option>`).join("")}</datalist>`;
+  };
 
   const paint = (): void => {
     const presets = d.presets();
@@ -80,6 +91,7 @@ export function teamsSection(d: TeamsViewDeps): HTMLElement {
     const models = d.models();
     const budget = d.budget();
     const nameOf = (id: string) => models.find((m) => m.id === id)?.name ?? id;
+    const cloud = d.cloud.state();
 
     const options = [`<option value=""${active ? "" : " selected"}>${esc(t("teams.off"))}</option>`]
       .concat(presets.map((p) => `<option value="${esc(p.id)}"${p.id === active ? " selected" : ""}>${esc(p.name)}</option>`))
@@ -96,22 +108,45 @@ export function teamsSection(d: TeamsViewDeps): HTMLElement {
             : (fp.fits ? t("teams.fits") : t("teams.noFit")).replace("%b", budget ? gb(budget) : "?");
         const streamed = fp.roles.filter((r) => r.streamed && r.bytes > 0).map((r) => nameOf(r.modelId));
         const cloudRoles = fp.roles.filter((r) => r.cloud).map((r) => r.role);
+        // A provider that does not report cost needs a price before its role
+        // may run: the daily cap is computed from it. Such a preset cannot be
+        // activated until every price is set, rather than activated and then
+        // silently falling back at every spawn.
+        const unpriced = Object.values(p.roles)
+          .filter(isCloud)
+          .filter((r) => r.model && cloudProviderInfo(r.provider).needsPrice && !priceFor(cloud.prices ?? {}, r.provider, r.model))
+          .map((r) => `${r.provider}/${r.model}`);
         const roles = Object.entries(p.roles)
           .map(([role, target]) => {
             const del = `<button class="bs bglyph" data-delrole="${esc(role)}" title="${esc(t("teams.removeRole"))}"${Object.keys(p.roles).length <= 1 ? " disabled" : ""}>×</button>`;
-            const cloudOpt = (on: boolean) =>
-              `<option value="${CLOUD_OPTION}"${on ? " selected" : ""}>${esc(t("cloud.option"))}</option>`;
+            const cloudOpts = (selected: string | null) =>
+              CLOUD_PROVIDERS.map(
+                (cp) =>
+                  `<option value="${CLOUD_OPTION}${esc(cp.id)}"${cp.id === selected ? " selected" : ""}>${esc(t("cloud.option").replace("%p", cp.name))}</option>`
+              ).join("");
             if (isCloud(target)) {
+              const info = cloudProviderInfo(target.provider);
               const locals = models
                 .filter((m) => m.runnable)
                 .map((m) => `<option value="${esc(m.id)}">${esc(m.name)}</option>`)
                 .join("");
+              const price = target.model ? priceFor(cloud.prices ?? {}, target.provider, target.model) : null;
+              const priceRow = info.needsPrice && target.model
+                ? `<div class="team-price${price ? "" : " missing"}">
+                    <span>${esc(t(price ? "cloud.price" : "cloud.priceNeeded"))}</span>
+                    <label class="samp"><small>${esc(t("cloud.priceIn"))}</small><input type="number" min="0" step="0.1" data-pin="${esc(role)}" value="${price ? price[0] : ""}"/></label>
+                    <label class="samp"><small>${esc(t("cloud.priceOut"))}</small><input type="number" min="0" step="0.1" data-pout="${esc(role)}" value="${price ? price[1] : ""}"/></label>
+                  </div>`
+                : "";
+              const block = cloudBlock(target, cloud);
               return `<div class="team-role cloud">
               <span class="mono">${esc(role)}</span>
-              <select data-role="${esc(role)}">${cloudOpt(true)}${locals}</select>
-              <input class="team-slug mono" data-slug="${esc(role)}" list="cloudslugs" value="${esc(target.model)}" placeholder="${esc(t("cloud.slugPlaceholder"))}"/>
+              <select data-role="${esc(role)}">${cloudOpts(target.provider)}${locals}</select>
+              <input class="team-slug mono" data-slug="${esc(role)}" list="cloudslugs-${esc(target.provider)}" value="${esc(target.model)}" placeholder="${esc(info.suggested || t("cloud.slugPlaceholder"))}"/>
               ${del}
-            </div>`;
+            </div>
+            ${priceRow}
+            ${block && block !== "cloud-no-price" ? `<div class="team-note warn">${esc(t(`cloud.block.${block}`).replace("%p", info.name))}</div>` : ""}`;
             }
             const id = target;
             const cur = models.find((m) => m.id === id);
@@ -126,7 +161,7 @@ export function teamsSection(d: TeamsViewDeps): HTMLElement {
             if (!cur) opts.unshift(`<option value="${esc(id)}" selected>${esc(id)} (${esc(t("teams.unknownModel"))})</option>`);
             return `<div class="team-role">
               <span class="mono">${esc(role)}</span>
-              <select data-role="${esc(role)}">${opts.join("")}${cloudOpt(false)}</select>
+              <select data-role="${esc(role)}">${opts.join("")}${cloudOpts(null)}</select>
               ${del}
             </div>`;
           })
@@ -146,8 +181,9 @@ export function teamsSection(d: TeamsViewDeps): HTMLElement {
           <div class="team-roles">${roles}</div>
           <div class="team-add"><input class="team-newrole mono" placeholder="${esc(t("teams.rolePlaceholder"))}"/><button class="bs" data-addrole>${esc(t("teams.addRole"))}</button></div>
           <div class="team-fp ${fp.fits === false ? "bad" : fp.fits ? "good" : ""}">≈ ${gb(fp.bytes)} ${esc(t("teams.gbEstimated"))} · ${esc(verdict)}${streamed.length ? ` · ${esc(t("teams.streamed").replace("%s", streamed.join(", ")))}` : ""}${cloudRoles.length ? ` · ${esc(t("cloud.fpRoles").replace("%s", cloudRoles.join(", ")))}` : ""}</div>
+          ${unpriced.length ? `<div class="team-note warn">${esc(t("cloud.unpriced").replace("%s", unpriced.join(", ")))}</div>` : ""}
           <div class="set-actions">
-            ${p.id === active ? "" : `<button class="bs" data-activate>${esc(t("teams.activate"))}</button>`}
+            ${p.id === active ? "" : `<button class="bs" data-activate${unpriced.length ? ` disabled title="${esc(t("cloud.unpriced").replace("%s", unpriced.join(", ")))}"` : ""}>${esc(t("teams.activate"))}</button>`}
             <button class="bs" data-dup>${esc(t("teams.duplicate"))}</button>
             ${reset}
           </div>
@@ -160,7 +196,7 @@ export function teamsSection(d: TeamsViewDeps): HTMLElement {
         <select id="teamsel" class="teamsel">${options}</select>
       </div>
       <div class="team-cards">${presets.length ? cards : `<div class="team-note">${esc(t("teams.none"))}</div>`}</div>
-      <datalist id="cloudslugs">${slugs.map((x) => `<option value="${esc(x)}"></option>`).join("")}</datalist>
+      ${CLOUD_PROVIDERS.map((cp) => datalist(cp.id)).join("")}
       <div class="cloudbox"></div>`;
     void paintCloud();
   };
@@ -176,7 +212,7 @@ export function teamsSection(d: TeamsViewDeps): HTMLElement {
     try {
       st = await d.cloud.status();
     } catch {
-      st = { enabled: false, keyed: false, redact: true, cap: "5", usage: null };
+      st = { state: { enabled: {}, keyed: {} }, redact: true, cap: "5", usage: null };
     }
     const spend = st.usage
       ? t("cloud.spend")
@@ -184,25 +220,30 @@ export function teamsSection(d: TeamsViewDeps): HTMLElement {
           .replace("%c", st.usage.cap_usd.toFixed(2))
           .replace("%n", String(st.usage.calls))
       : t("cloud.spendUnknown");
-    host.innerHTML = `
-      <div class="set-row"><div class="grow"><b>${esc(t("cloud.title"))}</b><span>${esc(t("cloud.leaves"))}</span></div>
-        <button class="tgl ${st.enabled ? "on" : ""}" id="cloudtgl" role="switch" aria-checked="${st.enabled}"><span class="k"></span></button>
-      </div>
-      <div class="set-row"><div class="grow"><b>${esc(t("cloud.key"))}</b><span>${esc(st.keyed ? t("cloud.keySaved") : t("cloud.keyHint"))}</span></div>
+    // One block per provider: each is enabled on its own, with its own key,
+    // because trusting one company with the work is not trusting all three.
+    const providers = CLOUD_PROVIDERS.map((cp) => {
+      const on = !!st.state.enabled[cp.id];
+      const keyed = !!st.state.keyed[cp.id];
+      const pid = esc(cp.id);
+      return `<div class="set-row cloud-prov" data-provider="${pid}"><div class="grow"><b>${esc(cp.name)}</b><span>${esc(t("cloud.leaves").replace("%p", cp.name))}</span><span>${esc(keyed ? t("cloud.keySaved") : t("cloud.keyHint"))}</span></div>
         <div class="set-actions">
-          <input id="cloudkey" class="cloud-in" type="password" autocomplete="off" spellcheck="false" placeholder="${esc(st.keyed ? t("cloud.keyReplace") : "sk-or-…")}"/>
-          <button class="bs" id="cloudkeysave">${esc(t("cloud.keySave"))}</button>
-          ${st.keyed ? `<button class="bs" id="cloudkeyclear">${esc(t("cloud.keyClear"))}</button>` : ""}
+          <input class="cloud-in" data-key="${pid}" type="password" autocomplete="off" spellcheck="false" placeholder="${esc(keyed ? t("cloud.keyReplace") : t("cloud.keyPlaceholder"))}"/>
+          <button class="bs" data-act="savekey">${esc(t("cloud.keySave"))}</button>
+          ${keyed ? `<button class="bs" data-act="clearkey">${esc(t("cloud.keyClear"))}</button>` : ""}
+          <button class="bs" data-act="list"${on && keyed ? "" : " disabled"} title="${esc(t("cloud.modelsHint"))}">${esc(t("cloud.list"))}</button>
+          <button class="tgl ${on ? "on" : ""}" data-act="toggle" role="switch" aria-checked="${on}" aria-label="${esc(cp.name)}"><span class="k"></span></button>
         </div>
-      </div>
+      </div>`;
+    }).join("");
+    host.innerHTML = `
+      <div class="set-row"><div class="grow"><b>${esc(t("cloud.title"))}</b><span>${esc(t("cloud.intro"))}</span></div></div>
+      ${providers}
       <div class="set-row"><div class="grow"><b>${esc(t("cloud.cap"))}</b><span>${esc(spend)}</span></div>
         <label class="samp"><small>USD / ${esc(t("cloud.day"))}</small><input id="cloudcap" type="number" min="0" step="0.5" value="${esc(st.cap)}"/></label>
       </div>
       <div class="set-row"><div class="grow"><b>${esc(t("cloud.redact"))}</b><span>${esc(t("cloud.redactHint"))}</span></div>
         <button class="tgl ${st.redact ? "on" : ""}" id="cloudredact" role="switch" aria-checked="${st.redact}"><span class="k"></span></button>
-      </div>
-      <div class="set-row"><div class="grow"><b>${esc(t("cloud.models"))}</b><span>${esc(t("cloud.modelsHint"))}</span></div>
-        <button class="bs" id="cloudlist"${st.enabled ? "" : " disabled"}>${esc(t("cloud.list"))}</button>
       </div>`;
   };
 
@@ -249,9 +290,31 @@ export function teamsSection(d: TeamsViewDeps): HTMLElement {
           ...p.roles,
           // Turning a role cloud starts with no model: nothing leaves until a
           // slug is chosen, the provider enabled and a key stored.
-          [role]: value === CLOUD_OPTION ? { kind: "cloud", provider: PROVIDER, model: "" } : value,
+          // The provider's suggested model, when it has one, is only a
+          // starting point: nothing is sent until the provider is enabled,
+          // a key stored and, where needed, a price set.
+          [role]: value.startsWith(CLOUD_OPTION)
+            ? { kind: "cloud", provider: value.slice(CLOUD_OPTION.length), model: cloudProviderInfo(value.slice(CLOUD_OPTION.length)).suggested }
+            : value,
         },
       }));
+    } else if (target.dataset.pin || target.dataset.pout) {
+      const role = (target.dataset.pin || target.dataset.pout)!;
+      const p = d.presets().find((x) => x.id === id);
+      const cur = p?.roles[role];
+      const row = target.closest<HTMLElement>(".team-price");
+      const pin = Number(row?.querySelector<HTMLInputElement>("[data-pin]")?.value);
+      const pout = Number(row?.querySelector<HTMLInputElement>("[data-pout]")?.value);
+      // Saved once both halves are there: a price with one side is not a price.
+      const filled = (x: string | undefined) => x !== undefined && x.trim() !== "";
+      if (
+        isCloud(cur) && cur.model &&
+        filled(row?.querySelector<HTMLInputElement>("[data-pin]")?.value) &&
+        filled(row?.querySelector<HTMLInputElement>("[data-pout]")?.value) &&
+        Number.isFinite(pin) && Number.isFinite(pout) && pin >= 0 && pout >= 0
+      ) {
+        void d.cloud.setPrice(cur.provider, cur.model, pin, pout).then(paint, (e: any) => d.toast(String(e?.message ?? e)));
+      }
     } else if (target.dataset.slug) {
       const role = target.dataset.slug;
       const model = (target as HTMLInputElement).value.trim();
@@ -326,28 +389,30 @@ export function teamsSection(d: TeamsViewDeps): HTMLElement {
 
   const onCloudClick = async (b: HTMLElement): Promise<void> => {
     if (b.hasAttribute("disabled")) return;
+    const provider = b.closest<HTMLElement>("[data-provider]")?.dataset.provider ?? "";
+    const act = b.dataset.act ?? "";
     try {
-      if (b.id === "cloudtgl") {
-        await d.cloud.setEnabled(!b.classList.contains("on"));
-      } else if (b.id === "cloudredact") {
+      if (b.id === "cloudredact") {
         await d.cloud.setRedact(!b.classList.contains("on"));
-      } else if (b.id === "cloudkeysave") {
-        const input = box.querySelector<HTMLInputElement>("#cloudkey");
+      } else if (act === "toggle") {
+        await d.cloud.setEnabled(provider, !b.classList.contains("on"));
+      } else if (act === "savekey") {
+        const input = box.querySelector<HTMLInputElement>(`input[data-key="${CSS.escape(provider)}"]`);
         const key = input?.value.trim() ?? "";
         if (!key) return;
         // Cleared from the field before anything else: it is written once,
         // to the Keychain, and must not linger in the DOM.
         if (input) input.value = "";
-        await d.cloud.saveKey(key);
+        await d.cloud.saveKey(provider, key);
         d.toast(t("cloud.keySaved"), "ok");
-      } else if (b.id === "cloudkeyclear") {
-        await d.cloud.clearKey();
-      } else if (b.id === "cloudlist") {
+      } else if (act === "clearkey") {
+        await d.cloud.clearKey(provider);
+      } else if (act === "list") {
         b.setAttribute("disabled", "");
-        const got = await d.cloud.listModels();
+        const got = await d.cloud.listModels(provider);
         if (got.length) {
-          slugs = got;
-          const dl = box.querySelector<HTMLElement>("#cloudslugs");
+          slugs[provider] = got;
+          const dl = box.querySelector<HTMLElement>(`#cloudslugs-${CSS.escape(provider)}`);
           if (dl) dl.innerHTML = got.map((x) => `<option value="${esc(x)}"></option>`).join("");
           d.toast(t("cloud.listed").replace("%n", String(got.length)), "ok");
         }
@@ -355,9 +420,9 @@ export function teamsSection(d: TeamsViewDeps): HTMLElement {
     } catch (e: any) {
       d.toast(String(e?.message ?? e));
     }
-    // The cards' fallback state depends on the provider switch and the key,
+    // The cards' fallback state depends on the provider switches and keys,
     // so everything but the catalogue refresh repaints the whole section.
-    if (b.id === "cloudlist") await paintCloud();
+    if (act === "list") await paintCloud();
     else paint();
   };
 

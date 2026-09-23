@@ -51,6 +51,7 @@ mod documents;
 mod engine;
 mod engines;
 mod cloud;
+mod anthropic;
 mod install;
 mod library;
 mod mcp;

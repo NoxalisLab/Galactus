@@ -21,7 +21,13 @@ import {
   teamBudget,
   teamToolText,
   ENGINE_OVERHEAD_BYTES,
+  CLOUD_PROVIDERS,
+  cloudBlock,
   cloudModelId,
+  cloudProviderInfo,
+  mergePrices,
+  parsePrices,
+  priceFor,
   cloudSlug,
   isCloud,
   redactMessages,
@@ -296,4 +302,84 @@ test("redaction masks secrets on a copy and counts them", () => {
   assert.doesNotMatch(String(r.messages[1].content), /sk-proj-abcdef/);
   assert.equal(r.messages[0], msgs[0]);
   assert.match(String(msgs[1].content), /sk-proj-abcdef/, "the original history is untouched");
+});
+
+// ---------- providers and prices ----------
+
+test("each provider's role resolves to its own proxy id", () => {
+  const all: CloudState = {
+    enabled: { openrouter: true, anthropic: true, openai: true },
+    keyed: { openrouter: true, anthropic: true, openai: true },
+    prices: { "anthropic/claude-opus-5": [5, 25], "openai/some-model": [1, 2] },
+  };
+  const preset: TeamPreset = mergePresets(
+    [
+      {
+        id: "multi",
+        name: "M",
+        roles: {
+          a: { kind: "cloud", provider: "anthropic", model: "claude-opus-5" },
+          o: { kind: "cloud", provider: "openai", model: "some-model" },
+          r: { kind: "cloud", provider: "openrouter", model: "vendor/x" },
+        },
+      },
+    ],
+    ""
+  )[0];
+  for (const [role, id] of [
+    ["a", "cloud:anthropic/claude-opus-5"],
+    ["o", "cloud:openai/some-model"],
+    ["r", "cloud:openrouter/vendor/x"],
+  ]) {
+    assert.deepEqual(resolveRole(preset, role, [], null, all), { kind: "model", modelId: id, primary: false, engine: "cloud" });
+  }
+  // Enabling one provider says nothing about another.
+  const onlyAnthropic: CloudState = { ...all, enabled: { anthropic: true } };
+  const o = resolveRole(preset, "o", [], null, onlyAnthropic);
+  assert.ok(o.kind === "primary" && o.reason === "cloud-disabled");
+});
+
+test("providers that do not report cost need a price; OpenRouter does not", () => {
+  assert.equal(cloudProviderInfo("openrouter").needsPrice, false);
+  assert.equal(cloudProviderInfo("anthropic").needsPrice, true);
+  assert.equal(cloudProviderInfo("openai").needsPrice, true);
+  assert.equal(cloudProviderInfo("unknown-co").needsPrice, true, "an unknown provider is priced, the safe side");
+  assert.equal(cloudProviderInfo("anthropic").suggested, "claude-opus-5");
+  assert.deepEqual(CLOUD_PROVIDERS.map((p) => p.id), ["openrouter", "anthropic", "openai"]);
+
+  const noPrice: CloudState = { enabled: { anthropic: true, openrouter: true }, keyed: { anthropic: true, openrouter: true } };
+  const claude = { kind: "cloud" as const, provider: "anthropic", model: "claude-opus-5" };
+  assert.equal(cloudBlock(claude, noPrice), "cloud-no-price");
+  assert.equal(cloudBlock({ kind: "cloud", provider: "openrouter", model: "v/x" }, noPrice), null);
+  const preset: TeamPreset = { id: "c", name: "C", roles: { expert: claude }, source: "user" };
+  const r = resolveRole(preset, "expert", [], null, noPrice);
+  assert.ok(r.kind === "primary" && r.reason === "cloud-no-price");
+  assert.match(r.kind === "primary" ? r.sentence : "", /daily cap cannot be enforced/);
+  assert.doesNotMatch(teamToolText(preset, (x) => x, null, noPrice), /expert/, "an unpriced role is not offered");
+  const priced = { ...noPrice, prices: { "anthropic/claude-opus-5": [5, 25] as [number, number] } };
+  assert.equal(resolveRole(preset, "expert", [], null, priced).kind, "model");
+});
+
+test("user prices override the shipped table; malformed entries are dropped", () => {
+  const reg = { cloud_prices: { "anthropic/claude-opus-5": [5, 25], "anthropic/bad": [1], nokey: [1, 2] } };
+  const merged = mergePrices(JSON.stringify(reg), JSON.stringify({ "anthropic/claude-opus-5": [4, 20], "openai/x": [-1, 2] }));
+  assert.deepEqual(merged, { "anthropic/claude-opus-5": [4, 20] });
+  assert.equal(priceFor(merged, "anthropic", "claude-opus-5")?.[1], 20);
+  assert.equal(priceFor(merged, "anthropic", "claude-sonnet-5"), null);
+  assert.deepEqual(parsePrices("nope"), {});
+});
+
+test("the registry's cloud prices parse whole and price every shipped Anthropic role", () => {
+  const raw = fs.readFileSync(new URL("../../../../../../scripts/models-registry.json", import.meta.url), "utf8");
+  const reg = JSON.parse(raw);
+  const prices = mergePrices(raw, "");
+  assert.equal(Object.keys(prices).length, Object.keys(reg.cloud_prices).length, "no shipped price is malformed");
+  for (const p of presetsFromRegistry(raw))
+    for (const target of Object.values(p.roles)) {
+      if (!isCloud(target)) continue;
+      assert.ok(CLOUD_PROVIDERS.some((c) => c.id === target.provider), `${p.id}: unknown provider ${target.provider}`);
+      if (target.model && cloudProviderInfo(target.provider).needsPrice) {
+        assert.ok(priceFor(prices, target.provider, target.model), `${p.id}: no shipped price for ${target.provider}/${target.model}`);
+      }
+    }
 });

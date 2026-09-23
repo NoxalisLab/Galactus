@@ -28,6 +28,11 @@ import { detectPreviewable, PreviewKind, PreviewPanel } from "./preview";
 import { currentTask, loadTasks, pickModelFor, setCurrentTask, TaskDef, TaskId } from "./tasks";
 import {
   activePreset,
+  CLOUD_PROVIDERS,
+  cloudBlock,
+  cloudProviderInfo,
+  mergePrices,
+  type PriceTable,
   cloudProvider,
   cloudSlug,
   isCloud,
@@ -985,6 +990,7 @@ async function loadTaskDefs(): Promise<void> {
   if (!root) { tasks = loadTasks(null); shippedPresets = []; await loadTeams(); return; }
   try {
     const raw = await api.fsRead(root + "/scripts/models-registry.json", 500_000);
+    registryRaw = raw;
     tasks = loadTasks(raw);
     shippedPresets = presetsFromRegistry(raw);
   } catch {
@@ -1009,16 +1015,19 @@ let cloudState: CloudState = NO_CLOUD;
 /** Mask secrets before a request leaves for a provider. On unless set to "0". */
 let cloudRedact = true;
 
-/** Providers any preset names: the only ones whose key status is worth asking. */
+/** The raw registry text, kept for what is read from it lazily (cloud prices). */
+let registryRaw: string | null = null;
+
+/** Every known provider, plus any a preset names that this build does not know. */
 function cloudProviders(): string[] {
-  const out = new Set<string>(["openrouter"]);
+  const out = new Set<string>(CLOUD_PROVIDERS.map((p) => p.id));
   for (const p of teamPresets) for (const r of Object.values(p.roles)) if (isCloud(r)) out.add(r.provider);
   return [...out];
 }
 
 /** The display name of a provider, for the thread notices. */
 function providerName(p: string): string {
-  return p === "openrouter" ? "OpenRouter" : p;
+  return cloudProviderInfo(p).name;
 }
 
 /** Installed and allowed to run on this Mac: the only models a role may pick. */
@@ -1053,6 +1062,7 @@ async function loadCloud(st?: Record<string, string>): Promise<void> {
     // the role falls back with a sentence rather than failing the spawn.
     try { next.keyed[p] = await api.cloudKeyStatus(p); } catch { next.keyed[p] = false; }
   }
+  next.prices = mergePrices(registryRaw, st["cloud_prices_user"] ?? "");
   cloudState = next;
   cloudRedact = (st["cloud_redact"] ?? "1") !== "0";
 }
@@ -1070,7 +1080,7 @@ function publishTeam(): void {
   // the model would pick it and every spawn would fall back.
   const offered = p
     ? Object.entries(p.roles)
-        .filter(([, r]) => !isCloud(r) || (!!r.model && cloudState.enabled[r.provider] && cloudState.keyed[r.provider]))
+        .filter(([, r]) => !isCloud(r) || cloudBlock(r, cloudState) === null)
         .map(([k]) => k)
     : [];
   configureTeam({
@@ -4485,30 +4495,40 @@ function settingsView(): HTMLElement {
       cloud: {
         status: async () => {
           const st = await api.settingsGet();
-          let keyed = false;
-          try { keyed = await api.cloudKeyStatus("openrouter"); } catch { /* no backend: no key */ }
+          await loadCloud(st);
           let usage = null;
           try { usage = await api.cloudUsageToday(); } catch { /* shown as unknown */ }
           return {
-            enabled: st["cloud_openrouter_enabled"] === "1",
-            keyed,
+            state: cloudState,
             redact: (st["cloud_redact"] ?? "1") !== "0",
             cap: st["cloud_daily_cap_usd"] || "5",
             usage,
           };
         },
-        setEnabled: async (on) => {
-          await api.settingsSet("cloud_openrouter_enabled", on ? "1" : "");
+        state: () => cloudState,
+        setEnabled: async (provider, on) => {
+          await api.settingsSet(`cloud_${provider}_enabled`, on ? "1" : "");
           await loadCloud();
           publishTeam();
         },
-        saveKey: async (key) => {
-          await api.cloudKeySet("openrouter", key);
+        saveKey: async (provider, key) => {
+          await api.cloudKeySet(provider, key);
           await loadCloud();
           publishTeam();
         },
-        clearKey: async () => {
-          await api.cloudKeyClear("openrouter");
+        clearKey: async (provider) => {
+          await api.cloudKeyClear(provider);
+          await loadCloud();
+          publishTeam();
+        },
+        setPrice: async (provider, model, input, output) => {
+          // Only the user's own entries are written; the shipped table stays
+          // in the registry, so an update to it still reaches this user.
+          let st: Record<string, string> = {};
+          try { st = await api.settingsGet(); } catch { /* start from none */ }
+          const mine: PriceTable = mergePrices(null, st["cloud_prices_user"] ?? "");
+          mine[`${provider}/${model}`] = [input, output];
+          await api.settingsSet("cloud_prices_user", JSON.stringify(mine));
           await loadCloud();
           publishTeam();
         },
@@ -4517,7 +4537,7 @@ function settingsView(): HTMLElement {
           await api.settingsSet("cloud_redact", on ? "1" : "0");
           await loadCloud();
         },
-        listModels: () => api.cloudModels("openrouter"),
+        listModels: (provider) => api.cloudModels(provider),
       },
     })
   );

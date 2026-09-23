@@ -499,7 +499,7 @@ fn start_cloud(app: AppHandle, model_id: String, role: String) -> Result<EngineI
             map.remove(&model_id);
         }
     };
-    let (provider, slug) = match crate::cloud::preflight(&model_id) {
+    let (provider, slug, price) = match crate::cloud::preflight(&model_id) {
         Ok(p) => p,
         Err(e) => {
             unclaim();
@@ -507,7 +507,7 @@ fn start_cloud(app: AppHandle, model_id: String, role: String) -> Result<EngineI
         }
     };
     let stop = Arc::new(AtomicBool::new(false));
-    let port = match crate::cloud::spawn_proxy(crate::cloud::app_ctx(app.clone(), &provider, &slug), stop.clone()) {
+    let port = match crate::cloud::spawn_proxy(crate::cloud::app_ctx(app.clone(), &provider, &slug, price), stop.clone()) {
         Ok(p) => p,
         Err(e) => {
             unclaim();

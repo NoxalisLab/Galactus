@@ -236,15 +236,101 @@ export function copyId(presets: TeamPreset[], base: string): string {
   for (let i = 2; ; i++) if (!presets.some((p) => p.id === `${stem}-${i}`)) return `${stem}-${i}`;
 }
 
+/** A provider a cloud role can name. */
+export interface CloudProvider {
+  id: string;
+  name: string;
+  /**
+   * The provider does not return what a call cost, so the daily cap needs a
+   * price per model (USD per million tokens) to be enforced. OpenRouter
+   * returns the cost of each call and needs none.
+   */
+  needsPrice: boolean;
+  /**
+   * The model offered when a role is switched to this provider. A suggestion
+   * only: the catalogue is fetched from the provider on click, because any
+   * list written here goes stale.
+   */
+  suggested: string;
+}
+
+export const CLOUD_PROVIDERS: readonly CloudProvider[] = [
+  { id: "openrouter", name: "OpenRouter", needsPrice: false, suggested: "" },
+  { id: "anthropic", name: "Anthropic", needsPrice: true, suggested: "claude-opus-5" },
+  { id: "openai", name: "OpenAI", needsPrice: true, suggested: "" },
+];
+
+export function cloudProviderInfo(id: string): CloudProvider {
+  return CLOUD_PROVIDERS.find((p) => p.id === id) ?? { id, name: id, needsPrice: true, suggested: "" };
+}
+
+/** USD per million tokens, [input, output], keyed "<provider>/<model>". */
+export type PriceTable = Record<string, [number, number]>;
+
+/** A price table from any JSON-ish source. Entries that are not two non-negative numbers are dropped. */
+export function parsePrices(raw: unknown): PriceTable {
+  let v: unknown = raw;
+  if (typeof v === "string") {
+    try {
+      v = JSON.parse(v);
+    } catch {
+      return {};
+    }
+  }
+  const out: PriceTable = {};
+  if (!isRecord(v)) return out;
+  for (const [k, p] of Object.entries(v)) {
+    if (!k.includes("/") || !Array.isArray(p) || p.length !== 2) continue;
+    const [i, o] = p.map(Number);
+    if (Number.isFinite(i) && Number.isFinite(o) && i >= 0 && o >= 0) out[k] = [i, o];
+  }
+  return out;
+}
+
+/** Shipped prices (registry `cloud_prices`) under the user's (`cloud_prices_user`). */
+export function mergePrices(registryRaw: unknown, userRaw: unknown): PriceTable {
+  let reg: unknown = registryRaw;
+  if (typeof reg === "string") {
+    try {
+      reg = JSON.parse(reg);
+    } catch {
+      reg = null;
+    }
+  }
+  return { ...parsePrices(isRecord(reg) ? reg["cloud_prices"] : null), ...parsePrices(userRaw) };
+}
+
+/** The price of one cloud model, or null when none is known. */
+export function priceFor(prices: PriceTable, provider: string, model: string): [number, number] | null {
+  return prices[`${provider}/${model}`] ?? null;
+}
+
 /** What the user allowed for each cloud provider. The key itself never comes here. */
 export interface CloudState {
   /** provider -> enabled in the settings. */
   enabled: Record<string, boolean>;
   /** provider -> a key is stored in the Keychain. */
   keyed: Record<string, boolean>;
+  /** Shipped and user prices merged; required for a provider with needsPrice. */
+  prices?: PriceTable;
 }
 
 export const NO_CLOUD: CloudState = { enabled: {}, keyed: {} };
+
+/**
+ * Why a cloud role cannot run right now, or null when it can.
+ * One order everywhere: the resolution, the tool text and the settings agree.
+ */
+export function cloudBlock(
+  t: CloudTarget,
+  cloud: CloudState
+): "cloud-unconfigured" | "cloud-disabled" | "cloud-no-key" | "cloud-no-price" | null {
+  if (!t.model) return "cloud-unconfigured";
+  if (!cloud.enabled[t.provider]) return "cloud-disabled";
+  if (!cloud.keyed[t.provider]) return "cloud-no-key";
+  if (cloudProviderInfo(t.provider).needsPrice && !priceFor(cloud.prices ?? {}, t.provider, t.model)) return "cloud-no-price";
+  return null;
+}
 
 export type RoleResolution =
   /**
@@ -263,7 +349,8 @@ export type RoleResolution =
         | "not-runnable"
         | "cloud-unconfigured"
         | "cloud-disabled"
-        | "cloud-no-key";
+        | "cloud-no-key"
+        | "cloud-no-price";
       sentence: string;
     };
 
@@ -312,6 +399,16 @@ export function resolveRole(
         kind: "primary",
         reason: "cloud-no-key",
         sentence: `No ${target.provider} API key is stored, so this teammate runs on the current model.`,
+      };
+    }
+    if (cloudBlock(target, cloud) === "cloud-no-price") {
+      // The backend refuses the same start with the same reason: without a
+      // price the daily cap cannot be enforced for a provider that does not
+      // report what a call cost.
+      return {
+        kind: "primary",
+        reason: "cloud-no-price",
+        sentence: `No price is set for ${target.provider}/${target.model} (Settings > Cloud), and the daily cap cannot be enforced without it, so this teammate runs on the current model.`,
       };
     }
     return { kind: "model", modelId: cloudModelId(target), primary: false, engine: "cloud" };
@@ -514,7 +611,7 @@ export function teamToolText(
   primaryModelId: string | null,
   cloud: CloudState = NO_CLOUD
 ): string {
-  const usable = (t: CloudTarget) => !!t.model && !!cloud.enabled[t.provider] && !!cloud.keyed[t.provider];
+  const usable = (t: CloudTarget) => cloudBlock(t, cloud) === null;
   if (!preset) return "";
   const rows: string[] = [];
   const cloudRoles: string[] = [];
@@ -523,7 +620,7 @@ export function teamToolText(
       // Listed only when it can actually run: offering a role that falls back
       // teaches the model that the expert exists when it does not.
       if (!usable(target)) continue;
-      rows.push(`${role} = ${target.model} (CLOUD, ${target.provider}, paid per call)`);
+      rows.push(`${role} = ${target.model} (CLOUD, ${cloudProviderInfo(target.provider).name}, paid per call)`);
       cloudRoles.push(role);
     } else {
       rows.push(`${role} = ${nameOf(target)}${target === primaryModelId ? " (the model you run on)" : ""}`);

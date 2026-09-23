@@ -706,10 +706,35 @@ const dict: Record<string, { en: string; fr: string }> = {
     fr: "%m n'est pas disponible (%e) : ce tour tourne sur le modèle en cours.",
   },
   // Cloud roles (OpenRouter). Off by default; every call is shown with its cost.
-  "cloud.title": { en: "Cloud (OpenRouter)", fr: "Cloud (OpenRouter)" },
+  "cloud.title": { en: "Cloud providers", fr: "Fournisseurs cloud" },
+  "cloud.intro": {
+    en: "Off by default. Each provider is enabled on its own, with its own key.",
+    fr: "Désactivés par défaut. Chaque fournisseur s'active séparément, avec sa propre clé.",
+  },
   "cloud.leaves": {
-    en: "When on, the tasks given to a cloud role leave this Mac and are sent to OpenRouter, which bills them.",
-    fr: "Activé, les tâches confiées à un rôle cloud quittent ce Mac et sont envoyées à OpenRouter, qui les facture.",
+    en: "When on, the tasks given to a %p role leave this Mac and are sent to %p, which bills them.",
+    fr: "Activé, les tâches confiées à un rôle %p quittent ce Mac et sont envoyées à %p, qui les facture.",
+  },
+  "cloud.keyPlaceholder": { en: "API key", fr: "clé API" },
+  "cloud.price": { en: "Price, USD per million tokens", fr: "Prix, USD par million de tokens" },
+  "cloud.priceNeeded": {
+    en: "Price required (USD per million tokens): without it the daily cap cannot be enforced",
+    fr: "Prix requis (USD par million de tokens) : sans lui, le plafond quotidien ne peut pas être appliqué",
+  },
+  "cloud.priceIn": { en: "input", fr: "entrée" },
+  "cloud.priceOut": { en: "output", fr: "sortie" },
+  "cloud.unpriced": {
+    en: "Set a price before activating: %s",
+    fr: "Renseigne un prix avant d'activer : %s",
+  },
+  "cloud.block.cloud-unconfigured": { en: "Choose a %p model.", fr: "Choisis un modèle %p." },
+  "cloud.block.cloud-disabled": {
+    en: "%p is off: this role runs on the current model.",
+    fr: "%p est désactivé : ce rôle tourne sur le modèle en cours.",
+  },
+  "cloud.block.cloud-no-key": {
+    en: "No %p key stored: this role runs on the current model.",
+    fr: "Aucune clé %p enregistrée : ce rôle tourne sur le modèle en cours.",
   },
   "cloud.key": { en: "API key", fr: "Clé API" },
   "cloud.keyHint": {
@@ -732,14 +757,13 @@ const dict: Record<string, { en: string; fr: string }> = {
     en: "Keys and passwords the agent read are replaced before a request leaves",
     fr: "Les clés et mots de passe lus par l'agent sont remplacés avant qu'une requête parte",
   },
-  "cloud.models": { en: "Model catalogue", fr: "Catalogue des modèles" },
   "cloud.modelsHint": {
-    en: "Fetched from OpenRouter only when you click",
-    fr: "Demandé à OpenRouter seulement quand tu cliques",
+    en: "Fetched from the provider only when you click",
+    fr: "Demandé au fournisseur seulement quand tu cliques",
   },
   "cloud.list": { en: "List models", fr: "Lister les modèles" },
   "cloud.listed": { en: "%n models listed", fr: "%n modèles listés" },
-  "cloud.option": { en: "Cloud (OpenRouter)…", fr: "Cloud (OpenRouter)…" },
+  "cloud.option": { en: "Cloud · %p…", fr: "Cloud · %p…" },
   "cloud.slugPlaceholder": { en: "provider/model", fr: "fournisseur/modèle" },
   "cloud.fpRoles": { en: "cloud, paid: %s", fr: "cloud, payant : %s" },
   "cloud.sent": {

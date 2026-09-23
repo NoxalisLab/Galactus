@@ -2045,3 +2045,8 @@ html.pane-dragging .pvw-frame { pointer-events: none; }
 .team-slug { flex: 1; min-width: 0; background: var(--inset); border: 1px solid var(--bd2); border-radius: 0; padding: 6px 8px; color: var(--tx); font-size: 11.5px; outline: none; }
 .team-role.cloud select { flex: 0 0 180px; }
 .cloud-in { width: 200px; background: var(--inset); border: 1px solid var(--bd2); border-radius: 0; padding: 6px 8px; color: var(--tx); font-size: 12px; outline: none; }
+.team-price { display: flex; align-items: flex-end; gap: 10px; padding-left: 106px; font-size: 11.5px; color: var(--dim); }
+.team-price > span { flex: 1; }
+.team-price.missing > span { color: var(--warn); }
+.team-note.warn { color: var(--warn); }
+.cloud-prov .set-actions { flex-wrap: wrap; justify-content: flex-end; max-width: 60%; }
