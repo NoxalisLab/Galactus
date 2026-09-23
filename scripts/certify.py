@@ -103,6 +103,18 @@ REGIME = ("llama-perplexity, CPU expert reference: --n-cpu-moe 99 --no-repack --
           "--chunks 1, stock against wired (GALACTUS_H4=1, --no-mmap)")
 
 
+def regime() -> str:
+    """REGIME, plus any override that changed how both passes ran.
+
+    GALACTUS_NGL=0 is the only way to certify a model whose GGUF is larger than
+    the Metal working set: the stock pass maps the whole file and runs out of
+    GPU memory otherwise. A perplexity taken that way is a different regime and
+    has to say so, not be recorded under the default string.
+    """
+    ngl = os.environ.get("GALACTUS_NGL")
+    return REGIME if ngl in (None, "99") else f"{REGIME}, GALACTUS_NGL={ngl} (both passes)"
+
+
 def die(msg: str) -> "None":
     print(f"ECHEC: {msg}", file=sys.stderr)
     raise SystemExit(2)
@@ -199,7 +211,7 @@ def ppl_record(corpus: pathlib.Path, stock: float, wired: float, stamp: str,
         "ctx": CTX,
         "batch": SAFE_BATCH,
         "ubatch": SAFE_UBATCH,
-        "regime": REGIME,
+        "regime": regime(),
         "date": day,
         "run": stamp,
         "recorded_by": "scripts/certify.py",

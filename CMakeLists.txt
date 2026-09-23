@@ -314,10 +314,10 @@ set_target_properties(galactus-h4-kernel-parity-probe PROPERTIES
 if(APPLE)
     # galactus-h4-expf-parity-probe : parite numerique CPU vs Metal de l'exponentielle
     # (balayage exhaustif des 2^32 float32) et de l'operateur SWIGLU_OAI complet.
-    # Le MSL teste est extrait du ggml-metal.metal reellement livre : aucune recopie.
+    # Le MSL teste est extrait du kernels/galactus.metal reellement livre : aucune recopie.
     add_executable(galactus-h4-expf-parity-probe src/h4/h4-expf-parity-probe.mm)
     target_compile_definitions(galactus-h4-expf-parity-probe PRIVATE
-        "GALACTUS_METAL_SRC_PATH=\"${CMAKE_SOURCE_DIR}/third_party/llama.cpp/ggml/src/ggml-metal/ggml-metal.metal\"")
+        "GALACTUS_METAL_SRC_PATH=\"${CMAKE_SOURCE_DIR}/third_party/llama.cpp/ggml/src/ggml-metal/kernels/galactus.metal\"")
     target_include_directories(galactus-h4-expf-parity-probe PRIVATE
         "${CMAKE_SOURCE_DIR}/third_party/llama.cpp/ggml/include")
     target_link_libraries(galactus-h4-expf-parity-probe PRIVATE

@@ -245,8 +245,8 @@ void collect_routes(
         std::vector<trace_record> & records) {
     ctx->synchronize();
 
-    const auto & routes = ctx->get_gf_res_prev()->get_moe_routes();
-    ggml_tensor * tensor = ctx->get_gf_res_prev()->get_moe_route_trace();
+    const auto & routes = ctx->galactus_gf_res_prev()->get_moe_routes();
+    ggml_tensor * tensor = ctx->galactus_gf_res_prev()->get_moe_route_trace();
     if (routes.empty() || tensor == nullptr) {
         return;
     }
