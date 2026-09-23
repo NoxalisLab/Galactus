@@ -1371,6 +1371,62 @@ mod tests {
         stop_proxy(&stop, port);
     }
 
+    /// Live check against the real OpenRouter, never run by default: it costs
+    /// real (tiny) money and needs a key. Run with
+    ///   GALACTUS_LIVE_OPENROUTER_KEY=sk-or-... cargo test --lib live_openrouter -- --ignored --nocapture
+    /// It drives the same proxy the app starts: a stream, a tool call, the
+    /// tool result sent back, and the cost read from usage.cost into the ledger.
+    #[test]
+    #[ignore]
+    fn live_openrouter_roundtrip() {
+        let Ok(key) = std::env::var("GALACTUS_LIVE_OPENROUTER_KEY") else {
+            panic!("set GALACTUS_LIVE_OPENROUTER_KEY");
+        };
+        let ledger = scratch_ledger("live-openrouter");
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let port = spawn_proxy(
+            ctx_for(OPENROUTER, "openai/gpt-oss-20b", None, OPENROUTER_CHAT.into(), ledger.clone(), Ok(key), calls.clone()),
+            stop.clone(),
+        )
+        .unwrap();
+
+        // 1. A stream, as the agent sends it (llama.cpp extras included, which
+        //    the provider must not choke on).
+        let reply = post(port, r#"{"model":"x","stream":true,"max_tokens":200,"temperature":0.6,"id_slot":0,"messages":[{"role":"user","content":"Reply with the single word: bonjour"}]}"#);
+        eprintln!("--- stream ---\n{}", &reply[..reply.len().min(600)]);
+        assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+        assert!(reply.contains("[DONE]"), "{reply}");
+
+        // 2. A tool call, non-streamed.
+        let tools = r#"[{"type":"function","function":{"name":"get_time","description":"Current local time","parameters":{"type":"object","properties":{}}}}]"#;
+        let body = format!(r#"{{"model":"x","max_tokens":400,"tools":{tools},"messages":[{{"role":"user","content":"What time is it? Use the tool."}}]}}"#);
+        let reply = post(port, &body);
+        let json_at = reply.find("\r\n\r\n").map(|i| i + 4).unwrap_or(0);
+        let v: Value = serde_json::from_str(reply[json_at..].trim()).unwrap_or(Value::Null);
+        eprintln!("--- tool call ---\n{}", &reply[..reply.len().min(900)]);
+        let call = &v["choices"][0]["message"]["tool_calls"][0];
+        assert_eq!(call["function"]["name"], "get_time", "{reply}");
+        let id = call["id"].as_str().unwrap_or("call_0").to_string();
+
+        // 3. The tool result goes back; a final answer comes out.
+        let body = format!(
+            r#"{{"model":"x","max_tokens":400,"tools":{tools},"messages":[{{"role":"user","content":"What time is it? Use the tool."}},{{"role":"assistant","content":"","tool_calls":[{{"id":"{id}","type":"function","function":{{"name":"get_time","arguments":"{{}}"}}}}]}},{{"role":"tool","tool_call_id":"{id}","content":"14:32"}}]}}"#
+        );
+        let reply = post(port, &body);
+        eprintln!("--- final ---\n{}", &reply[..reply.len().min(900)]);
+        assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+        assert!(reply.contains("14"), "{reply}");
+
+        let got = calls.lock().unwrap().clone();
+        eprintln!("--- billed ---\n{got:?}");
+        assert_eq!(got.len(), 3, "{got:?}");
+        assert!(got.iter().all(|c| c.cost_usd > 0.0 && !c.estimated), "{got:?}");
+        let l = ledger_load(&ledger, "2026-09-23");
+        assert_eq!(l.calls.len(), 3);
+        stop_proxy(&stop, port);
+    }
+
     #[test]
     fn with_cloud_off_the_proxy_answers_without_the_network() {
         let ledger = scratch_ledger("off");
