@@ -46,6 +46,7 @@ function harness(status: Record<string, unknown>, settings: Record<string, strin
     train: async () => { calls.push("train"); },
     cancelTrain: async () => { calls.push("canceltrain"); },
     forgetAll: async () => { calls.push("forget"); },
+    setActive: async (on) => { calls.push(`active:${on}`); },
     rollback: async () => { calls.push("rollback"); },
     exportTraces: async () => { calls.push("export"); return "ok"; },
     clearTraces: async () => { calls.push("clear"); },
@@ -99,7 +100,7 @@ test("a rejected training is shown with its numbers and the failed gate", async 
 });
 
 test("training shows live progress and ends on the result", async () => {
-  const h = harness({ installed: true, traces: 90, active: "c1", previous: "c0" });
+  const h = harness({ installed: true, traces: 300, active: "c1", previous: "c0" });
   await waitFor(() => find("#lrntrain")?.disabled === false, "train enabled");
   assert.equal(find("#lrnactive")!.getAttribute("aria-disabled"), null);
   find("#lrntrain")!.click();
@@ -135,13 +136,14 @@ test("erase everything deletes traces then checkpoints and switches the student 
   find("#lrnforget")!.click();
   await waitFor(() => h.calls.includes("forget"), "forget called");
   await settle();
-  const order = h.calls.filter((c) => ["confirm", "clear", "forget", "set:learning_active="].includes(c));
-  assert.deepEqual(order, ["confirm", "clear", "forget", "set:learning_active="]);
+  const order = h.calls.filter((c) => ["confirm", "clear", "forget", "active:false"].includes(c));
+  assert.deepEqual(order, ["confirm", "clear", "forget", "active:false"]);
+  assert.ok(!h.calls.some((c) => c.startsWith("set:learning_active")), "the setting goes through decisions_set_active");
   assert.ok(h.calls.includes("changed:false/false"));
 });
 
 test("a backend error is shown in French with the backend's words underneath", async () => {
-  const h = harness({ installed: true, traces: 90 });
+  const h = harness({ installed: true, traces: 300 });
   await waitFor(() => find("#lrntrain")?.disabled === false, "train enabled");
   find("#lrntrain")!.click();
   await settle();
@@ -150,4 +152,14 @@ test("a backend error is shown in French with the backend's words underneath", a
   assert.match(find(".learn-detail")!.textContent, /HTTP 503/);
   assert.ok(find(".learn-error .warn")!.textContent.length > 0);
   assert.equal(find("#lrntrain")!.disabled, false);
+});
+
+test("the student switch goes through decisions_set_active, and training says how many traces it needs", async () => {
+  const h = harness({ installed: true, traces: 50, active: "c1" });
+  await waitFor(() => find("#lrnactive")?.getAttribute("aria-disabled") === null, "switch enabled");
+  assert.equal(find("#lrntrain")!.disabled, true);
+  assert.match(find(".learn")!.textContent, /50.*240/);
+  find("#lrnactive")!.click();
+  await waitFor(() => h.calls.includes("active:true"), "set_active called");
+  assert.ok(!h.calls.some((c) => c.startsWith("set:learning_active")));
 });

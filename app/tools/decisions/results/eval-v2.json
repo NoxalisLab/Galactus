@@ -3,12 +3,20 @@
     "acc": 0.9238,
     "ece": 0.0483,
     "n": 105,
-    "latency_ms_p50": 12.15,
-    "latency_ms_p95": 14.91
+    "latency_ms_p50": 12.39,
+    "latency_ms_p95": 17.19
   },
   "heuristic": {
     "acc": 0.5714,
     "n": 105
+  },
+  "policy": {
+    "acc": 0.8952,
+    "ece_on_student_rows": 0.0108,
+    "n": 105,
+    "student_share": 0.9238,
+    "threshold": 0.6,
+    "min_chars": 8
   },
   "labels": {
     "teacher": 0,
@@ -20,27 +28,32 @@
     "general": {
       "n": 21,
       "student": 0.9524,
-      "heuristic": 0.2381
+      "heuristic": 0.2381,
+      "policy": 0.8095
     },
     "code": {
       "n": 21,
       "student": 0.8095,
-      "heuristic": 0.7143
+      "heuristic": 0.7143,
+      "policy": 0.7619
     },
     "scripting": {
       "n": 21,
       "student": 0.9048,
-      "heuristic": 0.6667
+      "heuristic": 0.6667,
+      "policy": 0.9524
     },
     "writing": {
       "n": 21,
       "student": 1.0,
-      "heuristic": 0.6667
+      "heuristic": 0.6667,
+      "policy": 1.0
     },
     "reasoning": {
       "n": 21,
       "student": 0.9524,
-      "heuristic": 0.5714
+      "heuristic": 0.5714,
+      "policy": 0.9524
     }
   },
   "gate_advisory": {

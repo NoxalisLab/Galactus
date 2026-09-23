@@ -26,7 +26,10 @@ from typing import Any
 
 
 FREE_RE = re.compile(r"System-wide memory free percentage:\s*(\d+)%")
-SWAP_RE = re.compile(r"used\s*=\s*([0-9.]+)M")
+# sysctl prints the decimal separator of the user's locale: "29113,94M" on a
+# French Mac. Matching only a dot made the swap guard silently read nothing
+# there, so the "swap grew by" stop rule could never fire.
+SWAP_RE = re.compile(r"used\s*=\s*([0-9]+(?:[.,][0-9]+)?)M")
 
 
 def capture(*args: str) -> str:
@@ -40,7 +43,7 @@ def free_percent() -> int | None:
 
 def swap_used_mb() -> float | None:
     match = SWAP_RE.search(capture("sysctl", "vm.swapusage"))
-    return float(match.group(1)) if match else None
+    return float(match.group(1).replace(",", ".")) if match else None
 
 
 def galactus_servers(root: Path) -> list[dict[str, Any]]:

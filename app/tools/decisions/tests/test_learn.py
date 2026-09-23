@@ -105,6 +105,20 @@ def test_label_exit_codes(tmp_path, capsys):
     assert code == 0 and lines[-1]["labels"]["outcome"] == 2 and lines[-1]["unlabelled"] == 2
 
 
+def test_splits_counts_without_model(tmp_path, capsys):
+    traces = tmp_path / "traces.jsonl"
+    write_traces(traces, 200)
+    code, lines = run(capsys, "splits", "--traces", str(traces))
+    assert code == 0 and len(lines) == 1
+    res = lines[-1]
+    assert res["event"] == "result" and res["phase"] == "splits"
+    want = {s: sum(split_of(f"tr-{i}") == s for i in range(200)) for s in ("train", "calib", "test")}
+    assert res["splits"] == want and res["traces"] == 200
+    assert res["with_outcome"] == len(range(0, 200, 3))
+    code, lines = run(capsys, "splits", "--traces", str(tmp_path / "missing"))
+    assert code == learn.EXIT_INPUT
+
+
 def test_usage_error_is_2():
     with pytest.raises(SystemExit) as e:
         learn.main(["train"])
@@ -147,7 +161,9 @@ def test_train_then_evaluate_with_fake_model(tmp_path, base_dir, monkeypatch, ca
                       "--heuristic-json", str(heur), "--out", str(tmp_path / "rep.json"))
     assert code == 0
     res = lines[-1]
-    assert set(res) >= {"student", "heuristic", "gate_advisory", "labels"}
+    assert set(res) >= {"student", "heuristic", "policy", "gate_advisory", "labels"}
+    assert res["policy"]["threshold"] == 0.6 and res["policy"]["min_chars"] == 8
+    assert res["policy"]["student_share"] == 1.0  # conf 0.9, messages >= 8 chars
     n_test = res["student"]["n"]
     assert n_test == res["heuristic"]["n"] > 0
     assert res["student"]["acc"] == res["heuristic"]["acc"]  # both always answer "code"

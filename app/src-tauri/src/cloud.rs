@@ -1078,7 +1078,10 @@ pub(crate) fn app_ctx(app: AppHandle, provider: &str, slug: &str, price: Option<
 }
 
 /// The checks a cloud engine start makes before it listens.
-pub(crate) fn preflight(model_id: &str) -> Result<(String, String, Option<(f64, f64)>), String> {
+/// (provider, model slug, price per million tokens in and out when known).
+pub(crate) type Preflight = (String, String, Option<(f64, f64)>);
+
+pub(crate) fn preflight(model_id: &str) -> Result<Preflight, String> {
     let (provider, slug) = parse_cloud_id(model_id)?;
     let settings = settings_load();
     // The setting first: with cloud off, not even the Keychain is asked.

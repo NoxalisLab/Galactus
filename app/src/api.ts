@@ -610,6 +610,8 @@ export const api = {
   decisionsTrain: () => invoke<void>("decisions_train"),
   decisionsRollback: () => invoke<unknown>("decisions_rollback"),
   decisionsTrainCancel: () => invoke<void>("decisions_train_cancel"),
+  /** Write learning_active; switching off also stops the student's service. */
+  decisionsSetActive: (active: boolean) => invoke<unknown>("decisions_set_active", { active }),
   /** Delete every learned checkpoint (active, previous, rejected). Traces go with decisions_traces_clear. */
   decisionsForgetAll: () => invoke<void>("decisions_forget_all"),
   /** The two settings the page may not write directly: they run programs. */

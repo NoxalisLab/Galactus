@@ -170,7 +170,7 @@ pub(crate) fn limits_after(machine: MachineLimits, held: &[HeldEngine]) -> Machi
 /// two models to stop.
 pub(crate) fn shortfall_message(model_id: &str, needs: u64, left: u64, held: &[HeldEngine]) -> String {
     let mut holders: Vec<&HeldEngine> = held.iter().collect();
-    holders.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+    holders.sort_by_key(|h| std::cmp::Reverse(h.bytes));
     let named = holders
         .iter()
         .map(|h| format!("{} ({}) holds {:.1} GB", h.model_id, h.role, h.bytes as f64 / 1e9))

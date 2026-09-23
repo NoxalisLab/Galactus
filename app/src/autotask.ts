@@ -15,7 +15,7 @@
 // student through an injected `decide`, and falls back to detectTask() on any
 // doubt. detectTask() itself stays synchronous and untouched by it.
 
-import { chooseDecision, parseStudent, STUDENT_BUDGET_MS, withBudget, type DecisionSource, type StudentAnswer } from "./learning.js";
+import { chooseDecision, parseStudent, redactState, STUDENT_BUDGET_MS, withBudget, type DecisionSource, type StudentAnswer } from "./learning.js";
 
 export type TaskId = "general" | "code" | "scripting" | "writing" | "reasoning";
 
@@ -218,7 +218,8 @@ export async function detectTaskLearned(
   if (!deps || !deps.active() || heuristic.reason === "message trop court") return fallback;
   let raw: unknown = null;
   try {
-    raw = await withBudget(deps.decide(text, previous), deps.budgetMs ?? STUDENT_BUDGET_MS);
+    // The student is trained on redacted traces: it is served the same text.
+    raw = await withBudget(deps.decide(redactState(text).text, previous), deps.budgetMs ?? STUDENT_BUDGET_MS);
   } catch {
     raw = null;
   }
@@ -296,6 +297,17 @@ export function planSwap(
  */
 export function mayAutoSwap(plan: SwapPlan, threshold = 0.55): boolean {
   return plan.kind === "required" && plan.confidence >= threshold;
+}
+
+/**
+ * mayAutoSwap for a detection that may come from the learned student.
+ *
+ * The 0.55 threshold was set on the heuristic's score, not on the student's
+ * calibrated probability, so a student answer never reloads a model on its
+ * own: it can change the persona, and at most OFFER the swap.
+ */
+export function mayAutoSwapFrom(plan: SwapPlan, source: "student" | "heuristic"): boolean {
+  return source === "heuristic" && mayAutoSwap(plan);
 }
 
 // ---- persisted preference ----

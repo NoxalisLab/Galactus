@@ -50,7 +50,7 @@ The app runs one entry point, with the venv it builds from its bundled Python
 `$GALACTUS_LAYA_BASE`, with the local Hugging Face cache as the last resort.
 
 ```
-learn.py            CLI: status | serve | label | train | evaluate  (JSON lines on stdout)
+learn.py            CLI: status | splits | serve | label | train | evaluate  (JSON lines)
 task_detection.py   the typed question, state_for(), hash split, hand-set loader, ECE
 labeling.py         trace parsing, teacher client, outcome-over-teacher labels (stdlib only)
 trainer.py          fine-tune (proper score) + temperature fit + atomic checkpoint write
@@ -66,10 +66,11 @@ tests/              pytest, fake tokenizer and tiny model: no checkpoint is down
 | command | arguments | last stdout line (`"event": "result"`) |
 |---|---|---|
 | `status` | `[--checkpoint DIR] [--base DIR]` | `python, packages, toolkit_ok, device, base{path,ok}, checkpoint{path,ok,training}` |
+| `splits` | `--traces F` | `traces, splits{train,calib,test}, with_outcome, with_outcome_by_split` (no teacher, no model) |
 | `serve` | `--port P --checkpoint DIR [--host 127.0.0.1] [--device D]` | first line `{"event":"ready","port":P,...}`, then serves until SIGTERM |
 | `label` | `--traces F --out F [--teacher-url URL]` | `labels{teacher,outcome,hand}, labelled, unlabelled, teacher_errors, teacher_model, splits` |
 | `train` | `--out DIR [--data F] [--base DIR] [--no-hand] [--hand-holdout] [--epochs 5] [--batch 8] [--lr] [--head-lr] [--seed] [--device]` | `checkpoint, labels{teacher,outcome,hand}, train, calib, test_held_out, temperature, calib_acc, losses, seconds, device` |
-| `evaluate` | `--checkpoint DIR (--test F \| --hand-test) [--heuristic-json F] [--out F] [--device]` | `student{acc,ece,n,latency_ms_p50,latency_ms_p95}, heuristic{acc,n}, labels, by_task, gate_advisory{n_test_ok,accuracy_gain_ok,ece_ok,accepted}` |
+| `evaluate` | `--checkpoint DIR (--test F \| --hand-test) [--heuristic-json F] [--threshold 0.6] [--min-chars 8] [--out F] [--device]` | `student{acc,ece,n,latency_ms_p50,latency_ms_p95}, policy{acc,ece_on_student_rows,n,student_share,threshold,min_chars}, heuristic{acc,n}, labels, by_task, gate_advisory{n_test_ok,accuracy_gain_ok,ece_ok,accepted}` |
 
 Every stdout line is one JSON object: `{"event":"progress","phase","pct","message"}` while
 working, then `result` on success or `{"event":"error","phase","code","message"}` on failure.
@@ -96,8 +97,16 @@ temporary sibling and renamed at the end, so a cancel leaves nothing half-writte
   shape as in the app and learns no shortcut from it.
 - **Evaluation**: only test-split traces, scored for both systems on the rows the heuristic
   answered (`--heuristic-json` `{"<id>": "<task>"}` from the app, else the answer recorded in
-  the trace). The app decides the gate; `gate_advisory` restates it: n >= 60, student accuracy
-  >= heuristic + 3 pts, ECE <= 0.10.
+  the trace). Three systems are scored on the same rows: `student` (the checkpoint alone, for
+  information), `heuristic`, and `policy`, the decision the app actually deploys: the student's
+  answer when its confidence is >= `--threshold` (0.6) and the message has >= `--min-chars` (8)
+  characters, `detectTask()` otherwise. `policy.student_share` is the fraction of rows the
+  student answered, and `policy.ece_on_student_rows` the student's ECE on those rows only (null
+  when there are none). **The gate compares `policy.acc` with `heuristic.acc`**, not the pure
+  student. The app decides it; `gate_advisory` restates it: n >= 60, policy accuracy >=
+  heuristic + 3 pts, student ECE <= 0.10.
+- **`splits`** counts traces per split with the same hash and no model, so the app can see
+  whether the test split can reach n >= 60 before it labels anything.
 
 ### Toolkit
 
@@ -117,10 +126,11 @@ phase 1, where `previous` was always `general`. Report: `results/eval-v2.json`.
 | system | accuracy | ECE | latency p50 / p95 |
 |---|---|---|---|
 | `detectTask()` (app, via `heuristic.mjs`) | 0.571 | n/a | n/a |
-| student `task-detection-v2` | **0.924** | **0.048** | 12.2 / 14.9 ms |
+| student `task-detection-v2` alone | 0.924 | 0.048 | 12.2 / 14.9 ms |
+| **deployed policy** (threshold 0.6, >= 8 chars) | **0.895** | 0.011 on the 92 % of rows the student answered | |
 
 Per task, student / heuristic: general 0.95/0.24, code 0.81/0.71, scripting 0.90/0.67, writing
-1.00/0.67, reasoning 0.95/0.57. The advisory gate passes (n 105, +35 pts, ECE 0.048). This still
+1.00/0.67, reasoning 0.95/0.57. The advisory gate passes on the policy (n 105, +32 pts, ECE 0.048). This still
 only proves the pipeline: same author, same distribution, no real traces. Through `serve`, the
 first calls after the warm-up took 22-28 ms. SIGTERM during `train` exits 130 and leaves no
 checkpoint.

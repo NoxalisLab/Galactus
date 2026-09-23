@@ -57,7 +57,7 @@ import {
   configureLearnedDecision,
   detectTaskLearned,
   getAutoMode,
-  mayAutoSwap,
+  mayAutoSwapFrom,
   planSwap,
   setAutoMode,
   type AutoMode,
@@ -2707,14 +2707,14 @@ async function autoRouteTask(text: string, target: store.ThreadTarget): Promise<
     store.pushNotice(target, t("auto.switched").replace("%s", td?.label ?? taskId));
   }
 
-  const swap: SwapAction = !plan.modelId ? "none" : mode === "auto" && mayAutoSwap(plan) ? "auto" : "offered";
+  const swap: SwapAction = !plan.modelId ? "none" : mode === "auto" && mayAutoSwapFrom(plan, detection.source) ? "auto" : "offered";
   traceDecision(text, previous, detection, taskId, swap);
 
   if (!plan.modelId) return;
   const m = registry.find((r) => r.id === plan.modelId);
   const name = m?.name ?? plan.modelId;
 
-  if (mode === "auto" && mayAutoSwap(plan)) {
+  if (mode === "auto" && mayAutoSwapFrom(plan, detection.source)) {
     // Costly but warranted: tell the user what is happening, then reload.
     // The engine goes away, so EVERY live thread stops, not just this one.
     store.pushNotice(target, t("auto.swapping").replace("%s", name));
@@ -4669,6 +4669,7 @@ function settingsView(): HTMLElement {
       cancelTrain: () => api.decisionsTrainCancel(),
       rollback: () => api.decisionsRollback(),
       forgetAll: () => api.decisionsForgetAll(),
+      setActive: (on) => api.decisionsSetActive(on),
       exportTraces: async () => {
         const dir = await pickFolderOrSay();
         if (!dir) return null;
@@ -5988,7 +5989,13 @@ async function boot() {
   // one would have dropped whatever the background threads just wrote.
   // Runs are on the same checkpoint: their debounced writes are the only
   // record of a turn that already happened.
-  window.addEventListener("beforeunload", () => { store.flushAll(); runsview.flushRuns(); learnTracker.flush(); });
+  window.addEventListener("beforeunload", () => { store.flushAll(); runsview.flushRuns(); learnTracker.persist(); });
+  // The IPC behind a trace write is asynchronous, so the unload hook alone
+  // is a race. Hidden is the last moment a write reliably completes; the open
+  // rows are written there too, and rewritten later if their outcome changes.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") learnTracker.persist();
+  });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") { store.flushAll(); runsview.flushRuns(); }
   });

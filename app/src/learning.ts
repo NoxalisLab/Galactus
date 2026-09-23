@@ -44,6 +44,13 @@ export const STUDENT_BUDGET_MS = 50;
 /** Default confidence the student must reach before it is trusted. */
 export const DEFAULT_THRESHOLD = 0.6;
 
+/**
+ * Traces needed before a training is worth running: the held-out split is
+ * about a quarter of them, and the gate wants at least 60 test rows. The
+ * backend's own floor wins when decisions_status reports one.
+ */
+export const MIN_TRACES_TO_TRAIN = 240;
+
 /** The gate, as the spec fixes it. Shown next to the numbers, checked in Rust. */
 export const GATE = { minTest: 60, minGainPoints: 3, maxEce: 0.1 } as const;
 
@@ -80,8 +87,20 @@ export function redactState(text: string): { text: string; removed: number } {
     return p;
   });
   out = out.replace(HOME_DIR, "~");
-  if (out.length > STATE_MAX_CHARS) out = out.slice(0, STATE_MAX_CHARS);
-  return { text: out, removed };
+  return { text: capChars(out, STATE_MAX_CHARS), removed };
+}
+
+/**
+ * The first `max` UTF-16 units of `s`, never ending on half a surrogate pair.
+ * A lone high surrogate serialises to a JSON string serde refuses, and the
+ * whole trace row would be rejected for one emoji at the cut.
+ */
+export function capChars(s: string, max: number): string {
+  if (s.length <= max) return s;
+  let end = max;
+  const last = s.charCodeAt(end - 1);
+  if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+  return s.slice(0, end);
 }
 
 // ---------------------------------------------------------------- trace rows
@@ -179,13 +198,27 @@ export function makeTraceRow(i: TraceInput): TraceRow {
 /**
  * Holds the rows whose outcome window is still open.
  *
- * A row is written when OUTCOME_WINDOW newer decisions exist after it, or on
- * flush(). The user's reactions are attributed to the most recent decision
- * that CHANGED the task when there is one in the window, because that is the
- * decision a hand-picked task corrects; otherwise to the most recent one.
+ * A row is CLOSED when OUTCOME_WINDOW newer decisions exist after it: a
+ * correction made while the user writes the next two messages still counts,
+ * one made after the second of them does not.
+ *
+ * Writes are append-only and learn.py keeps the LAST line of a repeated id, so
+ * a row may be written more than once and the latest version wins. That is
+ * what makes the tracker robust to the page going away: a row is written the
+ * moment it gets an outcome, persist() writes every open row that changed
+ * since it was last written (the page calls it when it is hidden and before
+ * unload), and closing a row writes it only if it changed since. The calls go
+ * through an asynchronous IPC, so a page killed mid-write can still lose what
+ * it wrote last: at worst the rows of the last OUTCOME_WINDOW decisions.
+ *
+ * The user's reactions are attributed to the most recent decision that CHANGED
+ * the task when there is one in the window, because that is the decision a
+ * hand-picked task corrects; otherwise to the most recent one.
  */
 export class OutcomeTracker {
   private pending: TraceRow[] = [];
+  /** id -> the JSON last handed to `write`, so an unchanged row is not written twice. */
+  private written = new Map<string, string>();
 
   constructor(
     private readonly write: (row: TraceRow) => void,
@@ -197,9 +230,21 @@ export class OutcomeTracker {
     return this.pending;
   }
 
+  private emit(row: TraceRow): void {
+    const json = JSON.stringify(row);
+    if (this.written.get(row.id) === json) return;
+    this.written.set(row.id, json);
+    this.write(row);
+  }
+
+  private close(row: TraceRow): void {
+    this.emit(row);
+    this.written.delete(row.id);
+  }
+
   record(row: TraceRow): void {
     this.pending.push(row);
-    while (this.pending.length > this.window + 1) this.write(this.pending.shift()!);
+    while (this.pending.length > this.window) this.close(this.pending.shift()!);
   }
 
   private target(): TraceRow | null {
@@ -216,18 +261,25 @@ export class OutcomeTracker {
     const previous = row.state.previous_task;
     const switched = row.applied !== previous;
     row.outcome = { kind: switched && task === previous ? "undone" : "repicked", task };
+    this.emit(row);
   }
 
   /** The offered model swap was accepted: the decision was right. */
   swapAccepted(): void {
     const row = this.lastOffered();
-    if (row && !row.outcome?.task) row.outcome = { kind: "accepted", task: row.decision.task };
+    if (row && !row.outcome?.task) {
+      row.outcome = { kind: "accepted", task: row.decision.task };
+      this.emit(row);
+    }
   }
 
   /** The offered model swap was dismissed. Recorded, labels nothing. */
   swapRefused(): void {
     const row = this.lastOffered();
-    if (row && !row.outcome) row.outcome = { kind: "refused", task: null };
+    if (row && !row.outcome) {
+      row.outcome = { kind: "refused", task: null };
+      this.emit(row);
+    }
   }
 
   private lastOffered(): TraceRow | null {
@@ -237,16 +289,22 @@ export class OutcomeTracker {
     return null;
   }
 
-  /** Write every open row now: collection turned off, or the window is closing. */
+  /** Write every open row that changed since it was last written, keeping the windows open. */
+  persist(): void {
+    for (const r of this.pending) this.emit(r);
+  }
+
+  /** Close every open row now: collection is ending. */
   flush(): void {
     const rows = this.pending;
     this.pending = [];
-    for (const r of rows) this.write(r);
+    for (const r of rows) this.close(r);
   }
 
-  /** Forget the open rows without writing them: the user deleted the traces. */
+  /** Forget the open rows without writing them: the user deleted the traces or stopped collecting. */
   drop(): void {
     this.pending = [];
+    this.written.clear();
   }
 }
 
@@ -363,6 +421,8 @@ export interface LearningStatus {
   rejected: number;
   /** learn.py ships with this build. False on a build made without it. */
   shipped: boolean;
+  /** Traces needed before a training can be measured (60 test rows, about 240 traces). */
+  minTraces: number;
 }
 
 function num(v: unknown, dflt = 0): number {
@@ -409,6 +469,7 @@ export function parseStatus(raw: unknown): LearningStatus {
     last: parseResult(o.last),
     rejected: num(o.rejected),
     shipped: o.toolkit_shipped !== false,
+    minTraces: num(o.min_traces ?? o.min_traces_to_train, MIN_TRACES_TO_TRAIN) || MIN_TRACES_TO_TRAIN,
   };
 }
 
@@ -491,6 +552,7 @@ export function panelState(i: PanelInput): PanelState {
   else if (!s.installed) trainBlocked = "learn.block.noToolkit";
   else if (training) trainBlocked = "learn.block.training";
   else if (installing) trainBlocked = "learn.block.installing";
+  else if (s.traces < s.minTraces) trainBlocked = "learn.block.fewTraces";
   else if (!i.primaryReady) trainBlocked = "learn.block.noTeacher";
   const activateBlocked = s.active || i.settings.active ? null : "learn.block.noCheckpoint";
   return {

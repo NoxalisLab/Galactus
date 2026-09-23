@@ -51,9 +51,10 @@ const TRACE_MAX_AGE_SECS: u64 = 90 * 86_400;
 /// A trace row is a redacted message and a few fields. Anything larger is a
 /// pasted file that redaction let through, and it is refused rather than kept.
 const TRACE_ROW_MAX_BYTES: usize = 64 * 1024;
-/// Below this many real traces the gate cannot pass (n_test >= 60 on a
-/// held-out part of them), so a training run would only burn minutes.
-const MIN_TRACES_TO_TRAIN: usize = 60;
+/// The floor the UI states: learn.py holds out about a quarter of the traces
+/// for the test, and the gate wants 60 there, so about 4 x 60. The real check
+/// is on the split itself (check_splits), before any labelling.
+pub(crate) const MIN_TRACES_TO_TRAIN: usize = 240;
 
 const DECIDE_BUDGET: Duration = Duration::from_millis(50);
 /// Loading the checkpoint (644 MB) and warming MPS takes seconds, rarely more
@@ -65,6 +66,24 @@ const SIDECAR_RETRY_AFTER: Duration = Duration::from_secs(60);
 /// Right after the engines' range, so the two never hand out the same port.
 const SIDECAR_PORT_BASE: u16 = SERVER_PORT_BASE + SERVER_PORT_SPAN;
 const SIDECAR_PORT_SPAN: u16 = 10;
+
+/// What `learn.py splits` says, checked before the teacher is asked anything:
+/// labelling hundreds of traces for a test split the gate must refuse is
+/// minutes of the user's machine for nothing.
+pub(crate) fn check_splits(lines: &[Value]) -> Result<(), String> {
+    let splits = lines
+        .iter()
+        .rev()
+        .find_map(|v| v.get("splits").filter(|s| s.is_object()))
+        .ok_or("learn.py splits returned no split sizes")?;
+    let test = splits.get("test").and_then(Value::as_u64).ok_or("learn.py splits returned no test size")?;
+    if test < GATE_MIN_N {
+        return Err(format!(
+            "{test} traces de test, {GATE_MIN_N} nécessaires (environ 4× plus de traces)"
+        ));
+    }
+    Ok(())
+}
 
 // Gate, all three required, on the held-out split of REAL traces.
 const GATE_MIN_N: u64 = 60;
@@ -279,6 +298,49 @@ fn write_atomic(path: &Path, payload: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+/// What decide() needs on every message, read once and kept until something
+/// changes it: the switch and the active checkpoint. Every writer of either
+/// (save_state, decisions_set_active, settings_set on a learning_ key) drops
+/// it AFTER writing, so the next decide() reads the new value.
+#[derive(Clone, Debug, PartialEq)]
+struct Switches {
+    on: bool,
+    active: Option<String>,
+}
+
+static SWITCHES: Mutex<Option<Switches>> = Mutex::new(None);
+/// Bumped by every invalidation. A reader that loaded the files while a writer
+/// invalidated does not store what it read: it may be the old value.
+static SWITCHES_GEN: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn invalidate_cache() {
+    let mut cached = SWITCHES.lock().unwrap_or_else(|e| e.into_inner());
+    SWITCHES_GEN.fetch_add(1, Ordering::SeqCst);
+    *cached = None;
+}
+
+fn switches(layout: &Layout) -> Switches {
+    if let Some(s) = SWITCHES.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        return s;
+    }
+    let generation = SWITCHES_GEN.load(Ordering::SeqCst);
+    let fresh = Switches { on: setting_on("learning_active"), active: load_state(layout).active };
+    let mut cached = SWITCHES.lock().unwrap_or_else(|e| e.into_inner());
+    if SWITCHES_GEN.load(Ordering::SeqCst) == generation {
+        *cached = Some(fresh.clone());
+    }
+    fresh
+}
+
+/// learning_threshold as the webview uses it: 0.6 unless a probability is set.
+pub(crate) fn user_threshold(settings: &HashMap<String, String>) -> f64 {
+    settings
+        .get("learning_threshold")
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .filter(|t| t.is_finite() && (0.0..=1.0).contains(t))
+        .unwrap_or(0.6)
+}
+
 fn setting_on(key: &str) -> bool {
     settings_load().get(key).map(|v| v == "1").unwrap_or(false)
 }
@@ -301,7 +363,12 @@ pub(crate) struct LearnState {
     pub(crate) rejected: Vec<Value>,
 }
 
+/// Numbers of rejected runs kept in state.json (a few hundred bytes each).
 const REJECTED_KEPT: usize = 20;
+/// Checkpoint FOLDERS kept (644 MB each): the two newest rejected runs, for a
+/// look at what failed, and two steps of rollback history. Never the active one.
+const REJECTED_DIRS_KEPT: usize = 2;
+const HISTORY_KEPT: usize = 2;
 
 fn state_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: Mutex<()> = Mutex::new(());
@@ -318,7 +385,9 @@ fn load_state(layout: &Layout) -> LearnState {
 fn save_state(layout: &Layout, state: &LearnState) -> Result<(), String> {
     layout.ensure()?;
     let text = serde_json::to_string_pretty(state).map_err(|e| e.to_string())?;
-    write_atomic(&layout.state(), text.as_bytes())
+    let written = write_atomic(&layout.state(), text.as_bytes());
+    invalidate_cache();
+    written
 }
 
 /// The state after a gated run: an accepted checkpoint becomes active and the
@@ -339,8 +408,64 @@ pub(crate) fn apply_result(mut state: LearnState, id: &str, result: &Value) -> L
     state
 }
 
+/// The history trimmed to its newest HISTORY_KEPT entries.
+pub(crate) fn trim_history(mut state: LearnState) -> LearnState {
+    let over = state.history.len().saturating_sub(HISTORY_KEPT);
+    state.history.drain(..over);
+    state
+}
+
+/// Checkpoint folders nothing refers to any more: not active, not in the
+/// (trimmed) history, not one of the newest rejected runs. `existing` is what
+/// `checkpoints/` holds.
+pub(crate) fn doomed_checkpoints(state: &LearnState, existing: &[String]) -> Vec<String> {
+    let mut keep: Vec<&str> = Vec::new();
+    keep.extend(state.active.as_deref());
+    keep.extend(state.history.iter().map(String::as_str));
+    keep.extend(
+        state
+            .rejected
+            .iter()
+            .rev()
+            .filter_map(|r| r.get("checkpoint").and_then(Value::as_str))
+            .take(REJECTED_DIRS_KEPT),
+    );
+    existing.iter().filter(|id| !keep.contains(&id.as_str())).cloned().collect()
+}
+
+/// Delete the doomed folders. Only while no training run is writing one.
+fn sweep_checkpoints(layout: &Layout, state: &LearnState) {
+    let existing: Vec<String> = std::fs::read_dir(layout.checkpoints())
+        .map(|d| d.flatten().filter_map(|e| e.file_name().to_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    for id in doomed_checkpoints(state, &existing) {
+        if let Ok(dir) = checkpoint_path(layout, &id) {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+}
+
+/// What a finished job folder keeps: its numbers. The traces snapshot, the
+/// labels, the heuristic answers and the log hold user text, and they go
+/// whatever the outcome (accepted, rejected, failed, cancelled).
+pub(crate) fn scrub_job(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        if name == "eval.json" || name == "result.json" {
+            continue;
+        }
+        let path = e.path();
+        if path.is_dir() {
+            let _ = std::fs::remove_dir_all(&path);
+        } else {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
 /// One step back: the previous active checkpoint, or the heuristic alone when
-/// there is none. The checkpoint rolled back from stays on disk.
+/// there is none. The checkpoint rolled back from is swept by the caller.
 pub(crate) fn rolled_back(mut state: LearnState) -> Result<LearnState, String> {
     if state.active.is_none() {
         return Err("no student is active: the heuristic is already in use".into());
@@ -356,6 +481,9 @@ pub(crate) struct Verdict {
     pub(crate) accepted: bool,
     pub(crate) student: Value,
     pub(crate) heuristic: Value,
+    /// The student at the user's threshold with the heuristic behind it, as
+    /// evaluate reported it; Null when absent.
+    pub(crate) policy: Value,
     /// Why it was rejected, one sentence per failed condition.
     pub(crate) reasons: Vec<String>,
 }
@@ -372,51 +500,63 @@ fn eval_body(eval: &Value) -> Option<&Value> {
     eval.get("result").filter(|r| r.get("student").is_some() && r.get("heuristic").is_some())
 }
 
-/// The gate, over evaluate's JSON: n_test >= 60, student accuracy >= heuristic
-/// accuracy + 3 points, ECE <= 0.10. A missing number fails its condition:
-/// a checkpoint is never activated on numbers nobody measured.
+/// The gate, over evaluate's JSON:
+///   - student.n >= 60 held-out real traces,
+///   - policy.acc >= heuristic.acc + 3 points, where the policy is what the app
+///     would really do (the student above the user's threshold, the heuristic
+///     below it and on short messages),
+///   - student.ece <= 0.10.
+///
+/// A missing number fails its condition: a checkpoint is never activated on
+/// numbers nobody measured.
 pub(crate) fn gate(eval: &Value) -> Verdict {
     let Some(body) = eval_body(eval) else {
         return Verdict {
             accepted: false,
             student: Value::Null,
             heuristic: Value::Null,
+            policy: Value::Null,
             reasons: vec!["the evaluation returned no student and heuristic numbers".into()],
         };
     };
     let s = &body["student"];
     let h = &body["heuristic"];
+    let p = &body["policy"];
     let s_acc = num(s, &["acc", "accuracy"]);
     let s_ece = num(s, &["ece"]);
     let s_n = num(s, &["n"]).map(|n| n as u64);
     let h_acc = num(h, &["acc", "accuracy"]);
     let h_n = num(h, &["n"]).map(|n| n as u64).or(s_n);
+    let p_acc = num(p, &["acc", "accuracy"]);
     let mut reasons = Vec::new();
     match s_n {
         Some(n) if n >= GATE_MIN_N => {}
         Some(n) => reasons.push(format!("only {n} held-out traces, {GATE_MIN_N} needed")),
         None => reasons.push("the held-out size is missing".into()),
     }
-    match (s_acc, h_acc) {
+    match (p_acc, h_acc) {
         // A small epsilon: 0.70 + 0.03 must pass at 0.73 despite binary floats.
         (Some(a), Some(b)) if a + 1e-9 >= b + GATE_MIN_GAIN => {}
         (Some(a), Some(b)) => reasons.push(format!(
-            "student accuracy {:.1} % does not beat the heuristic's {:.1} % by {:.0} points",
+            "with the student at your threshold, accuracy is {:.1} %, not {:.0} points above the heuristic's {:.1} %",
             a * 100.0,
-            b * 100.0,
-            GATE_MIN_GAIN * 100.0
+            GATE_MIN_GAIN * 100.0,
+            b * 100.0
         )),
-        _ => reasons.push("an accuracy is missing".into()),
+        (None, _) => reasons.push("the accuracy at your threshold (policy) is missing".into()),
+        (_, None) => reasons.push("the heuristic's accuracy is missing".into()),
     }
     match s_ece {
         Some(e) if e <= GATE_MAX_ECE + 1e-9 => {}
         Some(e) => reasons.push(format!("calibration error {e:.3} is above {GATE_MAX_ECE:.2}")),
         None => reasons.push("the calibration error is missing".into()),
     }
+    let policy = if p.is_object() { p.clone() } else { Value::Null };
     Verdict {
         accepted: reasons.is_empty(),
         student: json!({"acc": s_acc, "ece": s_ece, "n": s_n}),
         heuristic: json!({"acc": h_acc, "n": h_n}),
+        policy,
         reasons,
     }
 }
@@ -439,11 +579,45 @@ fn row_ts(line: &str) -> Option<u64> {
     Some(if t > 1e12 { (t / 1000.0) as u64 } else { t as u64 })
 }
 
-/// The cap: rows older than 90 days go, then the oldest beyond 10 000. A row
-/// that does not parse, or carries no time, cannot be aged and goes too.
+/// One row per trace id, the LAST written winning, at the place of that last
+/// write. The webview appends a row again when its outcome becomes known
+/// (swap undone two turns later), so the file holds several versions of one
+/// turn; learn.py keeps the last, and so does every count made here. Rows
+/// without an id are kept as they are.
+pub(crate) fn dedupe_rows(lines: Vec<String>) -> Vec<String> {
+    let ids: Vec<Option<String>> = lines
+        .iter()
+        .map(|l| {
+            serde_json::from_str::<Value>(l)
+                .ok()
+                .and_then(|v| v.get("id").and_then(Value::as_str).map(str::to_string))
+        })
+        .collect();
+    let mut last: HashMap<&str, usize> = HashMap::new();
+    for (i, id) in ids.iter().enumerate() {
+        if let Some(id) = id {
+            last.insert(id.as_str(), i);
+        }
+    }
+    let keep: Vec<bool> = ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| id.as_deref().is_none_or(|id| last.get(id) == Some(&i)))
+        .collect();
+    lines.into_iter().zip(keep).filter(|(_, k)| *k).map(|(l, _)| l).collect()
+}
+
+/// The traces as learn.py will read them: one row per id.
+fn read_traces(path: &Path) -> Vec<String> {
+    dedupe_rows(read_lines(path))
+}
+
+/// The cap: duplicates collapse to their last version, rows older than 90 days
+/// go, then the oldest beyond 10 000. A row that does not parse, or carries no
+/// time, cannot be aged and goes too.
 pub(crate) fn cap_rows(lines: Vec<String>, now: u64) -> Vec<String> {
     let oldest = now.saturating_sub(TRACE_MAX_AGE_SECS);
-    let mut kept: Vec<String> = lines
+    let mut kept: Vec<String> = dedupe_rows(lines)
         .into_iter()
         .filter(|l| row_ts(l).is_some_and(|t| t >= oldest))
         .collect();
@@ -460,6 +634,28 @@ fn read_lines(path: &Path) -> Vec<String> {
 
 /// Append one row, then apply the cap. The file is rewritten (atomically) only
 /// when the cap removed something; otherwise the row is appended.
+/// What this process knows of a traces file without reading it: its row
+/// count, and when its rows were last aged. An append is then a plain append,
+/// and the whole file (up to 10 000 rows) is read and parsed only when the
+/// count passes the cap or once a day for the 90-day rule.
+#[derive(Clone, Copy, Debug)]
+struct TraceMeta {
+    rows: usize,
+    aged_at: u64,
+}
+
+static TRACE_META: OnceLock<Mutex<HashMap<PathBuf, TraceMeta>>> = OnceLock::new();
+
+fn trace_meta() -> std::sync::MutexGuard<'static, HashMap<PathBuf, TraceMeta>> {
+    TRACE_META.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Forget what is known of `path`: after a clear, a forget or any rewrite not
+/// made by trace_append_at.
+fn forget_trace_meta(path: &Path) {
+    trace_meta().remove(path);
+}
+
 pub(crate) fn trace_append_at(path: &Path, row: Value, now: u64) -> Result<(), String> {
     let Value::Object(mut map) = row else {
         return Err("a trace row must be a JSON object".into());
@@ -469,29 +665,34 @@ pub(crate) fn trace_append_at(path: &Path, row: Value, now: u64) -> Result<(), S
     if line.len() > TRACE_ROW_MAX_BYTES {
         return Err(format!("trace row too large ({} bytes, {TRACE_ROW_MAX_BYTES} max)", line.len()));
     }
-    let existing = read_lines(path);
-    let before = existing.len() + 1;
-    let mut all = existing;
-    all.push(line.clone());
-    let capped = cap_rows(all, now);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    if capped.len() != before {
-        let mut text = capped.join("\n");
-        if !text.is_empty() {
-            text.push('\n');
-        }
-        write_atomic(path, text.as_bytes())
-    } else {
+    let known = trace_meta().get(path).copied();
+    let cheap = known.is_some_and(|m| m.rows < TRACE_CAP_ROWS && now.saturating_sub(m.aged_at) < 86_400);
+    if cheap {
         let mut f = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(path)
             .map_err(|e| e.to_string())?;
         let _ = set_private_mode(path, 0o600);
-        f.write_all(format!("{line}\n").as_bytes()).map_err(|e| e.to_string())
+        f.write_all(format!("{line}\n").as_bytes()).map_err(|e| e.to_string())?;
+        if let Some(m) = trace_meta().get_mut(path) {
+            m.rows += 1;
+        }
+        return Ok(());
     }
+    let mut all = read_lines(path);
+    all.push(line);
+    let capped = cap_rows(all, now);
+    let mut text = capped.join("\n");
+    if !text.is_empty() {
+        text.push('\n');
+    }
+    write_atomic(path, text.as_bytes())?;
+    trace_meta().insert(path.to_path_buf(), TraceMeta { rows: capped.len(), aged_at: now });
+    Ok(())
 }
 
 /// {trace id: heuristic task}, for evaluate: the heuristic is the app's
@@ -932,6 +1133,7 @@ fn train_blocking(
     layout: &Layout,
     toolkit: &Path,
     port: u16,
+    threshold: f64,
     emit: Emit,
     cancel: &AtomicBool,
 ) -> Result<Value, String> {
@@ -943,7 +1145,7 @@ fn train_blocking(
     // A snapshot: rows appended while the job runs do not move under it.
     let lines = {
         let _t = trace_lock();
-        read_lines(&layout.traces())
+        read_traces(&layout.traces())
     };
     let traces = job.join("traces.jsonl");
     write_atomic(&traces, format!("{}\n", lines.join("\n")).as_bytes())?;
@@ -951,13 +1153,24 @@ fn train_blocking(
     write_atomic(&heuristic, heuristic_answers(&lines).to_string().as_bytes())?;
     let labels = job.join("labels.jsonl");
     let ckpt = layout.checkpoints().join(&id);
+    struct Scrub(PathBuf);
+    impl Drop for Scrub {
+        fn drop(&mut self) {
+            scrub_job(&self.0);
+        }
+    }
+    let _scrub = Scrub(job.clone());
 
     let result = (|| -> Result<Value, String> {
-        emit(json!({"phase": "label", "pct": 0, "message": "labelling traces with the local model"}));
+        emit(json!({"phase": "label", "pct": 0, "message": "checking the held-out split"}));
+        let mut c = learn_cmd(layout, toolkit, "splits");
+        c.arg("--traces").arg(&traces);
+        check_splits(&run_step(c, emit, cancel, "label", (0.0, 1.0), &log, "python")?)?;
+        emit(json!({"phase": "label", "pct": 1, "message": "labelling traces with the local model"}));
         let mut c = learn_cmd(layout, toolkit, "label");
         c.arg("--traces").arg(&traces).arg("--out").arg(&labels);
         c.arg("--teacher-url").arg(format!("http://127.0.0.1:{port}/v1"));
-        let mut seen = run_step(c, emit, cancel, "label", (0.0, 40.0), &log, "python")?;
+        let mut seen = run_step(c, emit, cancel, "label", (1.0, 40.0), &log, "python")?;
 
         emit(json!({"phase": "train", "pct": 40, "message": "training the student"}));
         let mut c = learn_cmd(layout, toolkit, "train");
@@ -968,6 +1181,7 @@ fn train_blocking(
         let mut c = learn_cmd(layout, toolkit, "evaluate");
         c.arg("--checkpoint").arg(&ckpt).arg("--test").arg(&labels);
         c.arg("--heuristic-json").arg(&heuristic);
+        c.arg("--threshold").arg(format!("{threshold}")).args(["--min-chars", "8"]);
         let evaluated = run_step(c, emit, cancel, "evaluate", (85.0, 98.0), &log, "python")?;
         let eval = evaluated
             .iter()
@@ -981,6 +1195,7 @@ fn train_blocking(
             "accepted": verdict.accepted,
             "student": verdict.student,
             "heuristic": verdict.heuristic,
+            "policy": verdict.policy,
             "labels": label_counts(&seen, &labels),
             "reasons": verdict.reasons,
             "checkpoint": id,
@@ -996,10 +1211,12 @@ fn train_blocking(
             return Err(e);
         }
     };
+    let _ = write_atomic(&job.join("result.json"), result.to_string().as_bytes());
     {
         let _s = state_lock();
-        let next = apply_result(load_state(layout), &id, &result);
+        let next = trim_history(apply_result(load_state(layout), &id, &result));
         save_state(layout, &next)?;
+        sweep_checkpoints(layout, &next);
     }
     if result["accepted"] == json!(true) {
         // The next decide starts the service on the new checkpoint.
@@ -1036,9 +1253,29 @@ fn reap(mut s: Sidecar) {
     });
 }
 
+/// Out of the table, in a statement of its own: an `if let` on
+/// `sidecar_lock().take()` keeps the guard alive through its whole block, and
+/// a wait() in there would hold every decide() behind a dying process.
+// The binding is the point: as a tail expression the guard would live to the
+// end of the caller's statement in edition 2021.
+#[allow(clippy::let_and_return)]
+fn take_sidecar() -> Option<Sidecar> {
+    let taken = sidecar_lock().take();
+    taken
+}
+
 pub(crate) fn stop_sidecar() {
-    if let Some(s) = sidecar_lock().take() {
+    if let Some(s) = take_sidecar() {
         reap(s);
+    }
+}
+
+/// Stop and WAIT for the service, with the table unlocked while it dies.
+fn stop_sidecar_and_wait() {
+    if let Some(mut s) = take_sidecar() {
+        kill_group(s.child.id());
+        let _ = s.child.kill();
+        let _ = s.child.wait();
     }
 }
 
@@ -1269,12 +1506,13 @@ pub(crate) fn decide_state(state: Value, previous_task: Option<String>) -> Value
 
 fn decide_blocking(state: Value, previous_task: Option<String>) -> Result<Value, String> {
     let started = Instant::now();
-    if !setting_on("learning_active") {
+    let layout = Layout::app();
+    let sw = switches(&layout);
+    if !sw.on {
         stop_sidecar();
         return Err("learned decisions are off".into());
     }
-    let layout = Layout::app();
-    let active = load_state(&layout).active.ok_or("no student is active")?;
+    let active = sw.active.ok_or("no student is active")?;
     let checkpoint = checkpoint_path(&layout, &active)?;
     let port = match sidecar_for(&checkpoint) {
         Serving::Ready(port) => port,
@@ -1331,7 +1569,7 @@ fn status_blocking() -> Value {
     let download_bytes = if venv { 0 } else { toolkit_bytes } + if base { 0 } else { base_bytes() };
     let traces = {
         let _t = trace_lock();
-        read_lines(&layout.traces()).len()
+        read_traces(&layout.traces()).len()
     };
     let state = load_state(&layout);
     let job = running_job();
@@ -1350,6 +1588,7 @@ fn status_blocking() -> Value {
         "previous": state.history.last(),
         "last": state.last,
         "rejected": state.rejected.len(),
+        "min_traces": MIN_TRACES_TO_TRAIN,
         "toolkit_shipped": toolkit.is_some(),
         "sidecar": sidecar,
     })
@@ -1420,7 +1659,7 @@ pub async fn decisions_traces_export(dest: String) -> Result<usize, String> {
         let layout = Layout::app();
         let lines = {
             let _t = trace_lock();
-            read_lines(&layout.traces())
+            read_traces(&layout.traces())
         };
         let mut text = lines.join("\n");
         if !text.is_empty() {
@@ -1442,6 +1681,7 @@ pub async fn decisions_traces_clear() -> Result<(), String> {
         }
         let layout = Layout::app();
         let _t = trace_lock();
+        forget_trace_meta(&layout.traces());
         match std::fs::remove_file(layout.traces()) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -1457,7 +1697,7 @@ pub async fn decisions_traces_clear() -> Result<(), String> {
 
 #[tauri::command]
 pub async fn decisions_train(app: AppHandle) -> Result<(), String> {
-    let (toolkit, port) = blocking(|| {
+    let (toolkit, port, threshold) = blocking(|| {
         let layout = Layout::app();
         let toolkit = toolkit_dir().ok_or("learn.py is not shipped with this build")?;
         if !(venv_ready(&layout, Some(&toolkit)) && base_ready(&layout)) {
@@ -1465,14 +1705,14 @@ pub async fn decisions_train(app: AppHandle) -> Result<(), String> {
         }
         let n = {
             let _t = trace_lock();
-            read_lines(&layout.traces()).len()
+            read_traces(&layout.traces()).len()
         };
         if n < MIN_TRACES_TO_TRAIN {
             return Err(format!(
                 "{n} traces collected, at least {MIN_TRACES_TO_TRAIN} are needed for a held-out test to mean anything"
             ));
         }
-        Ok((toolkit, teacher_port()?))
+        Ok((toolkit, teacher_port()?, user_threshold(&settings_load())))
     })
     .await?;
     let (cancel, guard) = begin_job("training")?;
@@ -1480,7 +1720,7 @@ pub async fn decisions_train(app: AppHandle) -> Result<(), String> {
         let _guard = guard;
         let emit = emitter(app);
         let layout = Layout::app();
-        match train_blocking(&layout, &toolkit, port, &emit, &cancel) {
+        match train_blocking(&layout, &toolkit, port, threshold, &emit, &cancel) {
             Ok(result) => emit(json!({"phase": "done", "pct": 100, "result": result})),
             Err(e) if e == "cancelled" => emit(json!({"phase": "cancelled", "pct": 0, "message": "training cancelled", "job": "training"})),
             Err(e) => emit(json!({"phase": "error", "pct": 0, "message": e, "job": "training"})),
@@ -1502,6 +1742,12 @@ pub async fn decisions_rollback() -> Result<Value, String> {
         }
         save_state(&layout, &next)?;
         stop_sidecar();
+        // The checkpoint rolled back from is referenced by nothing now. Not
+        // while a run is writing its own folder, which is referenced by nothing
+        // YET.
+        if running_job() != Some("training") {
+            sweep_checkpoints(&layout, &next);
+        }
         Ok(json!({"active": next.active, "previous": next.history.last()}))
     })
     .await
@@ -1512,6 +1758,7 @@ pub async fn decisions_rollback() -> Result<Value, String> {
 /// which starts over as "heuristic only". The toolkit (venv) and the base
 /// checkpoint stay: public code and public weights, not user data.
 pub(crate) fn forget_all_at(layout: &Layout) -> Result<(), String> {
+    forget_trace_meta(&layout.traces());
     for dir in [layout.jobs(), layout.checkpoints()] {
         match std::fs::remove_dir_all(&dir) {
             Ok(()) => {}
@@ -1537,11 +1784,7 @@ pub async fn decisions_forget_all() -> Result<(), String> {
         }
         // The service holds the active checkpoint open: it goes first, and is
         // waited for, so nothing is still reading what is deleted next.
-        if let Some(mut s) = sidecar_lock().take() {
-            kill_group(s.child.id());
-            let _ = s.child.kill();
-            let _ = s.child.wait();
-        }
+        stop_sidecar_and_wait();
         let layout = Layout::app();
         let _t = trace_lock();
         let _s = state_lock();
@@ -1550,14 +1793,29 @@ pub async fn decisions_forget_all() -> Result<(), String> {
     .await
 }
 
+/// Write the learning_active switch. Turning it off stops the service at once
+/// rather than at the next message, so the 644 MB go when the user says so.
+pub(crate) fn set_active(active: bool) -> Result<(), String> {
+    let written = settings_update(|map| {
+        map.insert("learning_active".into(), if active { "1" } else { "0" }.into());
+    });
+    invalidate_cache();
+    written?;
+    if !active {
+        stop_sidecar();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn decisions_set_active(active: bool) -> Result<(), String> {
+    blocking(move || set_active(active)).await
+}
+
 /// On app exit: the job stops, and the service goes with the window.
 pub(crate) fn shutdown() {
     cancel_job();
-    if let Some(mut s) = sidecar_lock().take() {
-        kill_group(s.child.id());
-        let _ = s.child.kill();
-        let _ = s.child.wait();
-    }
+    stop_sidecar_and_wait();
 }
 
 #[cfg(test)]
@@ -1574,6 +1832,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         Layout { root: dir }
+    }
+
+    /// Tests that write state.json or settings invalidate the shared switch
+    /// cache; the cache test must not see them do it mid-assertion.
+    fn switch_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static L: Mutex<()> = Mutex::new(());
+        L.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     fn row(ts: u64, i: usize) -> String {
@@ -1653,30 +1918,44 @@ mod tests {
 
     // ---- gate
 
+    fn eval(s_acc: f64, ece: f64, n: u64, p_acc: f64, h_acc: f64) -> Value {
+        json!({
+            "student": {"acc": s_acc, "ece": ece, "n": n},
+            "heuristic": {"acc": h_acc, "n": n},
+            "policy": {"acc": p_acc, "ece_on_student_rows": ece, "n": n, "student_share": 0.8, "threshold": 0.6, "min_chars": 8},
+        })
+    }
+
     #[test]
     fn the_gate_accepts_only_when_all_three_hold() {
-        let ok = json!({"student": {"acc": 0.80, "ece": 0.05, "n": 80}, "heuristic": {"acc": 0.70, "n": 80}});
-        let v = gate(&ok);
+        let v = gate(&eval(0.80, 0.05, 80, 0.80, 0.70));
         assert!(v.accepted, "{:?}", v.reasons);
         assert_eq!(v.student["n"], json!(80));
+        assert_eq!(v.policy["threshold"], json!(0.6));
     }
 
     #[test]
     fn exactly_three_points_is_enough() {
-        let edge = json!({"student": {"acc": 0.73, "ece": 0.10, "n": 60}, "heuristic": {"acc": 0.70, "n": 60}});
-        assert!(gate(&edge).accepted, "{:?}", gate(&edge).reasons);
+        let v = gate(&eval(0.60, 0.10, 60, 0.73, 0.70));
+        assert!(v.accepted, "{:?}", v.reasons);
+    }
+
+    #[test]
+    fn the_policy_not_the_raw_student_is_compared_to_the_heuristic() {
+        // A student that beats the heuristic alone, but not at the user's
+        // threshold, where the heuristic answers most rows: refused.
+        let v = gate(&eval(0.95, 0.05, 100, 0.72, 0.70));
+        assert!(!v.accepted);
+        assert_eq!(v.reasons.len(), 1);
+        assert!(v.reasons[0].contains("threshold"), "{:?}", v.reasons);
     }
 
     #[test]
     fn each_failed_condition_is_named() {
-        let small = json!({"student": {"acc": 0.9, "ece": 0.05, "n": 59}, "heuristic": {"acc": 0.5, "n": 59}});
-        let v = gate(&small);
+        let v = gate(&eval(0.9, 0.05, 59, 0.9, 0.5));
         assert!(!v.accepted);
         assert!(v.reasons[0].contains("59"));
-        let close = json!({"student": {"acc": 0.72, "ece": 0.05, "n": 100}, "heuristic": {"acc": 0.70}});
-        assert!(!gate(&close).accepted);
-        let loose = json!({"student": {"acc": 0.95, "ece": 0.11, "n": 100}, "heuristic": {"acc": 0.70}});
-        let v = gate(&loose);
+        let v = gate(&eval(0.95, 0.11, 100, 0.95, 0.70));
         assert!(!v.accepted);
         assert_eq!(v.reasons.len(), 1);
         assert!(v.reasons[0].contains("calibration"));
@@ -1685,14 +1964,98 @@ mod tests {
     #[test]
     fn missing_numbers_never_pass() {
         assert!(!gate(&json!({})).accepted);
-        assert!(!gate(&json!({"student": {"acc": 0.99, "n": 500}, "heuristic": {"acc": 0.1}})).accepted);
-        assert!(!gate(&json!({"student": {"ece": 0.01, "n": 500}, "heuristic": {"acc": 0.1}})).accepted);
+        let mut no_policy = eval(0.99, 0.01, 500, 0.99, 0.1);
+        no_policy.as_object_mut().unwrap().remove("policy");
+        let v = gate(&no_policy);
+        assert!(!v.accepted);
+        assert!(v.reasons[0].contains("policy"));
+        assert!(!gate(&json!({"student": {"acc": 0.99, "n": 500}, "heuristic": {"acc": 0.1}, "policy": {"acc": 0.99}})).accepted);
     }
 
     #[test]
     fn the_gate_reads_under_result_and_long_key_names() {
-        let nested = json!({"result": {"student": {"accuracy": 0.9, "ece": 0.04, "n": 70}, "heuristic": {"accuracy": 0.6, "n": 70}}});
+        let nested = json!({"event": "result", "result": {
+            "student": {"accuracy": 0.9, "ece": 0.04, "n": 70},
+            "heuristic": {"accuracy": 0.6, "n": 70},
+            "policy": {"accuracy": 0.88}}});
         assert!(gate(&nested).accepted);
+    }
+
+    #[test]
+    fn the_threshold_passed_to_evaluate_is_the_users() {
+        let mut m = HashMap::new();
+        assert_eq!(user_threshold(&m), 0.6);
+        m.insert("learning_threshold".to_string(), "0.75".to_string());
+        assert_eq!(user_threshold(&m), 0.75);
+        m.insert("learning_threshold".to_string(), "7".to_string());
+        assert_eq!(user_threshold(&m), 0.6);
+    }
+
+    // ---- splits
+
+    #[test]
+    fn a_test_split_under_sixty_is_refused_before_labelling() {
+        let small = vec![json!({"event": "result", "phase": "splits", "traces": 200,
+                                "splits": {"train": 130, "calib": 20, "test": 50}})];
+        let err = check_splits(&small).unwrap_err();
+        assert!(err.contains("50 traces de test") && err.contains("60"), "{err}");
+        let ok = vec![json!({"event": "result", "splits": {"train": 180, "calib": 30, "test": 60}})];
+        assert!(check_splits(&ok).is_ok());
+        assert!(check_splits(&[json!({"event": "progress", "pct": 10})]).is_err());
+        assert_eq!(MIN_TRACES_TO_TRAIN as u64, GATE_MIN_N * 4);
+    }
+
+    // ---- retention
+
+    #[test]
+    fn only_two_rejected_and_two_history_folders_are_kept() {
+        let mut s = LearnState::default();
+        for id in ["1", "2", "3", "4"] {
+            s = trim_history(apply_result(s, id, &json!({"accepted": true, "checkpoint": id})));
+        }
+        assert_eq!(s.active.as_deref(), Some("4"));
+        assert_eq!(s.history, vec!["2".to_string(), "3".to_string()]);
+        for id in ["5", "6", "7"] {
+            s = trim_history(apply_result(s, id, &json!({"accepted": false, "checkpoint": id})));
+        }
+        let existing: Vec<String> = (1..=7).map(|i| i.to_string()).collect();
+        let doomed = doomed_checkpoints(&s, &existing);
+        assert_eq!(doomed, vec!["1".to_string(), "5".to_string()]);
+        assert!(!doomed.contains(&"4".to_string()), "never the active one");
+        assert_eq!(s.rejected.len(), 3, "the numbers of rejected runs stay");
+    }
+
+    #[test]
+    fn the_sweep_deletes_only_the_doomed_folders() {
+        let _l = switch_test_lock();
+        let layout = temp_layout("sweep");
+        for id in ["1", "2", "3"] {
+            std::fs::create_dir_all(layout.checkpoints().join(id)).unwrap();
+        }
+        let s = LearnState { active: Some("3".into()), history: vec!["2".into()], ..Default::default() };
+        sweep_checkpoints(&layout, &s);
+        assert!(!layout.checkpoints().join("1").exists());
+        assert!(layout.checkpoints().join("2").is_dir() && layout.checkpoints().join("3").is_dir());
+        let _ = std::fs::remove_dir_all(&layout.root);
+    }
+
+    #[test]
+    fn a_finished_job_keeps_only_its_numbers() {
+        let layout = temp_layout("scrub");
+        let job = layout.jobs().join("1");
+        std::fs::create_dir_all(job.join("tmp")).unwrap();
+        for f in ["traces.jsonl", "labels.jsonl", "heuristic.json", "train.log", "eval.json", "result.json"] {
+            std::fs::write(job.join(f), "x").unwrap();
+        }
+        scrub_job(&job);
+        let mut left: Vec<String> = std::fs::read_dir(&job)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        left.sort();
+        assert_eq!(left, vec!["eval.json".to_string(), "result.json".to_string()]);
+        let _ = std::fs::remove_dir_all(&layout.root);
     }
 
     // ---- state
@@ -1729,6 +2092,7 @@ mod tests {
 
     #[test]
     fn the_state_round_trips_through_its_file() {
+        let _l = switch_test_lock();
         let layout = temp_layout("state");
         assert_eq!(load_state(&layout), LearnState::default());
         let s = LearnState { active: Some("1".into()), history: vec!["0".into()], ..Default::default() };
@@ -1739,6 +2103,7 @@ mod tests {
 
     #[test]
     fn forgetting_removes_user_data_and_keeps_the_toolkit() {
+        let _l = switch_test_lock();
         let layout = temp_layout("forget");
         std::fs::create_dir_all(layout.venv().join("bin")).unwrap();
         std::fs::write(layout.venv_marker(), "x").unwrap();
@@ -1766,6 +2131,150 @@ mod tests {
         assert_eq!(load_state(&layout), LearnState::default());
         assert!(layout.venv_marker().is_file() && base_ready(&layout), "toolkit and base stay");
         forget_all_at(&layout).unwrap();
+        let _ = std::fs::remove_dir_all(&layout.root);
+    }
+
+    // ---- switches
+
+    #[test]
+    fn the_switches_are_cached_until_a_writer_invalidates_them() {
+        let _l = switch_test_lock();
+        let _s = crate::settings::settings_read_tests::settings_lock();
+        let dir = temp_layout("switch-settings").root;
+        *crate::settings::settings_root_override().lock().unwrap() = Some(dir.clone());
+        let layout = temp_layout("switch");
+        set_active(true).unwrap();
+        save_state(&layout, &LearnState { active: Some("7".into()), ..Default::default() }).unwrap();
+        assert_eq!(switches(&layout), Switches { on: true, active: Some("7".into()) });
+        // Written behind its back: the cache answers, nothing is re-read.
+        std::fs::write(dir.join("settings.json"), r#"{"learning_active":"0"}"#).unwrap();
+        std::fs::write(layout.state(), r#"{"active":"8"}"#).unwrap();
+        assert_eq!(switches(&layout), Switches { on: true, active: Some("7".into()) });
+        // Through the writers: seen at once.
+        set_active(false).unwrap();
+        assert_eq!(switches(&layout), Switches { on: false, active: Some("8".into()) });
+        set_active(true).unwrap();
+        save_state(&layout, &LearnState::default()).unwrap();
+        assert_eq!(switches(&layout), Switches { on: true, active: None });
+        crate::settings::settings_set("learning_active".into(), "0".into()).unwrap();
+        assert!(!switches(&layout).on, "settings_set on a learning_ key invalidates too");
+        *crate::settings::settings_root_override().lock().unwrap() = None;
+        invalidate_cache();
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&layout.root);
+    }
+
+    #[test]
+    fn switching_off_stops_the_service() {
+        let _l = switch_test_lock();
+        let _s = crate::settings::settings_read_tests::settings_lock();
+        let dir = temp_layout("off-settings").root;
+        *crate::settings::settings_root_override().lock().unwrap() = Some(dir.clone());
+        let child = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        *sidecar_lock() = Some(Sidecar {
+            child,
+            port: 1,
+            checkpoint: PathBuf::from("/nonexistent"),
+            ready: Arc::new(AtomicBool::new(true)),
+            generation: 0,
+        });
+        set_active(false).unwrap();
+        assert!(sidecar_lock().is_none());
+        let text = std::fs::read_to_string(dir.join("settings.json")).unwrap();
+        assert!(text.contains("\"learning_active\"") && text.contains("\"0\""), "{text}");
+        *crate::settings::settings_root_override().lock().unwrap() = None;
+        invalidate_cache();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_service_table_is_not_locked_while_the_process_dies() {
+        let _l = switch_test_lock();
+        // The table must be free as soon as the entry is taken, whatever the
+        // stop then waits for.
+        let child = Command::new("/bin/sh")
+            .args(["-c", "trap '' TERM; sleep 0.6"])
+            .spawn()
+            .unwrap();
+        *sidecar_lock() = Some(Sidecar {
+            child,
+            port: 1,
+            checkpoint: PathBuf::new(),
+            ready: Arc::new(AtomicBool::new(false)),
+            generation: 0,
+        });
+        let stopper = std::thread::spawn(stop_sidecar_and_wait);
+        std::thread::sleep(Duration::from_millis(50));
+        // The table is free while the stop is under way.
+        let t = Instant::now();
+        let free = SIDECAR.try_lock().is_ok() || {
+            std::thread::sleep(Duration::from_millis(20));
+            SIDECAR.try_lock().is_ok()
+        };
+        assert!(free && t.elapsed() < Duration::from_millis(200));
+        stopper.join().unwrap();
+        assert!(sidecar_lock().is_none());
+    }
+
+    #[test]
+    fn a_rewritten_turn_counts_once_and_its_last_version_wins() {
+        let now = 1_800_000_000;
+        let lines = vec![
+            json!({"id": "a", "ts": now, "outcome": null}).to_string(),
+            json!({"id": "b", "ts": now}).to_string(),
+            json!({"id": "a", "ts": now, "outcome": "undone"}).to_string(),
+        ];
+        let kept = cap_rows(lines, now);
+        assert_eq!(kept.len(), 2);
+        assert!(kept[0].contains("\"b\""));
+        assert!(kept[1].contains("undone"));
+        let layout = temp_layout("dedupe");
+        let path = layout.traces();
+        for outcome in ["none", "accepted", "undone"] {
+            trace_append_at(&path, json!({"id": "t1", "ts": now, "outcome": outcome}), now).unwrap();
+        }
+        let rows = read_traces(&path);
+        assert_eq!(rows.len(), 1, "counted by distinct id");
+        assert!(rows[0].contains("undone"));
+        forget_trace_meta(&path);
+        let _ = std::fs::remove_dir_all(&layout.root);
+    }
+
+    #[test]
+    fn appends_do_not_reread_the_file_until_a_day_has_passed() {
+        let layout = temp_layout("meta");
+        let path = layout.traces();
+        let now = 1_800_000_000;
+        trace_append_at(&path, json!({"id": "a"}), now).unwrap();
+        // A stale row slipped in behind the counter's back.
+        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(f, "{}", row(now - TRACE_MAX_AGE_SECS - 10, 9)).unwrap();
+        trace_append_at(&path, json!({"id": "b"}), now + 60).unwrap();
+        assert_eq!(read_lines(&path).len(), 3, "a plain append: the file was not re-read");
+        trace_append_at(&path, json!({"id": "c"}), now + 86_400).unwrap();
+        let lines = read_lines(&path);
+        assert_eq!(lines.len(), 3, "the daily pass aged the stale row out");
+        assert!(!lines.iter().any(|l| l.contains("\"t9\"")));
+        forget_trace_meta(&path);
+        let _ = std::fs::remove_dir_all(&layout.root);
+    }
+
+    #[test]
+    fn appends_past_the_cap_trigger_a_full_pass() {
+        let layout = temp_layout("meta-cap");
+        let path = layout.traces();
+        let now = 1_800_000_000;
+        let lines: Vec<String> = (0..TRACE_CAP_ROWS).map(|i| row(now, i)).collect();
+        std::fs::write(&path, format!("{}\n", lines.join("\n"))).unwrap();
+        trace_append_at(&path, json!({"id": "x"}), now).unwrap();
+        assert_eq!(read_lines(&path).len(), TRACE_CAP_ROWS);
+        for i in 0..3 {
+            trace_append_at(&path, json!({"id": format!("y{i}")}), now).unwrap();
+        }
+        let lines = read_lines(&path);
+        assert_eq!(lines.len(), TRACE_CAP_ROWS, "every append at the cap drops the oldest");
+        assert!(lines.last().unwrap().contains("y2"));
+        forget_trace_meta(&path);
         let _ = std::fs::remove_dir_all(&layout.root);
     }
 

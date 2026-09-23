@@ -53,6 +53,8 @@ export interface LearningViewDeps {
   clearTraces(): Promise<void>;
   /** Delete every learned checkpoint (active, previous, rejected). */
   forgetAll(): Promise<void>;
+  /** decisions_set_active: writes learning_active and stops the service when off. */
+  setActive(on: boolean): Promise<unknown>;
   confirm(opts: { title: string; detail: string; confirmLabel: string }): Promise<boolean>;
   /** Subscribe to galactus://learning. Resolves to the unsubscribe. */
   listen(cb: (payload: unknown) => void): Promise<() => void>;
@@ -143,7 +145,9 @@ export function learningSection(d: LearningViewDeps): HTMLElement {
         ${toolkit}
       </div>
       <div class="set-row"><div class="grow"><b>${esc(t("learn.train"))}</b><span>${esc(t("learn.trainHint"))}</span>
-          ${ps.trainBlocked && busy !== "train" ? `<span class="d">${esc(t(ps.trainBlocked))}</span>` : ""}
+          ${ps.trainBlocked && busy !== "train"
+            ? `<span class="d">${esc(t(ps.trainBlocked).replace("%n", String(status.traces)).replace("%m", String(status.minTraces)))}</span>`
+            : ""}
           ${busy === "train" ? bar() : ""}</div>
         ${ps.canCancelTrain
           ? `<button class="bs" id="lrntraincancel">${esc(t("learn.cancel"))}</button>`
@@ -246,7 +250,8 @@ export function learningSection(d: LearningViewDeps): HTMLElement {
 
   const setBool = async (key: "learning_collect" | "learning_active", on: boolean): Promise<void> => {
     try {
-      await d.setSetting(key, on ? "1" : "");
+      if (key === "learning_active") await d.setActive(on);
+      else await d.setSetting(key, on ? "1" : "");
       if (key === "learning_collect") settings = { ...settings, collect: on };
       else settings = { ...settings, active: on };
       d.changed(settings);
@@ -321,7 +326,7 @@ export function learningSection(d: LearningViewDeps): HTMLElement {
             await d.clearTraces();
             await d.forgetAll();
             // No checkpoint is left to answer: the student is switched off with it.
-            await d.setSetting("learning_active", "");
+            await d.setActive(false);
             settings = { ...settings, active: false };
             d.changed(settings);
             d.toast(t("learn.forgotten"), "ok");

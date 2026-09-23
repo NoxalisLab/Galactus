@@ -2874,6 +2874,7 @@ pub fn run() {
             learning::decisions_train,
             learning::decisions_rollback,
             learning::decisions_forget_all,
+            learning::decisions_set_active,
             cloud::cloud_key_set,
             cloud::cloud_key_clear,
             cloud::cloud_key_status,

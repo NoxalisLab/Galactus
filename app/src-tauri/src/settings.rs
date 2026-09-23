@@ -160,9 +160,16 @@ pub fn settings_set(key: String, value: String) -> Result<(), String> {
     if PROTECTED_SETTINGS.contains(&key.as_str()) {
         return Err(format!("{key} is not set this way"));
     }
-    settings_update(|map| {
+    // decide() caches the learning switches: a write through here must reach
+    // it, so the cache is dropped AFTER the file changed.
+    let learning = key.starts_with("learning_");
+    let written = settings_update(|map| {
         map.insert(key, value);
-    })
+    });
+    if learning {
+        crate::learning::invalidate_cache();
+    }
+    written
 }
 
 /// Write the connector configuration, after checking it is one.
@@ -267,11 +274,11 @@ mod cache_ceiling_tests {
 }
 
 #[cfg(test)]
-mod settings_read_tests {
+pub(crate) mod settings_read_tests {
     use super::*;
 
     /// One test at a time: the override and the file are process-wide.
-    fn settings_lock() -> std::sync::MutexGuard<'static, ()> {
+    pub(crate) fn settings_lock() -> std::sync::MutexGuard<'static, ()> {
         static L: OnceLock<Mutex<()>> = OnceLock::new();
         L.get_or_init(|| Mutex::new(()))
             .lock()

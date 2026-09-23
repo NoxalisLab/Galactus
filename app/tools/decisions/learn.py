@@ -2,9 +2,11 @@
 
     learn.py status   [--checkpoint DIR] [--base DIR]
     learn.py serve    --port P --checkpoint DIR [--host 127.0.0.1] [--device D]
+    learn.py splits   --traces traces.jsonl
     learn.py label    --traces traces.jsonl --out labels.jsonl [--teacher-url URL]
     learn.py train    --data labels.jsonl --out DIR [--base DIR] [--no-hand] [--epochs N] ...
     learn.py evaluate --checkpoint DIR --test labels.jsonl [--heuristic-json FILE] [--out FILE]
+                      [--threshold 0.6] [--min-chars 8]
 
 stdout carries JSON lines only, one object per line:
     progress  {"event": "progress", "phase", "pct": 0..100, "message"}
@@ -32,6 +34,7 @@ from typing import Any
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
+from evaluation import DEFAULT_MIN_CHARS, DEFAULT_THRESHOLD
 from labeling import (
     InputError,
     Labelled,
@@ -51,6 +54,7 @@ from task_detection import (
     TASK_QUESTION,
     load_examples,
     make_split,
+    split_of,
     state_for,
 )
 
@@ -203,6 +207,19 @@ def cmd_status(args: argparse.Namespace) -> dict:
     return out
 
 
+def cmd_splits(args: argparse.Namespace) -> dict:
+    """Count traces per split, without teacher or model (the app checks n_test first)."""
+    traces = read_traces(args.traces)
+    splits = {"train": 0, "calib": 0, "test": 0}
+    with_outcome = {"train": 0, "calib": 0, "test": 0}
+    for t in traces:
+        s = split_of(t.id)
+        splits[s] += 1
+        with_outcome[s] += t.outcome_label is not None
+    return {"traces": len(traces), "splits": splits,
+            "with_outcome": sum(with_outcome.values()), "with_outcome_by_split": with_outcome}
+
+
 def cmd_label(args: argparse.Namespace) -> dict:
     progress = Progress("label")
     traces = read_traces(args.traces)
@@ -274,7 +291,8 @@ def cmd_evaluate(args: argparse.Namespace) -> dict:
     if rows:
         predict(state_for(rows[0].text, rows[0].previous_task))  # warm-up, not timed
     report = evaluate(rows, heuristic, predict, lambda r: state_for(r.text, r.previous_task),
-                      lambda i, n: progress(100.0 * i / max(1, n), f"{i}/{n}"))
+                      lambda i, n: progress(100.0 * i / max(1, n), f"{i}/{n}"),
+                      threshold=args.threshold, min_chars=args.min_chars)
     report.update(checkpoint=str(ckpt), device=str(agent.device),
                   test_set="hand-written phase-1 test split" if args.hand_test
                   else "real traces, hash split")
@@ -322,6 +340,9 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--device")
 
+    p = sub.add_parser("splits", help="count traces per train/calib/test split (no model)")
+    p.add_argument("--traces", type=Path, required=True)
+
     p = sub.add_parser("label", help="label traces: outcome first, else the teacher")
     p.add_argument("--traces", type=Path, required=True)
     p.add_argument("--out", type=Path, required=True)
@@ -350,6 +371,10 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--hand-test", action="store_true",
                    help="evaluate on the phase-1 hand test split instead of traces")
     p.add_argument("--hand", type=Path, default=DATA)
+    p.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD,
+                   help="policy: student answers at or above this confidence")
+    p.add_argument("--min-chars", type=int, default=DEFAULT_MIN_CHARS,
+                   help="policy: shorter messages go to the heuristic")
     p.add_argument("--out", type=Path, help="also write the report to this file")
     p.add_argument("--device")
     return ap
@@ -363,8 +388,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     signal.signal(signal.SIGTERM, _on_sigterm)
     phase = args.cmd
-    commands = {"status": cmd_status, "label": cmd_label, "train": cmd_train,
-                "evaluate": cmd_evaluate}
+    commands = {"status": cmd_status, "splits": cmd_splits, "label": cmd_label,
+                "train": cmd_train, "evaluate": cmd_evaluate}
     try:
         if phase == "serve":
             cmd_serve(args)

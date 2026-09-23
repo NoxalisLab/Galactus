@@ -6,7 +6,7 @@ import { test } from "node:test";
 // @ts-ignore
 import assert from "node:assert/strict";
 
-import { detectTask, detectTaskLearned, type LearnedDeps, type TaskId } from "../../src/autotask.js";
+import { detectTask, detectTaskLearned, mayAutoSwapFrom, type LearnedDeps, type SwapPlan, type TaskId } from "../../src/autotask.js";
 import {
   chooseDecision,
   gateChecks,
@@ -20,6 +20,8 @@ import {
   parseStudent,
   parseThreshold,
   redactState,
+  capChars,
+  OUTCOME_WINDOW,
   STATE_MAX_CHARS,
   withBudget,
   type TraceRow,
@@ -55,6 +57,17 @@ test("redactState keeps system paths that only matter to the permission gate", (
 
 test("redactState caps the stored message", () => {
   assert.equal(redactState("x".repeat(STATE_MAX_CHARS * 3)).text.length, STATE_MAX_CHARS);
+});
+
+test("the cap never splits a surrogate pair, so the row stays valid JSON for serde", () => {
+  const text = "x".repeat(STATE_MAX_CHARS - 1) + "😀" + "tail";
+  const out = redactState(text).text;
+  assert.equal(out.length, STATE_MAX_CHARS - 1);
+  const last = out.charCodeAt(out.length - 1);
+  assert.ok(!(last >= 0xd800 && last <= 0xdbff));
+  assert.equal(capChars("ab😀", 4), "ab😀");
+  assert.equal(capChars("ab😀", 3), "ab");
+  assert.equal(capChars("abc", 2), "ab");
 });
 
 // ---------------------------------------------------------------- rows
@@ -107,18 +120,52 @@ test("two rows get different ids", () => {
 
 // ---------------------------------------------------------------- outcomes
 
-test("a row is written once two newer decisions exist, and flush writes the rest", () => {
+test("a row is written once OUTCOME_WINDOW newer decisions exist, not before", () => {
   const out: string[] = [];
   const tr = new OutcomeTracker((r) => out.push(r.id));
   tr.record(row("a", "general", "general", "none", "1"));
+  assert.equal(OUTCOME_WINDOW, 2);
   tr.record(row("b", "general", "general", "none", "2"));
+  assert.deepEqual(out, [], "one newer decision: the window is still open");
   tr.record(row("c", "general", "general", "none", "3"));
-  assert.deepEqual(out, []);
+  assert.deepEqual(out, ["1"], "two newer decisions: closed and written");
   tr.record(row("d", "general", "general", "none", "4"));
-  assert.deepEqual(out, ["1"]);
+  assert.deepEqual(out, ["1", "2"]);
   tr.flush();
   assert.deepEqual(out, ["1", "2", "3", "4"]);
   assert.equal(tr.open().length, 0);
+});
+
+test("a correction made after the second newer decision no longer reaches the row", () => {
+  const out: TraceRow[] = [];
+  const tr = new OutcomeTracker((r) => out.push(r));
+  tr.record(row("sw", "general", "code", "none", "sw"));
+  tr.record(row("n1", "code", "code", "none", "n1"));
+  tr.manualPick("general"); // inside the window
+  tr.record(row("n2", "code", "code", "none", "n2"));
+  tr.manualPick("writing"); // after the second newer decision
+  tr.flush();
+  const last = new Map(out.map((r) => [r.id, r.outcome]));
+  assert.deepEqual(last.get("sw"), { kind: "undone", task: "general" });
+  assert.deepEqual(last.get("n2"), { kind: "repicked", task: "writing" });
+});
+
+test("persist writes open rows without closing them; an outcome is written at once and later lines win", () => {
+  const out: TraceRow[] = [];
+  const tr = new OutcomeTracker((r) => out.push(JSON.parse(JSON.stringify(r))));
+  tr.record(row("a", "general", "code", "offered", "a"));
+  tr.persist();
+  assert.equal(out.length, 1);
+  assert.equal(out[0].outcome, null);
+  tr.persist();
+  assert.equal(out.length, 1, "an unchanged row is not written twice");
+  tr.swapAccepted();
+  assert.equal(out.length, 2, "the outcome is written the moment it is known");
+  assert.deepEqual(out[1].outcome, { kind: "accepted", task: "code" });
+  tr.flush();
+  assert.equal(out.length, 2, "closing an unchanged row writes nothing more");
+  // learn.py keeps the last line of an id: that line carries the label.
+  assert.deepEqual(out.filter((r) => r.id === "a").at(-1)!.outcome, { kind: "accepted", task: "code" });
 });
 
 test("going back to the previous task by hand within the window undoes the switch", () => {
@@ -285,6 +332,24 @@ test("detectTaskLearned falls back: off, absent, slow, broken, unsure, too short
   assert.equal(short.calls, 0);
 });
 
+test("the student is served the same redacted text it was trained on", async () => {
+  let seen = "";
+  const d = deps({});
+  d.decide = async (state: string) => { seen = state; return { task: "code", confidence: 0.9 }; };
+  await detectTaskLearned("look at /Users/damien/.ssh/id_rsa and fix app.py, key OPENAI_API_KEY=sk-abcdef1234567890abcdef", "general", d);
+  assert.ok(!seen.includes("damien"));
+  assert.ok(!seen.includes("id_rsa"));
+  assert.ok(!seen.includes("sk-abcdef1234567890abcdef"));
+  assert.ok(seen.includes("app.py"));
+});
+
+test("a student answer can offer a model swap but never impose one", () => {
+  const plan: SwapPlan = { task: "code", modelId: "coder", personaOnly: false, kind: "required", confidence: 0.99, reason: "x" };
+  assert.equal(mayAutoSwapFrom(plan, "heuristic"), true);
+  assert.equal(mayAutoSwapFrom(plan, "student"), false);
+  assert.equal(mayAutoSwapFrom({ ...plan, kind: "upgrade" }, "heuristic"), false);
+});
+
 test("detectTaskLearned keeps the student's unsure answer for the trace", async () => {
   const r = await detectTaskLearned("please write a python function", "general", deps({ answer: { task: "writing", confidence: 0.4 } }));
   assert.equal(r.source, "heuristic");
@@ -340,8 +405,13 @@ test("panelState: training needs the toolkit, no running job and a teacher", () 
   const base = { status: parseStatus({}), settings: learningSettings({}), primaryReady: true, busy: null };
   assert.equal(panelState(base).trainBlocked, "learn.block.noToolkit");
   assert.equal(panelState(base).canInstall, true);
-  const inst = { ...base, status: parseStatus({ installed: true }) };
+  const few = { ...base, status: parseStatus({ installed: true, traces: 239 }) };
+  assert.equal(panelState(few).trainBlocked, "learn.block.fewTraces");
+  const inst = { ...base, status: parseStatus({ installed: true, traces: 240 }) };
   assert.equal(panelState(inst).canTrain, true);
+  // The backend's own floor wins when it reports one.
+  assert.equal(parseStatus({}).minTraces, 240);
+  assert.equal(parseStatus({ min_traces: 100 }).minTraces, 100);
   assert.equal(panelState({ ...inst, primaryReady: false }).trainBlocked, "learn.block.noTeacher");
   assert.equal(panelState({ ...inst, busy: "train" }).trainBlocked, "learn.block.training");
   assert.equal(panelState({ ...base, busy: "install" }).canInstall, false);
