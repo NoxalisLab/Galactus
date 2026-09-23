@@ -53,7 +53,19 @@ import {
   type TeamPreset,
 } from "./teams";
 import { teamsSection } from "./teamsview";
-import { detectTask, getAutoMode, mayAutoSwap, planSwap, setAutoMode, type AutoMode } from "./autotask";
+import {
+  configureLearnedDecision,
+  detectTaskLearned,
+  getAutoMode,
+  mayAutoSwap,
+  planSwap,
+  setAutoMode,
+  type AutoMode,
+  type LearnedDetection,
+} from "./autotask";
+import { learningSettings, makeTraceRow, OutcomeTracker, type LearningSettings, type SwapAction } from "./learning";
+import { learningSection } from "./learningview";
+import { confirmDestructive } from "./confirm";
 import { exportConversationMarkdown, formatStats, searchConversations, wireDropZone } from "./chatx";
 import * as store from "./store";
 import type { ChatItem, Conversation, ConvMeta, SubAgent, ThreadData } from "./store";
@@ -263,6 +275,37 @@ let previewPanel: PreviewPanel | null = null; // chat-side preview (destroyed on
 let tasks: TaskDef[] = [];
 let taskId: TaskId = currentTask();
 let taskOffer: { modelId: string; modelName: string } | null = null;
+
+/**
+ * Learned task detection (learning.ts). Both switches start off and are read
+ * from the settings at boot and whenever the Apprentissage panel changes them.
+ */
+let learnCfg: LearningSettings = learningSettings({});
+/** Rows waiting for the user's reaction; written once their two-turn window closes. */
+const learnTracker = new OutcomeTracker((row) => {
+  // Fire and forget: a trace that fails to write must cost the turn nothing.
+  api.decisionsTraceAppend(row).catch(() => {});
+});
+
+function applyLearning(s: LearningSettings): void {
+  // Turning collection off means nothing more is written, open rows included.
+  if (learnCfg.collect && !s.collect) learnTracker.drop();
+  learnCfg = s;
+}
+
+configureLearnedDecision({
+  active: () => learnCfg.active,
+  threshold: () => learnCfg.threshold,
+  decide: (state, previous) => api.decisionsDecide(state, previous),
+});
+
+/** One decision, redacted by makeTraceRow, held until its outcome window closes. */
+function traceDecision(text: string, previous: TaskId, det: LearnedDetection, applied: TaskId, swap: SwapAction): void {
+  if (!learnCfg.collect) return;
+  learnTracker.record(
+    makeTraceRow({ text, previous, heuristic: det.heuristic, student: det.student, decision: det, applied, swap }),
+  );
+}
 let dropUnsub: (() => void) | null = null; // drag&drop unsubscribe, per chat view
 let shellResizeCleanup: (() => void) | null = null;
 let convQuery = "";
@@ -1220,6 +1263,8 @@ function taskDot(td: TaskDef): string {
 }
 
 function selectTask(id: TaskId): void {
+  // A task picked by hand is the strongest label a decision can get.
+  learnTracker.manualPick(id);
   taskId = id;
   setCurrentTask(id);
   applyTaskPersona();
@@ -1240,6 +1285,7 @@ async function acceptTaskSwitch(): Promise<void> {
   const offer = taskOffer;
   taskOffer = null;
   if (!offer) return;
+  learnTracker.swapAccepted();
   // The engine is about to be replaced: every live thread loses its server.
   stopAllThreads();
   try {
@@ -1796,7 +1842,7 @@ function threadPaneEl(): HTMLElement {
     void setAutonomy(b.dataset.a as Autonomy);
   });
   wrap.querySelector("#taskswap")?.addEventListener("click", () => { acceptTaskSwitch(); });
-  wrap.querySelector("#taskdismiss")?.addEventListener("click", () => { taskOffer = null; render(); });
+  wrap.querySelector("#taskdismiss")?.addEventListener("click", () => { taskOffer = null; learnTracker.swapRefused(); render(); });
 
   // Drag & drop: file paths land in the input; the user decides what to do.
   dropUnsub?.();
@@ -2639,9 +2685,15 @@ function threadLabel(th: Thread): string {
  */
 async function autoRouteTask(text: string, target: store.ThreadTarget): Promise<void> {
   const mode = getAutoMode();
-  if (mode === "off") return;
+  const previous = taskId;
+  if (mode === "off") {
+    // Nothing is routed, but the message still teaches what the task was.
+    if (learnCfg.collect) traceDecision(text, previous, await detectTaskLearned(text, previous), previous, "none");
+    return;
+  }
 
-  const detection = detectTask(text, taskId);
+  // The learned student when it is on and sure, the heuristic otherwise.
+  const detection = await detectTaskLearned(text, previous);
   const prefs: Record<string, string[]> = {};
   for (const td of tasks) prefs[td.id] = td.models;
   const plan = planSwap(detection, prefs, installedIds(), server.model_id ?? null);
@@ -2654,6 +2706,9 @@ async function autoRouteTask(text: string, target: store.ThreadTarget): Promise<
     const td = tasks.find((x) => x.id === taskId);
     store.pushNotice(target, t("auto.switched").replace("%s", td?.label ?? taskId));
   }
+
+  const swap: SwapAction = !plan.modelId ? "none" : mode === "auto" && mayAutoSwap(plan) ? "auto" : "offered";
+  traceDecision(text, previous, detection, taskId, swap);
 
   if (!plan.modelId) return;
   const m = registry.find((r) => r.id === plan.modelId);
@@ -4493,6 +4548,8 @@ function settingsView(): HTMLElement {
       </div>
       <div class="sect"><b>${esc(t("teams.title"))}</b><span>${esc(t("teams.hint"))}</span></div>
       <div id="teamsbox"></div>
+      <div class="sect"><b>${esc(t("learn.title"))}</b><span>${esc(t("learn.hint"))}</span></div>
+      <div id="learnbox"></div>
       <div class="sect"><b>${esc(t("sect.ide"))}</b><span>${esc(t("sect.ideHint"))}</span></div>
       <div class="set-row"><div class="grow"><b>${esc(t("settings.autoTab"))}</b><span>${esc(t("settings.autoTabHint"))}</span></div>
         <button class="tgl ${autoTabOn ? "on" : ""}" id="autotab" role="switch" aria-checked="${autoTabOn}"><span class="k"></span></button>
@@ -4597,6 +4654,37 @@ function settingsView(): HTMLElement {
         },
         listModels: (provider) => api.cloudModels(provider),
       },
+    })
+  );
+  wrap.querySelector("#learnbox")?.replaceWith(
+    learningSection({
+      esc,
+      toast,
+      settings: () => api.settingsGet(),
+      setSetting: (key, value) => api.settingsSet(key, value),
+      status: () => api.decisionsStatus(),
+      install: () => api.decisionsInstall(),
+      cancelInstall: () => api.decisionsInstallCancel(),
+      train: () => api.decisionsTrain(),
+      cancelTrain: () => api.decisionsTrainCancel(),
+      rollback: () => api.decisionsRollback(),
+      forgetAll: () => api.decisionsForgetAll(),
+      exportTraces: async () => {
+        const dir = await pickFolderOrSay();
+        if (!dir) return null;
+        // The backend takes a FILE path in an existing folder, never a folder.
+        const dest = `${dir.replace(/\/+$/, "")}/galactus-traces-${new Date().toISOString().slice(0, 10)}.jsonl`;
+        const n = await api.decisionsTracesExport(dest);
+        return t("learn.exported").replace("%n", String(n)).replace("%s", dest);
+      },
+      clearTraces: async () => {
+        learnTracker.drop();
+        await api.decisionsTracesClear();
+      },
+      confirm: (o) => confirmDestructive(o),
+      listen: (cb) => onEvent("galactus://learning", cb),
+      primaryReady: () => server.running && server.phase === "ready",
+      changed: applyLearning,
     })
   );
   wrap.querySelector<HTMLButtonElement>("#updcheck")!.addEventListener("click", () => { void checkUpdate(false); });
@@ -5666,6 +5754,7 @@ async function boot() {
   }
   const s = await api.settingsGet().catch(() => ({} as Record<string, string>));
   configurePanePreferences(s, (key, value) => api.settingsSet(key, value));
+  applyLearning(learningSettings(s));
   if (s["root"]) {
     // The folder the user chose stays chosen. Clearing it because the registry
     // came back empty, or because one call failed, replayed the whole
@@ -5899,7 +5988,7 @@ async function boot() {
   // one would have dropped whatever the background threads just wrote.
   // Runs are on the same checkpoint: their debounced writes are the only
   // record of a turn that already happened.
-  window.addEventListener("beforeunload", () => { store.flushAll(); runsview.flushRuns(); });
+  window.addEventListener("beforeunload", () => { store.flushAll(); runsview.flushRuns(); learnTracker.flush(); });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") { store.flushAll(); runsview.flushRuns(); }
   });

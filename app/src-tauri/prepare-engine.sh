@@ -79,6 +79,24 @@ for f in models-registry.json image-models.json moe-profile.py galactus-pack-pla
 done
 echo "Scripts embarques dans $HERE/packaged/scripts"
 
+# Apprentissage (Laya, phase 2) : learn.py et ses modules, les epinglages pip,
+# et le jeu etiquete a la main qui entre dans chaque entrainement. Les sorties
+# locales (.venv, checkpoints, results, __pycache__) ne voyagent pas : le
+# toolkit est installe a la demande dans Application Support, jamais ici.
+DEC_SRC="$ROOT/app/tools/decisions"
+DEC_DST="$HERE/packaged/decisions"
+rm -rf "$DEC_DST"
+mkdir -p "$DEC_DST/data"
+cp "$DEC_SRC"/*.py "$DEC_DST/"
+[ -f "$DEC_SRC/requirements-learning.txt" ] && cp "$DEC_SRC/requirements-learning.txt" "$DEC_DST/"
+for f in prompts_handwritten.txt split.json; do
+  [ -f "$DEC_SRC/data/$f" ] && cp "$DEC_SRC/data/$f" "$DEC_DST/data/$f"
+done
+for want in learn.py requirements-learning.txt data/prompts_handwritten.txt data/split.json; do
+  [ -f "$DEC_DST/$want" ] || { echo "ECHEC: app/tools/decisions/$want manque" >&2; exit 1; }
+done
+echo "Apprentissage embarque : $(ls "$DEC_DST" | tr '\n' ' ')"
+
 # Les licences voyagent avec la copie redistribuee. MIT (llama.cpp,
 # stable-diffusion.cpp, CodeMirror, Lezer) exige que son texte accompagne le
 # binaire, et Apache-2.0 que le NOTICE suive l oeuvre : un DMG telecharge par

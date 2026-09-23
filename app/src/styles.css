@@ -2056,3 +2056,17 @@ html.pane-dragging .pvw-frame { pointer-events: none; }
 .team-engine .ph-ready { color: var(--good); }
 .team-engine .ph-starting { color: var(--warn); }
 .team-engine .ph-failed { color: var(--bad); }
+
+/* Settings > Learning (learningview.ts). The result table holds two rows of
+   three numbers: monospace, right-aligned, so the comparison reads down the
+   column. */
+.learn { display: flex; flex-direction: column; }
+.learn .learn-count { font-size: 11px; color: var(--dim2); }
+.learn .learn-prog { margin-top: 8px; }
+.learn-table { margin-top: 8px; border-collapse: collapse; font-size: 11.5px; }
+.learn-table th { font-weight: 500; color: var(--dim2); text-align: right; padding: 3px 10px; }
+.learn-table td { padding: 3px 10px; text-align: right; }
+.learn-table td:first-child, .learn-table th:first-child { text-align: left; padding-left: 0; }
+.learn-gate { margin-top: 6px; font-size: 11px; color: var(--dim2); font-family: var(--mono); }
+.learn-gate .good { color: var(--good); }
+.learn-gate .bad { color: var(--bad); }

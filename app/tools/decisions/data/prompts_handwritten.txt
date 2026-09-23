@@ -1,0 +1,343 @@
+# Hand-written task-detection prompts. NOT teacher-labelled: no Galactus server was reachable
+# on 2026-09-23 (an unrelated mlx_lm server on :8080 was not used). Format: label|lang|text
+# Labels: general, code, scripting, writing, reasoning. Written by the agent, one intent each.
+code|fr|Écris une fonction Python qui fusionne deux listes triées en une seule liste triée.
+code|fr|Mon composant React se re-rend en boucle, je pense que c'est le useEffect, tu peux regarder ?
+code|fr|Comment je fais pour typer correctement un dictionnaire générique en TypeScript ?
+code|fr|Refactore cette classe pour séparer la logique métier de l'accès base de données.
+code|fr|J'ai une erreur "borrowed value does not live long enough" en Rust, je ne comprends pas.
+code|fr|Ajoute des tests unitaires pour la fonction parseDate dans utils.ts.
+code|fr|Transforme cette boucle for en compréhension de liste.
+code|fr|Peux-tu m'implémenter un cache LRU en Go ?
+code|fr|Pourquoi ma requête SQL avec GROUP BY renvoie une erreur sur la colonne nom ?
+code|fr|Corrige le bug : la pagination saute toujours la première page.
+code|fr|Crée un endpoint FastAPI qui retourne la liste des utilisateurs paginée.
+code|fr|Comment fonctionne async/await en JavaScript, avec un petit exemple ?
+code|fr|Convertis ce code Java en Kotlin idiomatique.
+code|fr|Je veux une regex qui valide un numéro IBAN français.
+code|fr|Le build Vite échoue avec "Cannot find module", voici le log.
+code|fr|Écris-moi une classe Swift pour gérer un panier d'achat.
+code|fr|Optimise cette fonction, elle est en O(n²) et je voudrais du O(n log n).
+code|fr|Ajoute la gestion d'erreurs à cette fonction qui lit un fichier JSON.
+code|fr|Comment je sérialise une struct en JSON avec serde ?
+code|fr|Fais un hook React personnalisé pour récupérer des données avec annulation.
+code|fr|Explique-moi ce que fait ce code : const x = arr.reduce((a, b) => a + b, 0);
+code|fr|Mon test Jest échoue uniquement en CI, pas en local.
+code|fr|Implémente un parseur de fichiers CSV qui gère les guillemets échappés.
+code|fr|Renomme les variables de ce module pour qu'elles soient plus lisibles.
+code|fr|Écris le schéma Prisma pour des utilisateurs, des articles et des commentaires.
+code|fr|Comment éviter une fuite mémoire avec les listeners dans une app Electron ?
+code|fr|Ajoute un type générique à cette fonction pour qu'elle accepte n'importe quel tableau.
+code|fr|J'ai un segfault dans mon programme C quand je libère un pointeur.
+code|fr|Génère une migration Django pour ajouter un champ date_naissance.
+code|fr|Écris un algorithme de Dijkstra en C++ avec une file de priorité.
+code|fr|Comment je mocke un appel HTTP dans pytest ?
+code|fr|Ce composant Vue n'affiche pas la valeur mise à jour, pourquoi ?
+code|fr|Fais une fonction qui déduplique un tableau d'objets selon leur id.
+code|fr|Mets à jour ce code pour utiliser la nouvelle API fetch au lieu d'axios.
+code|fr|Écris une interface TypeScript pour la réponse de cette API météo.
+code|fr|Comment je gère proprement les erreurs dans une application Express ?
+code|fr|Relis ma pull request et dis-moi ce qui ne va pas dans le code.
+code|fr|Code-moi un jeu du morpion en JavaScript dans le navigateur.
+code|fr|Est-ce que ce code Python est thread-safe ? Il partage une liste entre threads.
+code|fr|Écris la méthode equals et hashCode pour cette classe Java.
+code|fr|Comment je lis un fichier ligne par ligne en Rust sans tout charger en mémoire ?
+code|fr|Ajoute la validation des champs du formulaire avec zod.
+code|en|Write a Python function that checks whether a string is a palindrome.
+code|en|My TypeScript build complains that property 'id' does not exist on type 'never'.
+code|en|Refactor this function to use early returns instead of nested ifs.
+code|en|Implement binary search in Rust with proper handling of empty slices.
+code|en|Why does this React state update not show up immediately after setState?
+code|en|Add unit tests for the invoice total calculation in billing.py.
+code|en|Create a REST endpoint in Express that uploads a file to S3.
+code|en|Fix the off-by-one error in this loop that skips the last element.
+code|en|How do I use generics with constraints in C#?
+code|en|Write a SQL query that returns the top 5 customers by revenue per month.
+code|en|Convert this callback-based Node code to async/await.
+code|en|Explain what this regex does: ^(?=.*\d)(?=.*[a-z]).{8,}$
+code|en|My Go program deadlocks when I close the channel, here is the code.
+code|en|Build a small class to represent a matrix with add and multiply methods.
+code|en|How can I memoize an expensive selector in Redux?
+code|en|Write a Kotlin data class for a user profile with JSON serialization.
+code|en|The pytest fixture is not being picked up, what am I missing?
+code|en|Implement a trie with insert, search and startsWith.
+code|en|Review this function for bugs and edge cases.
+code|en|Add type hints to this Python module.
+code|en|Why does my Swift closure create a retain cycle?
+code|en|Write a debounce function in TypeScript.
+code|en|How do I stream a large response body in FastAPI?
+code|en|Generate a Svelte component for a sortable table.
+code|en|This Java stream throws a NullPointerException, can you see why?
+code|en|Rewrite this class using composition instead of inheritance.
+scripting|fr|Écris un script bash qui sauvegarde mon dossier Documents tous les soirs.
+scripting|fr|Comment je configure une tâche cron qui tourne toutes les 15 minutes ?
+scripting|fr|Fais-moi un Dockerfile pour une app Node en production, multi-stage.
+scripting|fr|Installe PostgreSQL 16 sur mon Mac avec Homebrew et démarre le service.
+scripting|fr|Comment je renomme en masse tous les fichiers .jpeg en .jpg dans un dossier ?
+scripting|fr|Écris un docker-compose avec une base Postgres et un Redis.
+scripting|fr|Automatise le déploiement de mon site statique sur mon serveur via rsync.
+scripting|fr|Comment je trouve les fichiers de plus de 1 Go sur mon disque en ligne de commande ?
+scripting|fr|Crée un pipeline GitLab CI qui lance les tests puis construit l'image Docker.
+scripting|fr|Mon script shell s'arrête dès qu'une commande échoue, comment l'éviter ?
+scripting|fr|Comment je donne les droits d'exécution à un script et le lance au démarrage ?
+scripting|fr|Écris un playbook Ansible pour installer nginx sur trois serveurs.
+scripting|fr|Comment configurer une clé SSH pour me connecter sans mot de passe ?
+scripting|fr|Fais un script qui compresse les logs de plus de 7 jours et supprime les anciens.
+scripting|fr|Comment je tue le processus qui occupe le port 3000 ?
+scripting|fr|Écris un Makefile avec les cibles build, test et clean.
+scripting|fr|Configure un service systemd pour lancer mon API au démarrage.
+scripting|fr|Comment je mets à jour tous les paquets brew installés d'un coup ?
+scripting|fr|Automatise la création d'un environnement virtuel et l'installation des dépendances.
+scripting|fr|Comment je surveille l'espace disque et reçois une alerte quand il dépasse 90 % ?
+scripting|fr|Écris un fichier Terraform pour créer un bucket S3 privé.
+scripting|fr|Comment je redirige stdout et stderr dans le même fichier de log ?
+scripting|fr|Fais un script zsh qui ouvre mes applis de travail le matin.
+scripting|fr|Comment je copie un dossier vers mon NAS en ne transférant que les fichiers modifiés ?
+scripting|fr|Configure les GitHub Actions pour publier le paquet npm à chaque tag.
+scripting|fr|Comment je liste les conteneurs Docker arrêtés et les supprime ?
+scripting|fr|Écris une commande awk qui somme la troisième colonne d'un CSV.
+scripting|fr|Mets en place un reverse proxy nginx avec certificat Let's Encrypt.
+scripting|fr|Comment je change le shell par défaut de mon Mac pour fish ?
+scripting|fr|Fais un script PowerShell qui liste les services Windows arrêtés.
+scripting|fr|Comment je planifie un redémarrage automatique du serveur chaque dimanche à 4 h ?
+scripting|fr|Écris un hook git pre-commit qui lance le linter.
+scripting|fr|Comment je monte un partage SMB en ligne de commande sur macOS ?
+scripting|fr|Configure un fichier .env et charge-le dans mon script de lancement.
+scripting|fr|Comment je remplace un mot dans tous les fichiers d'un dossier avec sed ?
+scripting|fr|Automatise la sauvegarde de ma base MySQL avec rotation sur 30 jours.
+scripting|fr|Comment je crée un alias de commande qui persiste entre les sessions ?
+scripting|fr|Écris un script qui vérifie que tous mes sites répondent et m'envoie une notification sinon.
+scripting|fr|Comment je décompresse tous les zip d'un dossier chacun dans son propre répertoire ?
+scripting|fr|Mets en place un runner GitLab sur ma machine Linux.
+scripting|fr|Comment je limite la mémoire d'un conteneur Docker ?
+scripting|fr|Écris un script qui convertit toutes les vidéos d'un dossier en mp4 avec ffmpeg.
+scripting|en|Write a bash script that rotates log files and keeps the last 10.
+scripting|en|How do I set up a cron job to run a Python script every hour?
+scripting|en|Create a Dockerfile for a Flask app with gunicorn.
+scripting|en|Automate deploying my app to a VPS over SSH on every push.
+scripting|en|How can I find and delete all node_modules folders recursively?
+scripting|en|Write a GitHub Actions workflow that runs tests on pull requests.
+scripting|en|Set up a docker-compose file with Postgres, pgAdmin and my API.
+scripting|en|How do I change file permissions recursively for a web directory?
+scripting|en|Write a script to batch resize all PNG images in a folder with ImageMagick.
+scripting|en|How do I make my shell script exit on the first error and print the failing line?
+scripting|en|Install and configure fail2ban on Ubuntu.
+scripting|en|Write a systemd timer that runs a backup every night.
+scripting|en|How can I sync two folders between my laptop and a server?
+scripting|en|Create a Terraform module for a small Kubernetes cluster.
+scripting|en|How do I kill all processes matching a name from the terminal?
+scripting|en|Write a Makefile that builds a Go binary for Linux and macOS.
+scripting|en|Set up a pre-push git hook that runs the test suite.
+scripting|en|How do I export environment variables from a .env file in zsh?
+scripting|en|Write an Ansible task to add a user and its SSH key.
+scripting|en|How can I tail logs from several Docker containers at once?
+scripting|en|Automate renewing TLS certificates with certbot.
+scripting|en|Write a one-liner to count lines of code by file extension.
+scripting|en|How do I schedule a task on macOS with launchd?
+scripting|en|Create a CI pipeline that caches dependencies between runs.
+scripting|en|Write a PowerShell script to map a network drive at login.
+scripting|en|How do I prune old Docker images to free disk space?
+writing|fr|Rédige un email pour relancer un client qui n'a pas payé sa facture.
+writing|fr|Écris un post LinkedIn pour annoncer le lancement de notre nouveau produit.
+writing|fr|Reformule ce paragraphe pour qu'il soit plus professionnel.
+writing|fr|Corrige les fautes d'orthographe de ce texte.
+writing|fr|Traduis ce contrat de l'anglais vers le français.
+writing|fr|Résume cet article en cinq points clés.
+writing|fr|Écris une lettre de motivation pour un poste de chef de projet.
+writing|fr|Fais-moi un discours de mariage drôle mais touchant pour mon frère.
+writing|fr|Propose trois slogans pour une marque de café équitable.
+writing|fr|Rédige la description produit d'une lampe de bureau en bois.
+writing|fr|Écris une nouvelle de science-fiction de 500 mots sur une IA qui rêve.
+writing|fr|Transforme ces notes de réunion en compte rendu clair.
+writing|fr|Rends ce texte plus concis sans perdre d'information.
+writing|fr|Écris un poème sur l'automne en alexandrins.
+writing|fr|Rédige la newsletter mensuelle de notre association.
+writing|fr|Peux-tu adapter le ton de ce message pour qu'il soit plus chaleureux ?
+writing|fr|Écris une biographie courte pour ma page « À propos ».
+writing|fr|Rédige une réponse polie à un avis négatif sur notre restaurant.
+writing|fr|Traduis ce mail en allemand en gardant un ton formel.
+writing|fr|Écris le script d'une vidéo YouTube de deux minutes sur le compostage.
+writing|fr|Fais une synthèse de ce rapport de 20 pages pour la direction.
+writing|fr|Rédige un communiqué de presse pour l'ouverture de notre nouvelle agence.
+writing|fr|Améliore le style de ce chapitre, il est trop lourd.
+writing|fr|Écris un message d'excuse à un collègue pour avoir raté la réunion.
+writing|fr|Rédige les conditions d'une offre promotionnelle en langage clair.
+writing|fr|Écris une histoire pour enfants sur un petit renard courageux.
+writing|fr|Rédige une annonce pour recruter un développeur backend.
+writing|fr|Mets ce texte au passé simple.
+writing|fr|Écris un article de blog sur les bienfaits de la marche quotidienne.
+writing|fr|Rédige un mot de remerciement pour nos bénévoles.
+writing|fr|Transforme ce texte technique en explication compréhensible par le grand public.
+writing|fr|Écris une accroche percutante pour mon profil Malt.
+writing|fr|Rédige le mail d'invitation à notre séminaire d'entreprise.
+writing|fr|Propose un titre accrocheur pour cet article.
+writing|fr|Écris trois variantes de ce tweet pour un test A/B.
+writing|fr|Relis mon mémoire et corrige la syntaxe et la ponctuation.
+writing|fr|Rédige une lettre de résiliation de mon abonnement internet.
+writing|fr|Écris un texte d'hommage pour le départ à la retraite de Martine.
+writing|fr|Paraphrase cette citation pour l'utiliser dans ma présentation.
+writing|fr|Rédige un FAQ pour notre boutique en ligne à partir de ces questions clients.
+writing|fr|Écris le synopsis d'un roman policier se déroulant à Lausanne.
+writing|fr|Rédige une présentation de mon entreprise en 100 mots.
+writing|en|Write a cover letter for a senior data analyst position.
+writing|en|Proofread this essay and fix grammar mistakes.
+writing|en|Draft a polite email declining a meeting invitation.
+writing|en|Summarize this article in three sentences.
+writing|en|Translate this paragraph into Spanish.
+writing|en|Write a short story about a lighthouse keeper who finds a message in a bottle.
+writing|en|Rewrite this product description to sound more premium.
+writing|en|Draft a press release announcing our Series A funding.
+writing|en|Write a heartfelt birthday message for my grandmother.
+writing|en|Make this paragraph shorter and punchier.
+writing|en|Write a blog post introduction about remote work burnout.
+writing|en|Compose a haiku about the first snow.
+writing|en|Turn these bullet points into a flowing paragraph.
+writing|en|Write the About Us page for a small bakery.
+writing|en|Draft a LinkedIn recommendation for my former manager.
+writing|en|Write a eulogy for a beloved family dog.
+writing|en|Improve the tone of this customer support reply, it sounds too cold.
+writing|en|Write a newsletter intro for our spring collection.
+writing|en|Rephrase this sentence so it doesn't sound passive-aggressive.
+writing|en|Write a speech for the opening of our annual conference.
+writing|en|Create five catchy taglines for a fitness app.
+writing|en|Write a formal complaint letter to my landlord about the heating.
+writing|en|Condense these meeting minutes into an executive summary.
+writing|en|Write a limerick about a cat who loves Mondays.
+writing|en|Draft the welcome email for new subscribers.
+writing|en|Write a product review template for our customers.
+reasoning|fr|Compare les avantages et inconvénients d'acheter ou de louer un appartement à Genève.
+reasoning|fr|Si un train part à 14 h à 120 km/h et un autre à 15 h à 160 km/h, quand le rattrape-t-il ?
+reasoning|fr|Analyse les risques de lancer notre produit en pleine période de soldes.
+reasoning|fr|Faut-il migrer notre monolithe vers des microservices ? Pèse le pour et le contre.
+reasoning|fr|Démontre que la somme de deux nombres impairs est toujours paire.
+reasoning|fr|Pourquoi nos ventes ont-elles baissé de 20 % alors que le trafic a augmenté ?
+reasoning|fr|Quelle stratégie adopter face à un concurrent qui baisse ses prix de 30 % ?
+reasoning|fr|Évalue la solidité de cet argument : « tout le monde le fait, donc c'est bien ».
+reasoning|fr|J'ai trois offres d'emploi, aide-moi à choisir en fonction de mes priorités.
+reasoning|fr|Quelle est la probabilité d'obtenir au moins un six en lançant quatre dés ?
+reasoning|fr|Résous cette énigme : un fermier doit traverser une rivière avec un loup, une chèvre et un chou.
+reasoning|fr|Est-il plus rentable de rembourser mon prêt par anticipation ou d'investir cet argent ?
+reasoning|fr|Identifie les biais dans ce sondage et dis-moi si ses conclusions tiennent.
+reasoning|fr|Explique pourquoi la corrélation n'implique pas la causalité avec un contre-exemple.
+reasoning|fr|Comment répartir un budget de 50 000 francs entre marketing, produit et recrutement ?
+reasoning|fr|Critique ce business plan et identifie ses hypothèses les plus fragiles.
+reasoning|fr|Si tous les A sont des B et certains B sont des C, peut-on conclure que certains A sont des C ?
+reasoning|fr|Calcule le rendement annualisé d'un placement passé de 10 000 à 14 000 en 5 ans.
+reasoning|fr|Quels scénarios pourraient expliquer la hausse soudaine des désabonnements ce mois-ci ?
+reasoning|fr|Arbitre entre livrer vite avec de la dette technique ou retarder d'un mois.
+reasoning|fr|Réfléchis étape par étape : combien de poignées de main entre 12 personnes ?
+reasoning|fr|Quelle décision prendre si notre fournisseur principal double ses délais ?
+reasoning|fr|Évalue les conséquences à long terme d'une semaine de quatre jours dans une PME.
+reasoning|fr|Classe ces cinq projets par priorité selon impact et effort, et justifie.
+reasoning|fr|Analyse ce graphique de ventes et dis-moi quelles tendances tu vois.
+reasoning|fr|Un investissement de 1 000 francs à 5 % composé, combien après 10 ans ?
+reasoning|fr|Est-ce logique de vendre mes actions après une baisse de 15 % ? Raisonne avec moi.
+reasoning|fr|Quelles sont les failles possibles dans ce raisonnement juridique ?
+reasoning|fr|Trouve le nombre manquant dans la suite 2, 6, 12, 20, 30, ?
+reasoning|fr|Pèse les arguments pour et contre la gratuité des transports publics.
+reasoning|fr|Si je double la taille de l'équipe, le projet sera-t-il livré deux fois plus vite ? Discute.
+reasoning|fr|Estime combien de pianos il y a à Paris, en détaillant ton raisonnement.
+reasoning|fr|Quelle est la cause la plus probable si mon taux de conversion chute uniquement sur mobile ?
+reasoning|fr|Évalue si ce contrat de freelance est équilibré pour les deux parties.
+reasoning|fr|Compare trois options de financement pour notre start-up et recommande-en une.
+reasoning|fr|Deux urnes, l'une avec 3 boules rouges, l'autre avec 2 rouges et 2 bleues ; quelle chance de tirer rouge ?
+reasoning|fr|Ma démarche d'hypothèses pour ce test A/B est-elle statistiquement valide ?
+reasoning|fr|Quel serait l'impact d'une hausse des taux de 1 % sur notre marge ?
+reasoning|fr|Aide-moi à structurer une décision difficile : déménager pour un emploi ou rester.
+reasoning|fr|Trois interrupteurs, une ampoule dans une autre pièce : comment savoir lequel l'allume ?
+reasoning|fr|Est-ce que ce modèle de pricing freemium est viable ? Analyse les chiffres.
+reasoning|fr|Qu'est-ce qui pèse le plus dans le choix entre une voiture électrique et hybride pour 30 000 km par an ?
+reasoning|en|Compare the pros and cons of PostgreSQL versus MongoDB for an analytics workload.
+reasoning|en|If a bat and a ball cost $1.10 and the bat costs $1 more than the ball, how much is the ball?
+reasoning|en|Should we raise prices by 10% or add a premium tier? Walk through the trade-offs.
+reasoning|en|Prove that there are infinitely many prime numbers.
+reasoning|en|Why might our churn increase after a successful marketing campaign?
+reasoning|en|Evaluate the risks of expanding into the German market next year.
+reasoning|en|What is the expected value of a game where you win $10 with probability 0.3 and lose $4 otherwise?
+reasoning|en|Help me decide between two job offers based on salary, growth and commute.
+reasoning|en|Analyze the logical flaw in this argument about vaccines.
+reasoning|en|Think step by step: how many squares are there on a chessboard?
+reasoning|en|What strategy should a small bookstore adopt against online retailers?
+reasoning|en|Estimate the number of gas stations in the United States and explain your assumptions.
+reasoning|en|Is it better to pay off student loans or invest in an index fund at 4% interest?
+reasoning|en|Critique this experimental design and suggest confounders.
+reasoning|en|Which of these three vendors should we pick given cost, risk and lock-in?
+reasoning|en|If all bloops are razzies and all razzies are lazzies, are all bloops lazzies?
+reasoning|en|What is the root cause if revenue grew but profit fell over the same quarter?
+reasoning|en|Weigh the arguments for and against universal basic income.
+reasoning|en|Calculate the probability of drawing two aces in a row without replacement.
+reasoning|en|Assess whether our hiring plan is realistic given the current runway.
+reasoning|en|Why does adding more people to a late project make it later?
+reasoning|en|Solve: a snail climbs 3 m by day and slips 2 m at night in a 10 m well; how many days?
+reasoning|en|Evaluate the long-term consequences of remote-first policy on company culture.
+reasoning|en|Rank these features by expected impact and justify the ordering.
+reasoning|en|What could explain a sudden spike in API latency at 3 a.m. every night?
+reasoning|en|Is this investment thesis sound? Point out the weakest assumption.
+general|fr|Bonjour, comment ça va aujourd'hui ?
+general|fr|Quelle est la capitale de l'Australie ?
+general|fr|Donne-moi une recette facile pour ce soir avec des courgettes.
+general|fr|Qui a peint la Joconde ?
+general|fr|Quel temps fait-il généralement en Islande en octobre ?
+general|fr|Conseille-moi un bon film à regarder ce week-end.
+general|fr|Combien de temps faut-il pour cuire un œuf dur ?
+general|fr|C'est quoi la différence entre un crocodile et un alligator ?
+general|fr|Merci beaucoup pour ton aide tout à l'heure !
+general|fr|Quels sont les horaires habituels des banques en Suisse ?
+general|fr|Donne-moi des idées de sorties à Lyon avec des enfants.
+general|fr|Qu'est-ce que la photosynthèse, en quelques mots ?
+general|fr|À quelle heure se couche le soleil en décembre à Paris environ ?
+general|fr|Tu peux me raconter une blague ?
+general|fr|Quelle est la hauteur du mont Blanc ?
+general|fr|Quels légumes planter au potager en avril ?
+general|fr|Qui a gagné la Coupe du monde de football en 2018 ?
+general|fr|Comment enlever une tache de vin rouge sur un tapis ?
+general|fr|Qu'est-ce que tu sais faire exactement ?
+general|fr|Recommande-moi quelques livres de fantasy pour débuter.
+general|fr|Combien de calories dans une banane ?
+general|fr|Quelle est la date de la fête nationale suisse ?
+general|fr|Comment s'appelle le petit du cerf ?
+general|fr|Je m'ennuie, tu as une idée d'activité ?
+general|fr|Quelles plantes d'intérieur supportent peu de lumière ?
+general|fr|Combien de litres d'eau faut-il boire par jour ?
+general|fr|Qu'est-ce qu'un trou noir ?
+general|fr|Quel est le plus long fleuve de France ?
+general|fr|Donne-moi une liste de courses pour une semaine de repas végétariens.
+general|fr|Comment on dit « bonne nuit » en japonais ?
+general|fr|Quelle est la meilleure saison pour visiter le Portugal ?
+general|fr|Comment faire pousser un avocat à partir du noyau ?
+general|fr|Salut ! Tu es là ?
+general|fr|Quels sont les symptômes d'un rhume classique ?
+general|fr|Qui a écrit Les Misérables ?
+general|fr|Quelles sont les règles de base de la pétanque ?
+general|fr|Combien d'habitants compte la ville de Genève ?
+general|fr|Suggère-moi un prénom original pour un chat roux.
+general|fr|Quelle est la différence entre un lapin et un lièvre ?
+general|fr|Comment conserver le basilic frais plus longtemps ?
+general|fr|Quel âge a la Tour Eiffel ?
+general|fr|Donne-moi trois idées de cadeaux pour un ami qui aime la randonnée.
+general|en|Hi there, how are you doing?
+general|en|What is the tallest mountain in Africa?
+general|en|Give me a quick recipe for banana pancakes.
+general|en|Who invented the telephone?
+general|en|Can you recommend a podcast about history?
+general|en|How long should I boil pasta?
+general|en|What's the difference between a moth and a butterfly?
+general|en|Thanks, that was really helpful!
+general|en|What time zone is Tokyo in?
+general|en|Tell me a fun fact about octopuses.
+general|en|What are some good board games for four players?
+general|en|How many continents are there?
+general|en|What should I pack for a weekend in Barcelona?
+general|en|What does a koala eat?
+general|en|Recommend a few classic jazz albums.
+general|en|How do I get a coffee stain out of a white shirt?
+general|en|What year did the Berlin Wall fall?
+general|en|Any tips for sleeping better?
+general|en|What's the boiling point of water at sea level?
+general|en|Who is the author of Pride and Prejudice?
+general|en|What can you help me with?
+general|en|Suggest a name for my new golden retriever puppy.
+general|en|What are the rules of chess castling?
+general|en|How far is the Moon from Earth?
+general|en|What are some easy houseplants for beginners?
+general|en|Good morning! Anything interesting happening today?

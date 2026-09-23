@@ -1,0 +1,85 @@
+{
+  "split": "test",
+  "labels": "hand-written",
+  "n": 105,
+  "device": "mps",
+  "systems": {
+    "heuristic": {
+      "n": 105,
+      "accuracy": 0.6476,
+      "ece": 0.2635,
+      "latency_ms_p50": 0.004,
+      "latency_ms_p95": 0.015,
+      "accuracy_by_lang": {
+        "en": 0.625,
+        "fr": 0.6615
+      },
+      "accuracy_by_task": {
+        "general": 0.9524,
+        "code": 0.8095,
+        "scripting": 0.5714,
+        "writing": 0.5714,
+        "reasoning": 0.3333
+      }
+    },
+    "laya_base_zero_shot": {
+      "n": 105,
+      "accuracy": 0.6952,
+      "ece": 0.0829,
+      "latency_ms_p50": 11.961,
+      "latency_ms_p95": 15.151,
+      "accuracy_by_lang": {
+        "en": 0.7,
+        "fr": 0.6923
+      },
+      "accuracy_by_task": {
+        "general": 0.8095,
+        "code": 0.381,
+        "scripting": 0.5714,
+        "writing": 0.8571,
+        "reasoning": 0.8571
+      }
+    },
+    "laya_finetuned": {
+      "n": 105,
+      "accuracy": 0.9333,
+      "ece": 0.0497,
+      "latency_ms_p50": 11.805,
+      "latency_ms_p95": 13.001,
+      "accuracy_by_lang": {
+        "en": 0.9,
+        "fr": 0.9538
+      },
+      "accuracy_by_task": {
+        "general": 1.0,
+        "code": 0.9524,
+        "scripting": 0.8095,
+        "writing": 0.9524,
+        "reasoning": 0.9524
+      }
+    },
+    "hybrid_fallback_0.5": {
+      "n": 105,
+      "accuracy": 0.9333,
+      "ece": 0.0427,
+      "latency_ms_p50": 11.805,
+      "latency_ms_p95": 13.001,
+      "accuracy_by_lang": {
+        "en": 0.9,
+        "fr": 0.9538
+      },
+      "accuracy_by_task": {
+        "general": 1.0,
+        "code": 0.9524,
+        "scripting": 0.8095,
+        "writing": 0.9524,
+        "reasoning": 0.9524
+      }
+    }
+  },
+  "gate": {
+    "student_beats_heuristic": true,
+    "student_ece_below_0.10": true,
+    "passed": true
+  }
+}

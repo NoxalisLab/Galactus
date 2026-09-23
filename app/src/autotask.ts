@@ -10,6 +10,12 @@
 // Detection is local heuristics, no round trip, no latency. It errs towards
 // "keep the current task" when the signal is weak, because a wrong swap is far
 // more annoying than a missed one.
+//
+// detectTaskLearned() is the learned variant (learning.ts): it asks the local
+// student through an injected `decide`, and falls back to detectTask() on any
+// doubt. detectTask() itself stays synchronous and untouched by it.
+
+import { chooseDecision, parseStudent, STUDENT_BUDGET_MS, withBudget, type DecisionSource, type StudentAnswer } from "./learning.js";
 
 export type TaskId = "general" | "code" | "scripting" | "writing" | "reasoning";
 
@@ -170,6 +176,55 @@ export function detectTask(text: string, previous: TaskId = "general"): Detectio
   const margin = bestScore - second;
   const confidence = Math.max(0, Math.min(1, (bestScore / 6) * 0.6 + (margin / 4) * 0.4));
   return { task: best, confidence, reason: reasons[best] ?? "mots-cles" };
+}
+
+/** A detection, with where it came from and both answers, for the trace. */
+export interface LearnedDetection extends Detection {
+  source: DecisionSource;
+  heuristic: Detection;
+  student: StudentAnswer | null;
+}
+
+/** How detectTaskLearned reaches the student. main.ts binds it to decisions_decide. */
+export interface LearnedDeps {
+  /** learning_active is on and an accepted checkpoint exists. */
+  active(): boolean;
+  /** Minimum student confidence (learning_threshold). */
+  threshold(): number;
+  /** Ask the student. Any shape is accepted and checked; a rejection is "no answer". */
+  decide(state: string, previous: TaskId): Promise<unknown>;
+  /** Overrides STUDENT_BUDGET_MS, for tests. */
+  budgetMs?: number;
+}
+
+let learnedDeps: LearnedDeps | null = null;
+
+export function configureLearnedDecision(d: LearnedDeps | null): void {
+  learnedDeps = d;
+}
+
+/**
+ * Detect the task, using the learned student when it is on, answers within
+ * the budget, and is confident enough. Otherwise exactly detectTask().
+ */
+export async function detectTaskLearned(
+  text: string,
+  previous: TaskId = "general",
+  deps: LearnedDeps | null = learnedDeps,
+): Promise<LearnedDetection> {
+  const heuristic = detectTask(text, previous);
+  const fallback: LearnedDetection = { ...heuristic, source: "heuristic", heuristic, student: null };
+  // A message too short for the heuristic is too short for the student too.
+  if (!deps || !deps.active() || heuristic.reason === "message trop court") return fallback;
+  let raw: unknown = null;
+  try {
+    raw = await withBudget(deps.decide(text, previous), deps.budgetMs ?? STUDENT_BUDGET_MS);
+  } catch {
+    raw = null;
+  }
+  const student = parseStudent(raw);
+  const chosen = chooseDecision(heuristic, student, deps.threshold());
+  return { ...chosen, heuristic, student };
 }
 
 export interface SwapPlan {

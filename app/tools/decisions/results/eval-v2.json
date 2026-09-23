@@ -1,0 +1,55 @@
+{
+  "student": {
+    "acc": 0.9238,
+    "ece": 0.0483,
+    "n": 105,
+    "latency_ms_p50": 12.15,
+    "latency_ms_p95": 14.91
+  },
+  "heuristic": {
+    "acc": 0.5714,
+    "n": 105
+  },
+  "labels": {
+    "teacher": 0,
+    "outcome": 0,
+    "hand": 105
+  },
+  "skipped_no_heuristic": 0,
+  "by_task": {
+    "general": {
+      "n": 21,
+      "student": 0.9524,
+      "heuristic": 0.2381
+    },
+    "code": {
+      "n": 21,
+      "student": 0.8095,
+      "heuristic": 0.7143
+    },
+    "scripting": {
+      "n": 21,
+      "student": 0.9048,
+      "heuristic": 0.6667
+    },
+    "writing": {
+      "n": 21,
+      "student": 1.0,
+      "heuristic": 0.6667
+    },
+    "reasoning": {
+      "n": 21,
+      "student": 0.9524,
+      "heuristic": 0.5714
+    }
+  },
+  "gate_advisory": {
+    "n_test_ok": true,
+    "accuracy_gain_ok": true,
+    "ece_ok": true,
+    "accepted": true
+  },
+  "checkpoint": "checkpoints/task-detection-v2",
+  "device": "mps",
+  "test_set": "hand-written phase-1 test split"
+}

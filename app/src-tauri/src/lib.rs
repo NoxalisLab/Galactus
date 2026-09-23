@@ -65,6 +65,7 @@ mod tools;
 mod cron;
 mod hardware;
 mod knowledge;
+mod learning;
 mod lsp;
 mod pty;
 mod housekeeping;
@@ -2862,6 +2863,17 @@ pub fn run() {
             engines::engine_stop,
             engines::engines_status,
             engines::engines_stop_all_extras,
+            learning::decisions_status,
+            learning::decisions_install,
+            learning::decisions_install_cancel,
+            learning::decisions_train_cancel,
+            learning::decisions_decide,
+            learning::decisions_trace_append,
+            learning::decisions_traces_export,
+            learning::decisions_traces_clear,
+            learning::decisions_train,
+            learning::decisions_rollback,
+            learning::decisions_forget_all,
             cloud::cloud_key_set,
             cloud::cloud_key_clear,
             cloud::cloud_key_status,
@@ -3058,6 +3070,9 @@ pub fn run() {
                 // Teammate engines hold their models resident exactly like the
                 // primary, and go with it.
                 engines::stop_all();
+                // The student service and a training run (pip, torch) are
+                // Python processes that would outlive the window otherwise.
+                learning::shutdown();
                 // By pid, not through the server locks: a connector may be
                 // mid-call and holding its own lock for another minute, and the
                 // window must close now. The process group is left to the system

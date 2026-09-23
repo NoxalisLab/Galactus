@@ -162,6 +162,9 @@ for want in \
   "packaged/scripts/image-models.json" \
   "packaged/galactus-pick" \
   "packaged/galactus-doc" \
+  "packaged/decisions/learn.py" \
+  "packaged/decisions/requirements-learning.txt" \
+  "packaged/decisions/data/prompts_handwritten.txt" \
   "image-engine/sd-cli" \
   "packaged/LICENSE" \
   "packaged/NOTICE"; do

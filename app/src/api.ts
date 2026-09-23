@@ -595,6 +595,23 @@ export const api = {
   /** The release notes shipped with this build, for the what-changed panel. */
   releaseNotes: () => invoke<string>("release_notes"),
   settingsGet: () => invoke<Record<string, string>>("settings_get"),
+  // ---- learned decisions (learning.rs). Shapes are checked in learning.ts. ----
+  decisionsStatus: () => invoke<unknown>("decisions_status"),
+  decisionsInstall: () => invoke<void>("decisions_install"),
+  decisionsInstallCancel: () => invoke<void>("decisions_install_cancel"),
+  /** The student's answer, {task, confidence}; the backend enforces its own 50 ms budget. */
+  decisionsDecide: (state: string, previousTask: string) =>
+    invoke<unknown>("decisions_decide", { state, previousTask }),
+  /** One trace row, already redacted by learning.ts. Returns the backend's count when it gives one. */
+  decisionsTraceAppend: (row: object) => invoke<unknown>("decisions_trace_append", { row }),
+  /** Copy traces.jsonl to the absolute FILE path `dest` (its folder must exist). Returns the row count. */
+  decisionsTracesExport: (dest: string) => invoke<number>("decisions_traces_export", { dest }),
+  decisionsTracesClear: () => invoke<void>("decisions_traces_clear"),
+  decisionsTrain: () => invoke<void>("decisions_train"),
+  decisionsRollback: () => invoke<unknown>("decisions_rollback"),
+  decisionsTrainCancel: () => invoke<void>("decisions_train_cancel"),
+  /** Delete every learned checkpoint (active, previous, rejected). Traces go with decisions_traces_clear. */
+  decisionsForgetAll: () => invoke<void>("decisions_forget_all"),
   /** The two settings the page may not write directly: they run programs. */
   mcpConfigSet: (config: string) => invoke<void>("mcp_config_set", { config }),
   rootSet: (path: string) => invoke<void>("root_set", { path }),
