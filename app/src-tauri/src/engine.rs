@@ -864,9 +864,38 @@ pub(crate) fn server_argv(
     ] {
         argv.push(a.into());
     }
-    argv.extend(speculative.iter().map(std::ffi::OsString::from));
+    if speculation_fits(speculative, ubatch) {
+        argv.extend(speculative.iter().map(std::ffi::OsString::from));
+    } else {
+        eprintln!(
+            "galactus: speculative decoding off for this start: micro-batch {ubatch} is below \
+             draft tokens + 2, which llama-server asserts on (GGML_ASSERT n_ubatch > n_keep_tail)"
+        );
+    }
     argv.extend(chat_parsing_args().iter().map(std::ffi::OsString::from));
     argv
+}
+
+/// Whether the planned micro-batch can carry the draft.
+///
+/// Verifying N draft tokens needs a micro-batch above N + 1: llama-server
+/// aborts at load with `GGML_ASSERT(n_ubatch > n_keep_tail)` otherwise, seen
+/// with draft-mtp n_max 1 at ubatch 2. Below full residency the planner sizes
+/// the micro-batch from the cache's probation segment, often 1 or 2 on a small
+/// Mac, and raising it is not an option: that bound is what keeps a batch's
+/// distinct experts inside the cache. So the draft is what gives way. The
+/// model starts without it rather than not at all.
+pub(crate) fn speculation_fits(speculative: &[String], ubatch: u32) -> bool {
+    if speculative.is_empty() {
+        return true;
+    }
+    let n_max = speculative
+        .iter()
+        .position(|a| a == "--spec-draft-n-max")
+        .and_then(|i| speculative.get(i + 1))
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(u32::MAX - 2);
+    ubatch >= n_max + 2
 }
 
 /// Everything a start decided before anything was spawned.
@@ -1554,7 +1583,22 @@ mod server_generation_tests {
 /// Speculative decoding, read from the registry and handed to every engine.
 #[cfg(test)]
 mod speculative_tests {
-    use super::{server_argv, speculative_args};
+    use super::{server_argv, speculation_fits, speculative_args};
+
+    #[test]
+    fn a_micro_batch_too_small_for_the_draft_starts_without_it() {
+        let spec: Vec<String> =
+            ["--spec-type", "draft-mtp", "--spec-draft-n-max", "1"].map(String::from).to_vec();
+        assert!(!speculation_fits(&spec, 1));
+        assert!(!speculation_fits(&spec, 2));
+        assert!(speculation_fits(&spec, 3));
+        assert!(speculation_fits(&spec, 512));
+        assert!(speculation_fits(&[], 1));
+        let argv = server_argv(std::path::Path::new("/m.gguf"), 1, 4096, 2, 1, false, &spec);
+        assert!(!argv.iter().any(|a| a == "--spec-type"));
+        let argv = server_argv(std::path::Path::new("/m.gguf"), 1, 4096, 8, 1, false, &spec);
+        assert!(argv.iter().any(|a| a == "--spec-type"));
+    }
     use serde_json::json;
     use std::path::Path;
 
