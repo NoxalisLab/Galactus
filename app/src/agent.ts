@@ -4,6 +4,7 @@ import {
   api,
   ChatMessage,
   chatOnce,
+  countTokens,
   fetchCtxSize,
   StreamHandlers,
   streamChat,
@@ -16,7 +17,17 @@ import {
 import type { SearchEvent, SearchOptsWire } from "./api";
 import { redactMessages } from "./teams";
 import { getLang, t } from "./i18n";
-import { isSummaryMessage, liveFrom, placeSummary, stripSummary, wholeTurnsOnly } from "./agent-history";
+import {
+  charsOf,
+  compactionDecision,
+  digestCut,
+  isSummaryMessage,
+  lastUserIndex,
+  liveFrom,
+  placeSummary,
+  stripSummary,
+  wholeTurnsOnly,
+} from "./agent-history";
 import {
   isElevatedCommand,
   isElevatedMcp,
@@ -82,6 +93,12 @@ import {
 let nextSeat = 0;
 
 const BYTES_PER_TOKEN = 3.0;
+/**
+ * Margin on a tokenizer count of system prompt + raw tool JSON: the chat
+ * template renders the tools with its own preamble and markers, which the raw
+ * count does not see. An under-count is the expensive direction.
+ */
+const FIXED_MARGIN = 1.1;
 /** Room held back for the reply and the tool schemas, in tokens. */
 const REPLY_RESERVE_TOKENS = 900;
 /** Never hand back less than this, or retrieval cannot return one passage. */
@@ -1618,6 +1635,8 @@ export class Agent {
   /** Set when the engine is a cloud proxy (setEngine). */
   private cloud: CloudRoute | null = null;
   private contextSummary = "";
+  /** The "slot too small for the tools" notice is said once per conversation, not per turn. */
+  private smallWindowNoticed = false;
 
   private async ensureCtxSize(): Promise<number> {
     if (this.nCtx) return this.nCtx;
@@ -1666,18 +1685,57 @@ export class Agent {
    * agree or the budget computed here does not describe the request sent.
    */
   private estimateTokens(): number {
-    let chars = 0;
-    for (const m of this.messages) {
-      chars += (typeof m.content === "string" ? m.content.length : 0) + 20;
-      if (m.tool_calls) for (const tc of m.tool_calls) chars += tc.function.name.length + tc.function.arguments.length + 30;
-    }
-    // The tool schemas, measured rather than assumed at 2500. The list
-    // includes every connector's definition, each up to a kilobyte of
-    // description plus a whole input schema: with half a dozen connectors the
-    // fixed constant understated the turn by more than the reply reserve,
-    // which is exactly how a request ends up rejected for length.
-    return Math.ceil(chars / BYTES_PER_TOKEN) + this.toolSchemaTokens();
+    const body = this.messages[0]?.role === "system" ? this.messages.slice(1) : this.messages;
+    return Math.ceil(charsOf(body) / BYTES_PER_TOKEN) + this.fixedTokens();
   }
+
+  /**
+   * System prompt plus tool schemas, in tokens: what every request pays and
+   * no compaction can shrink.
+   *
+   * Counted by the engine's tokenizer when `measureFixed` managed to (with a
+   * margin for what the chat template wraps around the tools), estimated at
+   * BYTES_PER_TOKEN otherwise. The estimate reads JSON schemas about half again
+   * too heavy, which alone put the fixed prompt past the 75% digest line of an
+   * 8192 slot and made every turn compact.
+   */
+  private fixedTokens(): number {
+    const m = this.fixedMeasure;
+    if (m && m.key === this.fixedKey() && m.tokens > 0) return m.tokens;
+    const sys = this.messages[0]?.role === "system" ? charsOf([this.messages[0]]) : 0;
+    return Math.ceil(sys / BYTES_PER_TOKEN) + this.toolSchemaTokens();
+  }
+
+  /** What the fixed-prompt measurement depends on. */
+  private fixedKey(): string {
+    this.toolSchemaTokens(); // refreshes toolTokensKey
+    const sys = this.messages[0]?.role === "system" ? this.messages[0].content ?? "" : "";
+    return `${this.port}|${this.toolTokensKey}|${sys.length}`;
+  }
+
+  /**
+   * Count the fixed prompt with the engine's tokenizer, once per change.
+   *
+   * A failure (cloud route, older engine, engine restarting) is remembered for
+   * the same key so it is not retried on every turn; the estimate stands in.
+   */
+  private async measureFixed(): Promise<void> {
+    if (this.cloud) return;
+    const key = this.fixedKey();
+    if (this.fixedMeasure?.key === key) return;
+    const sys = this.messages[0]?.role === "system" ? this.messages[0].content ?? "" : "";
+    let tokens = -1;
+    try {
+      const tools = this.currentTools();
+      const raw = await countTokens(this.port, sys + "\n" + JSON.stringify(tools), this.abort?.signal);
+      // The template adds its own tool preamble and per-message markers.
+      tokens = Math.ceil(raw * FIXED_MARGIN) + 64;
+    } catch {
+      tokens = -1;
+    }
+    this.fixedMeasure = { key, tokens };
+  }
+  private fixedMeasure: { key: string; tokens: number } | null = null;
 
   /**
    * Fold the oldest ~60% of the thread into a model-written faithful summary.
@@ -1812,6 +1870,30 @@ export class Agent {
     return "";
   }
 
+  /**
+   * The request split into what compaction can and cannot touch, in the same
+   * units as `estimateTokens` (they add up to it).
+   */
+  private contextBudget(ctx: number): {
+    ctx: number;
+    fixedTokens: number;
+    historyTokens: number;
+    foldableTokens: number;
+  } {
+    const msgs = this.messages;
+    const system = msgs[0]?.role === "system";
+    const fixedTokens = this.fixedTokens();
+    const live = liveFrom(msgs);
+    const last = lastUserIndex(msgs);
+    const foldEnd = last >= live ? last : live;
+    return {
+      ctx,
+      fixedTokens,
+      historyTokens: Math.ceil(charsOf(msgs.slice(system ? 1 : 0)) / BYTES_PER_TOKEN),
+      foldableTokens: Math.ceil(charsOf(msgs.slice(live, foldEnd)) / BYTES_PER_TOKEN),
+    };
+  }
+
   private async digestHistory(): Promise<boolean> {
     const msgs = this.messages;
     if (msgs.length < 6) return this.compactHistory();
@@ -1820,25 +1902,11 @@ export class Agent {
     // Folding the carrier back into itself would summarise a summary once per
     // compaction and lose a little more of the original each time.
     const live = liveFrom(msgs);
-    let cut = live + Math.floor((msgs.length - live) * 0.6);
-    // Never split an assistant tool_calls / tool-results pair.
-    while (cut < msgs.length - 1 && msgs[cut].role === "tool") cut++;
-    if (cut >= msgs.length - 1) {
-      cut = msgs.length - 2;
-      // Stepping back can land on a tool message whose assistant tool_calls
-      // partner gets summarized away: a kept slice that starts with an
-      // orphaned tool result is rejected by the server. Walk back to a
-      // boundary that is neither a tool result nor an assistant carrying
-      // tool_calls.
-      while (
-        cut > live &&
-        (msgs[cut].role === "tool" ||
-          (msgs[cut].role === "assistant" && (msgs[cut].tool_calls?.length ?? 0) > 0))
-      ) {
-        cut--;
-      }
-    }
-    if (cut <= live) return this.compactHistory();
+    // The cut never reaches the user's last message: the turn in flight stays
+    // verbatim, or the model is told "do not reply" to the very question it
+    // has to answer. See digestCut in agent-history.ts.
+    const cut = digestCut(msgs);
+    if (cut === null) return this.compactHistory();
 
     const chunk = msgs.slice(live, cut);
     const rendered = chunk
@@ -1951,9 +2019,22 @@ export class Agent {
 
     // Proactive: digest BEFORE the window overflows, not after the server
     // rejects us. 75% leaves room for the answer being generated.
+    // Judged on what a digest can shrink, not on the whole request: the
+    // system prompt and the tool schemas are paid on every turn whatever is
+    // folded, and on a small slot they alone sit near the threshold.
     const nCtx = await this.ensureCtxSize();
-    if (this.estimateTokens() > nCtx * 0.75) {
+    await this.measureFixed();
+    const budget = this.contextBudget(nCtx);
+    const decision = compactionDecision(budget);
+    if (decision === "digest") {
       await this.digestHistory();
+    } else if (decision === "window-too-small" && !this.smallWindowNoticed) {
+      this.smallWindowNoticed = true;
+      this.hooks.onNotice?.(
+        t("agent.ctxTooSmall")
+          .replace("%s", String(nCtx))
+          .replace("%s", String(budget.fixedTokens))
+      );
     }
 
     let assistantText = "";
@@ -2501,21 +2582,25 @@ export class Agent {
       hasTeam,
       this.memoryOn,
       this.mcp.length,
+      // The team text is part of the spawn tool's description: switching or
+      // editing the active preset changes the schema size.
+      teamInfo.text.length,
+      teamInfo.roles.join(","),
     ].join("|");
     if (this.toolTokens === null || this.toolTokensKey !== key) {
-      const tools = builtinTools(
-        this.hasVault,
-        this.role,
-        this.hasKb,
-        this.canDelegate(),
-        hasTeam,
-        this.memoryOn,
-      );
-      const size = JSON.stringify([...tools, ...mcpToolDefs(this.mcp)]).length;
+      const size = JSON.stringify(this.currentTools()).length;
       this.toolTokens = Math.ceil(size / BYTES_PER_TOKEN);
       this.toolTokensKey = key;
     }
     return this.toolTokens;
+  }
+
+  /** The tool list as a request sends it, same inputs as `turn`. */
+  private currentTools(): ToolDef[] {
+    return [
+      ...builtinTools(this.hasVault, this.role, this.hasKb, this.canDelegate(), directory !== null, this.memoryOn),
+      ...mcpToolDefs(this.mcp),
+    ];
   }
 
   /** Cached while nothing that feeds the list has changed. */

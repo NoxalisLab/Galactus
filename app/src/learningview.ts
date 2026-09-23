@@ -82,13 +82,15 @@ export function learningSection(d: LearningViewDeps): HTMLElement {
   let unlisten: (() => void) | null = null;
 
   const phaseLabel = (phase: string): string => {
-    const key = `learn.phase.${phase}`;
-    const v = t(key);
-    return v === key ? phase : v;
+    for (const key of [`learn.step.${phase}`, `learn.phase.${phase}`]) {
+      const v = t(key);
+      if (v !== key) return v;
+    }
+    return phase;
   };
 
-  const tgl = (id: string, on: boolean, enabled: boolean, title = ""): string =>
-    `<button class="tgl ${on ? "on" : ""}" id="${id}" role="switch" aria-checked="${on}"${enabled ? "" : ' aria-disabled="true"'}${title ? ` title="${esc(title)}"` : ""}><span class="k"></span></button>`;
+  const tgl = (id: string, on: boolean, enabled: boolean, title = "", label = ""): string =>
+    `<button class="tgl ${on ? "on" : ""}" id="${id}" role="switch" aria-checked="${on}"${label ? ` aria-label="${esc(label)}"` : ""}${enabled ? "" : ' aria-disabled="true"'}${title ? ` title="${esc(title)}"` : ""}><span class="k"></span></button>`;
 
   const bar = (): string => {
     if (!progress) return "";
@@ -125,6 +127,10 @@ export function learningSection(d: LearningViewDeps): HTMLElement {
       ${r.reason ? `<div class="team-note warn">${esc(r.reason)}</div>` : ""}`;
   };
 
+  /** A forget sentence, plus "the toolkit stays installed" only when it is. */
+  const forgetText = (key: string): string =>
+    status.installed ? `${t(key)} ${t("learn.toolkitStays")}` : t(key);
+
   const paint = (): void => {
     const ps = panelState({ status, settings, primaryReady: d.primaryReady(), busy });
     const size = status.downloadBytes ? sizeLabel(status.downloadBytes) : null;
@@ -138,15 +144,17 @@ export function learningSection(d: LearningViewDeps): HTMLElement {
       <div class="team-note">${esc(t("learn.intro"))}</div>
       <div class="set-row"><div class="grow"><b>${esc(t("learn.collect"))}</b><span>${esc(t("learn.collectHint"))}</span>
           <span class="mono learn-count">${esc(t("learn.count").replace("%n", String(status.traces)))}</span></div>
-        ${tgl("lrncollect", settings.collect, loaded)}
+        ${tgl("lrncollect", settings.collect, loaded, "", t("learn.collect"))}
       </div>
       <div class="set-row"><div class="grow"><b>${esc(t("learn.toolkit"))}</b><span>${esc(t("learn.toolkitHint"))}</span>
           ${busy === "install" ? bar() : ""}</div>
         ${toolkit}
       </div>
       <div class="set-row"><div class="grow"><b>${esc(t("learn.train"))}</b><span>${esc(t("learn.trainHint"))}</span>
-          ${ps.trainBlocked && busy !== "train"
-            ? `<span class="d">${esc(t(ps.trainBlocked).replace("%n", String(status.traces)).replace("%m", String(status.minTraces)))}</span>`
+          ${busy !== "train"
+            ? ps.trainMissing
+                .map((k) => `<span class="d learn-missing">${esc(t(k).replace("%n", String(status.traces)).replace("%m", String(status.minTraces)))}</span>`)
+                .join("")
             : ""}
           ${busy === "train" ? bar() : ""}</div>
         ${ps.canCancelTrain
@@ -168,14 +176,14 @@ export function learningSection(d: LearningViewDeps): HTMLElement {
           ${ps.activateBlocked ? `<span class="d">${esc(t(ps.activateBlocked))}</span>` : ""}</div>
         <div class="set-actions">
           <label class="samp"><small>${esc(t("learn.threshold"))}</small><input id="lrnthr" type="number" step="0.05" min="0.5" max="0.99" value="${settings.threshold}"/></label>
-          ${tgl("lrnactive", settings.active, loaded && ps.canActivate, ps.activateBlocked ? t(ps.activateBlocked) : "")}
+          ${tgl("lrnactive", settings.active, loaded && ps.canActivate, ps.activateBlocked ? t(ps.activateBlocked) : "", t("learn.use"))}
         </div>
       </div>
       <div class="set-row"><div class="grow"><b>${esc(t("learn.traces"))}</b><span>${esc(t("learn.tracesHint"))}</span></div>
         <div class="set-actions">
           <button class="bs" id="lrnexport"${ps.canExport ? "" : " disabled"}>${esc(t("learn.export"))}</button>
           <button class="bs" id="lrnclear"${ps.canClear ? "" : " disabled"} title="${esc(t("learn.clearHint"))}">${esc(t("learn.clear"))}</button>
-          <button class="bs danger" id="lrnforget"${ps.canForget ? "" : " disabled"} title="${esc(t("learn.forgetHint"))}">${esc(t("learn.forget"))}</button>
+          <button class="bs danger" id="lrnforget"${ps.canForget ? "" : " disabled"} title="${esc(forgetText("learn.forgetHint"))}">${esc(t("learn.forget"))}</button>
         </div>
       </div>`;
   };
@@ -196,9 +204,11 @@ export function learningSection(d: LearningViewDeps): HTMLElement {
   };
 
   /** A French sentence, and the backend's own words under it. */
+  // Errors are shown ONCE, in the panel: a French sentence and the backend's
+  // words under it. No toast on top, and a failing invoke followed by the
+  // job's error event lands in the same block instead of stacking.
   const report = (titleKey: string, e: unknown): void => {
     lastError = { title: t(titleKey), detail: String((e as { message?: string })?.message ?? e) };
-    d.toast(lastError.title, "err");
     paint();
   };
 
@@ -207,7 +217,6 @@ export function learningSection(d: LearningViewDeps): HTMLElement {
     progress = null;
     const detail = String((e as { message?: string })?.message ?? e);
     lastError = { title: t("learn.jobFailed"), detail };
-    d.toast(t("learn.jobFailed"), "err");
     paint();
   };
 
@@ -233,8 +242,9 @@ export function learningSection(d: LearningViewDeps): HTMLElement {
       busy = null;
       progress = null;
       if (ev.outcome === "error") {
-        lastError = { title: t(was === "install" ? "learn.installFailed" : "learn.jobFailed"), detail: ev.message };
-        d.toast(lastError.title, "err");
+        const install = ev.job ? ev.job === "install" : was === "install";
+        const detail = [ev.message, ev.detail].filter(Boolean).join("\n");
+        lastError = { title: t(install ? "learn.installFailed" : "learn.jobFailed"), detail };
       } else if (ev.outcome === "cancelled") {
         d.toast(t("learn.cancelled"));
       } else {
@@ -244,7 +254,7 @@ export function learningSection(d: LearningViewDeps): HTMLElement {
       return;
     }
     if (!busy) busy = INSTALL_PHASES.has(ev.phase) ? "install" : "train";
-    progress = { phase: ev.phase, pct: ev.pct, message: ev.message };
+    progress = { phase: ev.step ?? ev.phase, pct: ev.pct, message: ev.message };
     paint();
   };
 
@@ -318,7 +328,7 @@ export function learningSection(d: LearningViewDeps): HTMLElement {
         void (async () => {
           const ok = await d.confirm({
             title: t("learn.forgetTitle"),
-            detail: t("learn.forgetDetail").replace("%n", String(status.traces)),
+            detail: forgetText("learn.forgetDetail").replace("%n", String(status.traces)),
             confirmLabel: t("learn.forget"),
           });
           if (!ok) return;

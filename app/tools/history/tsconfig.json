@@ -16,6 +16,7 @@
   },
   "files": [
     "history.test.ts",
-    "summary.test.ts"
+    "summary.test.ts",
+    "compaction.test.ts"
   ]
 }

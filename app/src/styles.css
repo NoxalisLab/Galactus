@@ -2070,3 +2070,4 @@ html.pane-dragging .pvw-frame { pointer-events: none; }
 .learn-gate { margin-top: 6px; font-size: 11px; color: var(--dim2); font-family: var(--mono); }
 .learn-gate .good { color: var(--good); }
 .learn-gate .bad { color: var(--bad); }
+.set-row .grow span.warn { color: var(--warn); }

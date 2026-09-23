@@ -110,7 +110,7 @@ export function learnedPanel(): HTMLElement {
       <div class="hd"><div class="grow">
         <b>${esc(t("learned.switchTitle"))}</b>
         <span class="d">${esc(t("learned.switchDesc"))}</span>
-      </div><div class="tgl sm" id="lswitch"><div class="k"></div></div></div>
+      </div><div class="tgl sm" id="lswitch" aria-label="${esc(t("learned.switchTitle"))}"><div class="k"></div></div></div>
       <div class="learned-note">${esc(t("learned.switchHint"))}</div>
     </div>
     <div id="lbody"></div>

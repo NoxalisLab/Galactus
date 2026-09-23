@@ -474,8 +474,17 @@ export function parseStatus(raw: unknown): LearningStatus {
 }
 
 export type LearningEvent =
-  | { kind: "progress"; phase: string; pct: number | null; message: string }
-  | { kind: "end"; phase: string; outcome: "done" | "error" | "cancelled"; message: string }
+  | { kind: "progress"; phase: string; step: string | null; pct: number | null; message: string }
+  | {
+      kind: "end";
+      phase: string;
+      outcome: "done" | "error" | "cancelled";
+      message: string;
+      /** Which job ended, when the backend says: "install" or "training". */
+      job: string | null;
+      /** The last useful log line (install.log), when the backend sends one. */
+      detail: string;
+    }
   | { kind: "result"; result: TrainResult };
 
 /** One galactus://learning payload. */
@@ -488,11 +497,16 @@ export function parseLearningEvent(raw: unknown): LearningEvent | null {
   }
   if (typeof o.phase !== "string") return null;
   const message = typeof o.message === "string" ? o.message : "";
-  if (o.phase === "error") return { kind: "end", phase: o.phase, outcome: "error", message };
-  if (o.phase === "cancelled") return { kind: "end", phase: o.phase, outcome: "cancelled", message };
-  if (o.phase === "done" || o.done === true) return { kind: "end", phase: o.phase, outcome: "done", message };
+  const job = str(o.job);
+  const detailRaw = o.detail ?? o.log ?? o.log_line;
+  const detail = typeof detailRaw === "string" && detailRaw !== message ? detailRaw : "";
+  const end = (outcome: "done" | "error" | "cancelled") =>
+    ({ kind: "end", phase: o.phase as string, outcome, message, job, detail }) as const;
+  if (o.phase === "error") return end("error");
+  if (o.phase === "cancelled") return end("cancelled");
+  if (o.phase === "done" || o.done === true) return end("done");
   const pct = typeof o.pct === "number" && Number.isFinite(o.pct) ? Math.max(0, Math.min(100, o.pct)) : null;
-  return { kind: "progress", phase: o.phase, pct, message };
+  return { kind: "progress", phase: o.phase, step: str(o.step), pct, message };
 }
 
 /** Where the labels of the last training came from, as the panel states it. */
@@ -533,6 +547,8 @@ export interface PanelState {
   canTrain: boolean;
   /** i18n key saying why training is not possible, null when it is. */
   trainBlocked: string | null;
+  /** Every condition training is waiting for, i18n keys, in the order to fix them. */
+  trainMissing: string[];
   canActivate: boolean;
   activateBlocked: string | null;
   canRollback: boolean;
@@ -547,19 +563,23 @@ export function panelState(i: PanelInput): PanelState {
   const s = i.status;
   const installing = s.installing || i.busy === "install";
   const training = s.training || i.busy === "train";
-  let trainBlocked: string | null = null;
-  if (!s.shipped) trainBlocked = "learn.block.notShipped";
-  else if (!s.installed) trainBlocked = "learn.block.noToolkit";
-  else if (training) trainBlocked = "learn.block.training";
-  else if (installing) trainBlocked = "learn.block.installing";
-  else if (s.traces < s.minTraces) trainBlocked = "learn.block.fewTraces";
-  else if (!i.primaryReady) trainBlocked = "learn.block.noTeacher";
+  // All of them, not the first: a user told only "install the toolkit" installs
+  // it and then discovers the trace floor, then the teacher, one at a time.
+  const trainMissing: string[] = [];
+  if (training) trainMissing.push("learn.block.training");
+  else if (installing) trainMissing.push("learn.block.installing");
+  else if (!s.shipped) trainMissing.push("learn.block.notShipped");
+  else if (!s.installed) trainMissing.push("learn.block.noToolkit");
+  if (s.traces < s.minTraces) trainMissing.push("learn.block.fewTraces");
+  if (!i.primaryReady) trainMissing.push("learn.block.noTeacher");
+  const trainBlocked = trainMissing[0] ?? null;
   const activateBlocked = s.active || i.settings.active ? null : "learn.block.noCheckpoint";
   return {
     canInstall: s.shipped && !s.installed && !installing,
     canCancelInstall: installing,
     canTrain: trainBlocked === null,
     trainBlocked,
+    trainMissing,
     canActivate: activateBlocked === null,
     activateBlocked,
     canRollback: !!s.previous && !training,

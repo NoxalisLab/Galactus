@@ -25,7 +25,7 @@ pub(crate) fn ctx_per_slot_for(entry: &Value) -> u32 {
     let asked = settings_load()
         .get("engine_ctx")
         .and_then(|v| v.trim().parse::<u32>().ok())
-        .unwrap_or(CTX_PER_SLOT);
+        .unwrap_or(DEFAULT_CTX_PER_SLOT);
     let model_max = entry["context_length"]
         .as_u64()
         .and_then(|v| u32::try_from(v).ok())
@@ -1672,9 +1672,20 @@ mod ctx_window_tests {
 /// Context window every slot keeps by default, whatever the slot count.
 ///
 /// This was the ONLY value for two years, and it is the one every memory figure
-/// in this file was measured at. It stays the default and the unit the KV cost
-/// below is expressed in.
+/// in this file was measured at. It stays the floor and the unit the KV cost
+/// below is expressed in; the default ask is DEFAULT_CTX_PER_SLOT.
 pub(crate) const CTX_PER_SLOT: u32 = 8192;
+
+/// The window per slot when the user has not chosen one.
+///
+/// CTX_PER_SLOT stays the floor and the unit of every KV figure; this is only
+/// the default ask. At 8192 the agent could not hold itself: its system prompt
+/// and tool schemas count about 4 100 tokens on the server's own tokenizer, so
+/// the history had about 1 500 tokens before the 75 % compaction line and the
+/// conversation was summarised from the second turn on. 16384 is priced like
+/// any other window (kv_bytes_for), and recommended_slots drops to one slot
+/// where two of them would not fit, which is the better trade for an agent.
+pub(crate) const DEFAULT_CTX_PER_SLOT: u32 = 16384;
 
 /// The largest window offered to a model whose training context nobody recorded.
 ///

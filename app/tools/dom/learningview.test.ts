@@ -22,6 +22,7 @@ type Deps = Parameters<typeof learningSection>[0];
 
 type Html = {
   querySelector: (sel: string) => Html | null;
+  querySelectorAll: (sel: string) => { length: number };
   textContent: string;
   disabled: boolean;
   getAttribute: (n: string) => string | null;
@@ -162,4 +163,29 @@ test("the student switch goes through decisions_set_active, and training says ho
   find("#lrnactive")!.click();
   await waitFor(() => h.calls.includes("active:true"), "set_active called");
   assert.ok(!h.calls.some((c) => c.startsWith("set:learning_active")));
+});
+
+test("a failed install shows once, with the cause, and no toast on top", async () => {
+  const h = harness({ installed: false, traces: 0 });
+  await waitFor(() => find("#lrninstall")?.disabled === false, "install enabled");
+  find("#lrninstall")!.click();
+  await settle();
+  h.emit({ phase: "install", step: "pip", pct: 30, message: "" });
+  assert.match(find(".learn-prog")!.textContent, /paquets|packages/);
+  h.emit({ phase: "error", message: "pip install failed", job: "install", detail: "ERROR: THESE PACKAGES DO NOT MATCH THE HASHES" });
+  await settle();
+  assert.equal(doc().querySelectorAll(".learn-error").length, 1);
+  assert.match(find(".learn-detail")!.textContent, /pip install failed[\s\S]*HASHES/);
+  assert.ok(!h.calls.some((c) => c.startsWith("toast:")), "the panel shows it; a toast would double it");
+});
+
+test("training shows every missing condition; erase-all mentions the toolkit only when installed", async () => {
+  harness({ installed: false, traces: 3 });
+  // The harness has a teacher ready: toolkit and trace floor are both missing.
+  await waitFor(() => /3 traces pour|3 traces so far/.test(find(".learn")?.textContent ?? ""), "loaded status");
+  assert.equal(doc().querySelectorAll(".learn-missing").length, 2);
+  assert.match(find(".learn")!.textContent, /3 traces.*240/);
+  assert.ok(!/toolkit stays|outils restent/i.test(find("#lrnforget")!.getAttribute("title") ?? ""));
+  harness({ installed: true, traces: 3 });
+  await waitFor(() => /toolkit stays|outils restent/i.test(find("#lrnforget")?.getAttribute("title") ?? ""), "toolkit sentence when installed");
 });

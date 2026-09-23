@@ -69,7 +69,7 @@ import { confirmDestructive } from "./confirm";
 import { exportConversationMarkdown, formatStats, searchConversations, wireDropZone } from "./chatx";
 import * as store from "./store";
 import type { ChatItem, Conversation, ConvMeta, SubAgent, ThreadData } from "./store";
-import { hasVerifiedDownload, modelAvailability, modelCertification, recommendedModel } from "./model-policy";
+import { expertsMeta, hasVerifiedDownload, modelAvailability, modelCertification, recommendedModel } from "./model-policy";
 import { clampSampling, readSampling, SAMPLING_DEFAULT, type Sampling } from "./sampling";
 import { isFollowing } from "./follow";
 import { engineAdvice, isEngineDecodeFailure, modeLabelKey } from "./engine-error";
@@ -577,7 +577,7 @@ function paintLive(): void {
   const parts: string[] = [];
   if (server.running && liveRss > 0) {
     parts.push(
-      `<span class="lv" title="${esc(t("live.ram"))}"><span class="k">RAM</span><b>${(liveRss / 1e9).toFixed(1)} Go</b></span>`
+      `<span class="lv" title="${esc(t("live.ram"))}"><span class="k">RAM</span><b>${(liveRss / 1e9).toFixed(1)} ${esc(t("teams.gb"))}</b></span>`
     );
   }
   const sess = active();
@@ -716,7 +716,7 @@ const I = {
 };
 
 // ---------- toast (alert() is unreliable inside WKWebView) ----------
-function toast(msg: string, kind: "err" | "ok" = "err") {
+function toast(msg: string, kind: "err" | "ok" = "err"): HTMLElement {
   let host = document.getElementById("toasts");
   if (!host) {
     host = document.createElement("div");
@@ -750,6 +750,7 @@ function toast(msg: string, kind: "err" | "ok" = "err") {
       setTimeout(() => item.remove(), 300);
     }, 5000);
   }
+  return item;
 }
 
 // ---------- helpers ----------
@@ -1222,14 +1223,14 @@ async function routeThread(sess: Thread): Promise<void> {
   if (!presetEngineIds(activePreset(teamPresets, teamPresetId)).has(want)) {
     if (inst.enginePort() !== server.port || inst.isCloud()) {
       inst.setEngine(server.port, null);
-      store.pushNotice(sess, t("teams.backToPrimary").replace("%m", modelName(want)));
+      store.pushNotice(sess, t("teams.backToPrimary").replaceAll("%m", modelName(want)));
     }
     return;
   }
   try {
     const started = await api.engineStart(want, sess.sub?.team_role ?? "");
     // Said only while it is loading: an engine already up answers at once.
-    if (started.phase !== "ready") onThreadActivity(sess, "thinking", t("teams.loading").replace("%s", modelName(want)));
+    if (started.phase !== "ready") onThreadActivity(sess, "thinking", t("teams.loading").replaceAll("%s", modelName(want)));
     const e = await engineReady(want, started);
     if (e.kind === "cloud") {
       // Set every turn, not only on a port change: the redaction setting may
@@ -1237,14 +1238,14 @@ async function routeThread(sess: Thread): Promise<void> {
       inst.setEngine(e.port, null, {
         redact: cloudRedact,
         onRedacted: (n) =>
-          store.pushNotice(sess, t("cloud.redacted").replace("%n", String(n)).replace("%p", providerName(cloudProvider(want)))),
+          store.pushNotice(sess, t("cloud.redacted").replaceAll("%n", String(n)).replaceAll("%p", providerName(cloudProvider(want)))),
       });
     } else if (inst.enginePort() !== e.port || inst.isCloud()) {
       inst.setEngine(e.port, e.slots);
     }
   } catch (err: any) {
     if (inst.enginePort() !== server.port || inst.isCloud()) inst.setEngine(server.port, null);
-    store.pushNotice(sess, t("teams.fellBack").replace("%m", modelName(want)).replace("%e", String(err?.message ?? err)));
+    store.pushNotice(sess, t("teams.fellBack").replaceAll("%m", modelName(want)).replaceAll("%e", String(err?.message ?? err)));
   }
 }
 
@@ -1723,7 +1724,11 @@ function teamStripHtml(conv: Conversation): string {
 }
 
 function chatView(): HTMLElement {
-  const running = registry.find((m) => m.id === server.model_id);
+  // A teammate routed to its own model shows THAT model: the header of its
+  // thread naming the primary was a claim about an engine it never talks to.
+  const own = active().sub?.model_id;
+  const routed = !!own && own !== server.model_id;
+  const running = registry.find((m) => m.id === (routed ? own : server.model_id));
   const tps = running ? expectedTps(running) : null;
   const ready = server.running && server.phase === "ready";
   const sess = active();
@@ -1742,7 +1747,9 @@ function chatView(): HTMLElement {
       <div class="right">
         <div class="livebar" id="livebar"></div>
         ${sub ? "" : taskBarHtml()}
-        ${running ? `<div class="mpill" title="${esc(engineModeLabel(server.mode))}"><span class="d"></span><span class="n">${esc(running.name.split(" ")[0])}</span>${(server.mode === "resident-bit-exact" || server.mode === "resident-fast") ? `<span class="s">${esc(t("engine.residentShort"))}</span>` : ""}${tps ? `<span class="s">~${tps.toFixed(0)} tok/s</span>` : ""}</div>` : ""}
+        ${routed
+          ? `<div class="mpill" title="${esc(modelName(own))}"><span class="d"></span><span class="n">${esc(running ? running.name.split(" ")[0] : modelName(own))}</span>${tps ? `<span class="s">~${tps.toFixed(0)} tok/s</span>` : ""}</div>`
+          : running ? `<div class="mpill" title="${esc(engineModeLabel(server.mode))}"><span class="d"></span><span class="n">${esc(running.name.split(" ")[0])}</span>${(server.mode === "resident-bit-exact" || server.mode === "resident-fast") ? `<span class="s">${esc(t("engine.residentShort"))}</span>` : ""}${tps ? `<span class="s">~${tps.toFixed(0)} tok/s</span>` : ""}</div>` : ""}
         <div class="iconbtn" id="newchat" title="${esc(t("nav.newchat"))}">${I.plus}</div>
       </div>
     </div>
@@ -1791,7 +1798,7 @@ function threadPaneEl(): HTMLElement {
 
   const wrap = el(`<div class="threadpane">
     <div class="chat-scroll" id="scroller"><div class="thread"><div id="plan"></div><div id="log"></div></div></div>
-    ${taskOffer ? `<div class="task-switch-hint" id="taskhint"><span class="tx">${esc(t("task.better").replace("%m", taskOffer.modelName))}</span><button class="bs" id="taskswap">${esc(t("task.switch"))}</button><span class="x" id="taskdismiss">×</span></div>` : ""}
+    ${taskOffer && !sub?.model_id ? `<div class="task-switch-hint" id="taskhint"><span class="tx">${esc(t("task.better").replace("%m", taskOffer.modelName))}</span><button class="bs" id="taskswap">${esc(t("task.switch"))}</button><span class="x" id="taskdismiss">×</span></div>` : ""}
     <div class="actbar" id="actbar"><div class="pxhost" id="pixelhost"></div></div>
     <div class="composer">
       <div class="comp-box">
@@ -2791,7 +2798,10 @@ async function submitChat(): Promise<void> {
   // was on screen at the end, which is not necessarily the one it was typed in.
   const target = active();
   try {
-    await autoRouteTask(text, target);
+    // A teammate a team preset put on its own model is not the user's to
+    // re-route: a swap offer there would move the PRIMARY model, which the
+    // teammate does not even run on.
+    if (!target.sub?.model_id) await autoRouteTask(text, target);
     if (!(server.running && server.phase === "ready")) {
       // Swap failed: give the user their message back instead of losing it.
       const fresh = document.getElementById("ci") as HTMLTextAreaElement | null;
@@ -3577,7 +3587,7 @@ function modelsView(): HTMLElement {
       <div class="top">
         <div class="info">
           <div class="nm"><b>${esc(m.name)}</b><span class="chip-cert ${certification.canExecute ? "" : "pending"}">${certification.canExecute ? "✓" : "◷"} ${esc(certLabel)}</span>${m.id === suggested ? `<span class="chip-reco" title="${esc(t("models.recoWhy"))}">${esc(t("models.reco"))}</span>` : ""}</div>
-          <span class="meta" title="${esc(t("models.metaWhy"))}">${esc(m.arch)} · ${fmtGb(m.gguf_bytes)} · ${m.experts_used ?? "?"}/${m.experts ?? "?"} ${esc(t("models.expertsWord"))}</span>
+          <span class="meta" title="${esc(t("models.metaWhy"))}">${esc(m.arch)} · ${fmtGb(m.gguf_bytes)}${expertsText(m)}</span>
         </div>
         <div class="spd"><b style="color:${speedColor}">${tps && v.ok ? (measured ? "" : "~") + tps.toFixed(0) : "·"}</b><small>${esc(v.ok ? t(measured ? "models.measured" : "models.onThisMac") : "·")}</small></div>
       </div>
@@ -4789,14 +4799,14 @@ function settingsView(): HTMLElement {
         ctxseg.querySelectorAll("button").forEach((b) =>
           (b as HTMLElement).classList.toggle("on", (b as HTMLElement).dataset.ctx === v));
       api.settingsGet().then((s) => {
-        paintCtx(s["engine_ctx"] || "8192");
+        paintCtx(s["engine_ctx"] || "16384");
         // What the engine is ACTUALLY serving, when it differs from what was
         // asked for. Each model is capped by the window it was trained on (or
         // by a cautious ceiling when it declares none), and the segment painted
         // the stored value regardless: choosing 128K left the button on 128K
         // over a server running 32K, with nothing saying so.
         const live = server.ctx_per_slot ?? 0;
-        const want = Number(s["engine_ctx"] || "8192");
+        const want = Number(s["engine_ctx"] || "16384");
         const note = ctxseg.parentElement?.querySelector<HTMLElement>(".ctxnote");
         if (note) {
           note.textContent =
@@ -5132,6 +5142,14 @@ function onboardView(): HTMLElement {
  * same nothing. Every caller wants that distinction and none of them wants to
  * write it out, so it lives here.
  */
+/** " · dense" or " · 8/128 experts" for a model card, nothing when unknown. */
+function expertsText(m: ModelEntry): string {
+  const e = expertsMeta(m);
+  if (!e) return "";
+  if (e.kind === "dense") return ` · ${esc(t("models.denseWord"))}`;
+  return ` · ${e.used}/${e.total} ${esc(t("models.expertsWord"))}`;
+}
+
 async function pickFolderOrSay(): Promise<string | null> {
   try {
     return await api.pickFolder();
@@ -5161,6 +5179,12 @@ async function setRoot(p: string) {
  * start and reappears if the same model is later started differently.
  */
 let footprintNoticed = "";
+/**
+ * The step-down toast on screen, if any. An error toast stays until dismissed,
+ * so this one is taken down by the code once it stops being true: after a
+ * model change or a stop it described an engine that no longer runs.
+ */
+let footprintToast: HTMLElement | null = null;
 
 async function refreshServer() {
   const before = server.model_id;
@@ -5174,14 +5198,18 @@ async function refreshServer() {
   // got Eco would rightly call that a bug, and a user who is never told why
   // learns nothing about his own machine.
   const f = server.footprint;
+  const key = f && f.mode !== f.requested ? `${server.model_id ?? ""}:${f.requested}>${f.mode}` : "";
+  if (key !== footprintNoticed) {
+    footprintToast?.remove();
+    footprintToast = null;
+  }
   if (!f || f.mode === f.requested) {
     if (!f) footprintNoticed = "";
     return;
   }
-  const key = `${server.model_id ?? ""}:${f.requested}>${f.mode}`;
   if (key === footprintNoticed) return;
   footprintNoticed = key;
-  toast(
+  footprintToast = toast(
     t("footprint.steppedDown")
       .replace(/%m/g, t(modeLabelKey(f.mode)))
       .replace(/%a/g, t(modeLabelKey(f.requested)))
@@ -5229,6 +5257,15 @@ function renderServerPill(): void {
 function wireUiSemantics(scope: ParentNode): void {
   scope.querySelectorAll<HTMLElement>(".tgl").forEach((control) => {
     control.setAttribute("role", "switch");
+    // A switch with no name is announced as "switch, off" and nothing else.
+    // Its name is the title of the row it sits in, unless it carries its own.
+    if (!control.hasAttribute("aria-label") && !control.hasAttribute("aria-labelledby")) {
+      const title = control
+        .closest(".set-row, .hd, .skcard, .ccard, .card")
+        ?.querySelector("b")
+        ?.textContent?.trim();
+      if (title) control.setAttribute("aria-label", title);
+    }
     control.tabIndex = control.getAttribute("aria-disabled") === "true" ? -1 : 0;
     control.setAttribute("aria-checked", String(control.classList.contains("on")));
     control.addEventListener("click", () => {
@@ -5900,10 +5937,10 @@ async function boot() {
     store.pushNotice(
       sess,
       t("cloud.sent")
-        .replace("%p", providerName(cloudProvider(sess.sub?.model_id)))
-        .replace("%m", slug)
-        .replace("%n", tokens.toLocaleString(getLang() === "fr" ? "fr-FR" : "en-US"))
-        .replace("%c", cost.toFixed(cost < 0.01 ? 4 : 2)) + (p?.estimated ? t("cloud.estimated") : "")
+        .replaceAll("%p", providerName(cloudProvider(sess.sub?.model_id)))
+        .replaceAll("%m", slug)
+        .replaceAll("%n", tokens.toLocaleString(getLang() === "fr" ? "fr-FR" : "en-US"))
+        .replaceAll("%c", cost.toFixed(cost < 0.01 ? 4 : 2)) + (p?.estimated ? t("cloud.estimated") : "")
     );
     if (sess.key === active().key || (!!sess.sub && active().key === threadKey(sess.conv.id))) paintChat();
   });

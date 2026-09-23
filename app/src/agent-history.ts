@@ -15,6 +15,8 @@
  */
 export interface ToolCallLike {
   id?: string;
+  /** Optional here so a test can build a call without it; the wire always has it. */
+  function?: { name: string; arguments: string };
 }
 
 export interface ChatMessage {
@@ -153,4 +155,117 @@ export function wholeTurnsOnly<T extends ChatMessage>(messages: T[]): T[] {
     out.push(m);
   }
   return out;
+}
+
+// ---------------------------------------------------------------- compaction
+
+/**
+ * Index of the message that opened the turn in flight: the last user message
+ * that is not the condensed-history carrier. -1 when there is none.
+ */
+export function lastUserIndex(messages: ChatMessage[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role === "user" && !isSummaryMessage(m)) return i;
+  }
+  return -1;
+}
+
+/**
+ * Where to cut the thread for a digest: `messages[live, cut)` is folded into
+ * the summary and `messages[cut..]` is kept verbatim. Null when there is
+ * nothing that may be folded.
+ *
+ * THE INVARIANT. The turn in flight (the user's last message and every tool
+ * call and result that followed it) is never folded. The carrier tells the
+ * model "do not reply to this message", so a question that lands in it is a
+ * question the model is told to ignore: it answered with a summary instead of
+ * an answer, reproduced on the second turn of a conversation that used one
+ * tool on an 8192-token slot. The cut is therefore capped at that message.
+ *
+ * Within that cap it still takes the oldest ~60%, and never leaves the kept
+ * part starting on a tool result whose announcing assistant was folded away:
+ * the engine rejects an orphaned tool result. A user message is always a clean
+ * boundary, which is why walking forward stops at the cap at the latest.
+ */
+export function digestCut(messages: ChatMessage[]): number | null {
+  const live = liveFrom(messages);
+  const last = lastUserIndex(messages);
+  const cap = last >= live ? last : messages.length;
+  let cut = Math.min(live + Math.floor((messages.length - live) * 0.6), cap);
+  while (cut < cap && messages[cut].role === "tool") cut++;
+  return cut > live ? cut : null;
+}
+
+/** Characters a message costs on the wire, with the per-message overhead the budget uses. */
+export function messageChars(m: ChatMessage): number {
+  let chars = (typeof m.content === "string" ? m.content.length : 0) + 20;
+  if (m.tool_calls) {
+    for (const tc of m.tool_calls) {
+      chars += (tc.function?.name.length ?? 0) + (tc.function?.arguments.length ?? 0) + 30;
+    }
+  }
+  return chars;
+}
+
+/** Sum of `messageChars` over a slice. */
+export function charsOf(messages: ChatMessage[]): number {
+  let n = 0;
+  for (const m of messages) n += messageChars(m);
+  return n;
+}
+
+/** Share of the window at which the thread is proactively digested. */
+export const DIGEST_AT = 0.75;
+
+/**
+ * Below this share of the window left to the conversation itself, once the
+ * fixed prompt is paid, compaction cannot help and is not attempted.
+ *
+ * A quarter of the window: the carried summary alone may take 12% of it (see
+ * digestHistory), and one exchange with a tool result needs the rest. Under
+ * that, every turn would trigger a digest that frees nothing durable, a model
+ * call per turn spent on summarising two lines.
+ */
+export const MIN_ROOM_SHARE = 0.25;
+
+/** Foldable history under this many tokens is not worth a summarisation call. */
+export const MIN_FOLD_TOKENS = 200;
+
+export interface ContextBudget {
+  /** Window of one slot, in tokens. */
+  ctx: number;
+  /** System prompt plus tool schemas: what no compaction can shrink. */
+  fixedTokens: number;
+  /** Everything else: carrier, earlier turns, the turn in flight. */
+  historyTokens: number;
+  /** The part of history a digest may fold (before the turn in flight). */
+  foldableTokens: number;
+}
+
+export type CompactionDecision =
+  /** Under the threshold: nothing to do. */
+  | "fits"
+  /** Over it, and there is enough earlier history to be worth folding. */
+  | "digest"
+  /** Over it, but what is over is the turn in flight, which is never folded. */
+  | "nothing-to-fold"
+  /** The fixed prompt leaves the conversation too little room for any summary to help. */
+  | "window-too-small";
+
+/**
+ * Whether to digest before sending, judged on the part of the request that a
+ * digest can actually shrink.
+ *
+ * The old test was `total > 75% of the window`. With the system prompt and the
+ * tool schemas already near that line on an 8192-token slot, it fired from the
+ * second turn on, whatever the conversation held, and kept firing every turn.
+ */
+export function compactionDecision(b: ContextBudget): CompactionDecision {
+  const trigger = Math.floor(b.ctx * DIGEST_AT);
+  const room = trigger - b.fixedTokens;
+  if (room < b.ctx * MIN_ROOM_SHARE) return "window-too-small";
+  if (b.historyTokens <= room) return "fits";
+  if (b.foldableTokens < MIN_FOLD_TOKENS) return "nothing-to-fold";
+  return "digest";
 }

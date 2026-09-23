@@ -366,8 +366,8 @@ const RESULT = {
 };
 
 test("parseLearningEvent reads progress and results", () => {
-  assert.deepEqual(parseLearningEvent({ phase: "train", pct: 140, message: "epoch 1" }), { kind: "progress", phase: "train", pct: 100, message: "epoch 1" });
-  assert.deepEqual(parseLearningEvent({ phase: "label" }), { kind: "progress", phase: "label", pct: null, message: "" });
+  assert.deepEqual(parseLearningEvent({ phase: "train", pct: 140, message: "epoch 1" }), { kind: "progress", phase: "train", step: null, pct: 100, message: "epoch 1" });
+  assert.deepEqual(parseLearningEvent({ phase: "label" }), { kind: "progress", phase: "label", step: null, pct: null, message: "" });
   const e = parseLearningEvent({ result: RESULT });
   assert.equal(e?.kind, "result");
   assert.equal(parseLearningEvent({ result: { accepted: "yes" } }), null);
@@ -428,4 +428,20 @@ test("panelState: the student can be switched on only once a checkpoint was acce
   assert.equal(panelState({ ...base, status: parseStatus({ installed: true, previous: "c0" }) }).canRollback, true);
   assert.equal(panelState(base).canExport, false);
   assert.equal(panelState({ ...base, status: parseStatus({ traces: 3 }) }).canClear, true);
+});
+
+test("training lists every missing condition, not only the first", () => {
+  const p = panelState({ status: parseStatus({ installed: false, traces: 12 }), settings: learningSettings({}), primaryReady: false, busy: null });
+  assert.deepEqual(p.trainMissing, ["learn.block.noToolkit", "learn.block.fewTraces", "learn.block.noTeacher"]);
+  assert.equal(p.canTrain, false);
+  const ok = panelState({ status: parseStatus({ installed: true, traces: 300 }), settings: learningSettings({}), primaryReady: true, busy: null });
+  assert.deepEqual(ok.trainMissing, []);
+});
+
+test("error events carry their job and the log line; progress carries its step", () => {
+  assert.deepEqual(parseLearningEvent({ phase: "error", message: "pip failed", job: "install", detail: "ERROR: hash mismatch torch" }), {
+    kind: "end", phase: "error", outcome: "error", message: "pip failed", job: "install", detail: "ERROR: hash mismatch torch",
+  });
+  const p = parseLearningEvent({ phase: "install", step: "pip", pct: 30, message: "" });
+  assert.ok(p && p.kind === "progress" && p.step === "pip");
 });

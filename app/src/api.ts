@@ -855,6 +855,27 @@ export async function fetchCtxSize(port: number): Promise<number> {
 }
 
 /**
+ * Token count of `text` by the engine's own tokenizer (llama-server /tokenize).
+ *
+ * Used for the fixed part of every request (system prompt and tool schemas),
+ * where the 3.0 bytes-per-token estimate, calibrated on French prose, reads
+ * JSON schemas about 50% heavy: on Qwen3.5 a prompt the estimate put at 6266
+ * tokens was evaluated by the server at about 4100.
+ */
+export async function countTokens(port: number, text: string, signal?: AbortSignal): Promise<number> {
+  const r = await fetch(`http://127.0.0.1:${port}/tokenize`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content: text }),
+    signal,
+  });
+  if (!r.ok) throw new Error(`server ${r.status}`);
+  const j: any = await r.json();
+  if (!Array.isArray(j?.tokens)) throw new Error("no tokens in response");
+  return j.tokens.length;
+}
+
+/**
  * Quick throughput measurement against the running server: one fixed-length
  * generation, tokens counted by the server itself (usage), wall-clock here.
  */

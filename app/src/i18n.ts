@@ -378,6 +378,10 @@ const dict: Record<string, { en: string; fr: string }> = {
     fr: "Instructions packagées chargées à la demande. Choisis lesquelles sont disponibles.",
   },
   "agent.doneNotify": { en: "Task finished", fr: "Tâche terminée" },
+  "agent.ctxTooSmall": {
+    en: "The context window of this conversation's slot (%s tokens) is too small for the agent's tools: the instructions and tool schemas alone take about %s tokens, so earlier turns cannot be kept and long answers may fail. Raise the context size, or lower the number of parallel slots, in the model settings.",
+    fr: "La fenêtre de contexte du slot de cette conversation (%s jetons) est trop petite pour les outils de l'agent : les instructions et les schémas d'outils en prennent déjà environ %s, donc les tours précédents ne peuvent pas être conservés et les réponses longues peuvent échouer. Augmente la taille du contexte, ou réduis le nombre de slots parallèles, dans les réglages du modèle.",
+  },
 
   "agent.engineStopped": {
     en: "the engine was stopped",
@@ -713,9 +717,9 @@ const dict: Record<string, { en: string; fr: string }> = {
   "learn.cleared": { en: "Traces deleted.", fr: "Traces supprimées." },
   "learn.clearHint": { en: "Deletes the collected traces only. Checkpoints already trained on them stay on this Mac.", fr: "Supprime uniquement les traces collectées. Les modèles déjà entraînés dessus restent sur ce Mac." },
   "learn.forget": { en: "Erase everything (traces and learned models)", fr: "Tout effacer (traces et modèles appris)" },
-  "learn.forgetHint": { en: "Deletes the traces and every learned checkpoint: in use, previous and rejected. The toolkit stays installed.", fr: "Supprime les traces et tous les modèles appris : en service, précédent et refusés. Les outils restent installés." },
+  "learn.forgetHint": { en: "Deletes the traces and every learned checkpoint: in use, previous and rejected.", fr: "Supprime les traces et tous les modèles appris : en service, précédent et refusés." },
   "learn.forgetTitle": { en: "Erase traces and learned models?", fr: "Effacer les traces et les modèles appris ?" },
-  "learn.forgetDetail": { en: "%n traces and every checkpoint trained on this Mac are deleted. The built-in detection takes over. The toolkit stays installed.", fr: "%n traces et tous les modèles entraînés sur ce Mac sont supprimés. La détection intégrée reprend la main. Les outils restent installés." },
+  "learn.forgetDetail": { en: "%n traces and every checkpoint trained on this Mac are deleted. The built-in detection takes over.", fr: "%n traces et tous les modèles entraînés sur ce Mac sont supprimés. La détection intégrée reprend la main." },
   "learn.forgotten": { en: "Traces and learned models erased.", fr: "Traces et modèles appris effacés." },
   "learn.forgetFailed": { en: "Erasing did not complete.", fr: "L'effacement n'a pas abouti." },
   "learn.clearFailed": { en: "The traces could not be deleted.", fr: "Les traces n'ont pas pu être supprimées." },
@@ -726,6 +730,10 @@ const dict: Record<string, { en: string; fr: string }> = {
   "learn.cancelled": { en: "Cancelled.", fr: "Annulé." },
   "learn.block.notShipped": { en: "This build does not include the learning toolkit.", fr: "Cette version n'inclut pas les outils d'apprentissage." },
   "learn.block.fewTraces": { en: "%n traces so far, %m needed: the test needs at least 60 held-out traces, about a quarter of what is collected.", fr: "%n traces pour l'instant, %m nécessaires : le test exige au moins 60 traces de test mises de côté, environ un quart de ce qui est collecté." },
+  "learn.toolkitStays": { en: "The toolkit stays installed.", fr: "Les outils restent installés." },
+  "learn.step.venv": { en: "Creating the Python environment", fr: "Création de l'environnement Python" },
+  "learn.step.pip": { en: "Installing the packages", fr: "Installation des paquets" },
+  "learn.step.base": { en: "Downloading the base model", fr: "Téléchargement du modèle de base" },
   "learn.block.noToolkit": { en: "Install the toolkit first.", fr: "Installe d'abord les outils." },
   "learn.block.training": { en: "A training is running.", fr: "Un entraînement est en cours." },
   "learn.block.installing": { en: "The toolkit is being installed.", fr: "Les outils sont en cours d'installation." },
@@ -808,9 +816,17 @@ const dict: Record<string, { en: string; fr: string }> = {
     fr: "Désactivés par défaut. Chaque fournisseur s'active séparément, avec sa propre clé.",
   },
   "cloud.leaves": {
-    en: "When on, the tasks given to a %p role leave this Mac and are sent to %p, which bills them.",
-    fr: "Activé, les tâches confiées à un rôle %p quittent ce Mac et sont envoyées à %p, qui les facture.",
+    en: "When on, the tasks given to a role on %p leave this Mac and are sent to %p, which bills them.",
+    fr: "Activé, les tâches confiées à un rôle sur %p quittent ce Mac et sont envoyées à %p, qui les facture.",
   },
+  "cloud.onNoKey": {
+    en: "%p is on but no key is stored: nothing can be sent until one is saved.",
+    fr: "%p est activé mais aucune clé n'est enregistrée : rien ne peut partir tant qu'elle n'est pas enregistrée.",
+  },
+  "cloud.enableAria": { en: "Enable %p", fr: "Activer %p" },
+  "cloud.keyAria": { en: "%p API key", fr: "Clé API %p" },
+  "cloud.slugAria": { en: "Cloud model for the %r role", fr: "Modèle cloud du rôle %r" },
+  "teams.roleModelAria": { en: "Model for the %r role", fr: "Modèle du rôle %r" },
   "cloud.keyPlaceholder": { en: "API key", fr: "clé API" },
   "cloud.price": { en: "Price, USD per million tokens", fr: "Prix, USD par million de tokens" },
   "cloud.priceNeeded": {
@@ -823,7 +839,7 @@ const dict: Record<string, { en: string; fr: string }> = {
     en: "Set a price before activating: %s",
     fr: "Renseigne un prix avant d'activer : %s",
   },
-  "cloud.block.cloud-unconfigured": { en: "Choose a %p model.", fr: "Choisis un modèle %p." },
+  "cloud.block.cloud-unconfigured": { en: "Choose a model on %p.", fr: "Choisis un modèle sur %p." },
   "cloud.block.cloud-disabled": {
     en: "%p is off: this role runs on the current model.",
     fr: "%p est désactivé : ce rôle tourne sur le modèle en cours.",
@@ -1083,6 +1099,7 @@ const dict: Record<string, { en: string; fr: string }> = {
   "img.noRegistry": { en: "The image model list could not be read", fr: "La liste des modèles d'image n'a pas pu être lue" },
   "models.notInstalled": { en: "Not installed yet", fr: "Pas encore installé" },
   "models.expertsWord": { en: "experts", fr: "experts" },
+  "models.denseWord": { en: "dense", fr: "dense" },
   "models.metaWhy": {
     en: "Family, size on disk, and how many of its experts run per token: a Mixture-of-Experts model uses a few of them at a time, which is why it can be larger than your memory.",
     fr: "Famille, taille sur le disque, et combien de ses experts tournent par jeton : un modèle Mixture-of-Experts n'en utilise que quelques-uns à la fois, et c'est pour cela qu'il peut dépasser ta mémoire.",

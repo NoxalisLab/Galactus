@@ -73,6 +73,13 @@ export interface TeamPreset {
   /** role -> local model id or cloud model. Keys are lowercase and trimmed. */
   roles: Record<string, RoleTarget>;
   note?: string;
+  /**
+   * English name and note. The shipped `name`/`note` are French; the English
+   * interface shows these when present (presetText). A user's rename drops
+   * name_en, so what the user typed is what every language shows.
+   */
+  name_en?: string;
+  note_en?: string;
   /** Where it came from, so the settings can offer "reset" only when it means something. */
   source: "shipped" | "user" | "override";
 }
@@ -170,7 +177,16 @@ export function parsePresets(raw: unknown): StoredPreset[] {
     }
     if (Object.keys(roles).length === 0) continue;
     const note = str(e["note"]);
-    out.push({ id, name: str(e["name"]) ?? id, roles, ...(note ? { note } : {}) });
+    const nameEn = str(e["name_en"]);
+    const noteEn = str(e["note_en"]);
+    out.push({
+      id,
+      name: str(e["name"]) ?? id,
+      roles,
+      ...(note ? { note } : {}),
+      ...(nameEn ? { name_en: nameEn } : {}),
+      ...(noteEn ? { note_en: noteEn } : {}),
+    });
   }
   return out;
 }
@@ -218,8 +234,24 @@ export function mergePresets(shipped: StoredPreset[], userRaw: unknown): TeamPre
 export function serializeUserPresets(list: TeamPreset[]): string {
   const mine = list
     .filter((p) => p.source !== "shipped")
-    .map(({ id, name, roles, note }) => ({ id, name, roles, ...(note ? { note } : {}) }));
+    .map(({ id, name, roles, note, name_en, note_en }) => ({
+      id,
+      name,
+      roles,
+      ...(note ? { note } : {}),
+      ...(name_en ? { name_en } : {}),
+      ...(note_en ? { note_en } : {}),
+    }));
   return JSON.stringify(mine);
+}
+
+/** A preset's name and note in the interface language, French being the default text. */
+export function presetText(p: StoredPreset, lang: string): { name: string; note: string } {
+  const en = lang === "en";
+  return {
+    name: (en && p.name_en) || p.name,
+    note: (en && p.note_en) || p.note || "",
+  };
 }
 
 /** The active preset, or null when teams are off or the id no longer exists. */
@@ -668,7 +700,7 @@ export function teamToolText(
       "prefer the local roles for everything else."
     : "";
   return (
-    ` A TEAM OF MODELS is active (${preset.name}): ${rows.join("; ")}. Pass team_role to put a teammate on that role's model. ` +
+    ` A TEAM OF MODELS is active (${preset.name_en || preset.name}): ${rows.join("; ")}. Pass team_role to put a teammate on that role's model. ` +
     "Give planning, design and review to the role meant for planning, and implementation to the role meant for writing code; " +
     "a teammate without team_role runs on your own model." +
     cloudAdvice

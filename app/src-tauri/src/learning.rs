@@ -261,7 +261,14 @@ pub(crate) fn declared_download_bytes(requirements: &str) -> Option<u64> {
 fn venv_ready(layout: &Layout, toolkit: Option<&Path>) -> bool {
     let Some(toolkit) = toolkit else { return false };
     let Ok(req) = std::fs::read(requirements(toolkit)) else { return false };
-    layout.python().is_file()
+    // The venv's stdlib is the interpreter it was made from: an app moved or
+    // replaced elsewhere leaves a venv that cannot start, to be made again.
+    let home_ok = std::fs::read_to_string(layout.venv().join("pyvenv.cfg"))
+        .ok()
+        .and_then(|c| venv_home(&c))
+        .is_some_and(|h| h.is_dir());
+    home_ok
+        && layout.python().is_file()
         && std::fs::read_to_string(layout.venv_marker()).map(|m| m.trim() == fingerprint(&req)).unwrap_or(false)
 }
 
@@ -1021,66 +1028,193 @@ fn download_base(layout: &Layout, emit: Emit, cancel: &AtomicBool, span: (f64, f
     std::fs::rename(&partial, layout.base()).map_err(|e| e.to_string())
 }
 
-/// The bundled interpreter is signed with the hardened runtime, and the
-/// hardened runtime's library validation refuses every extension module not
-/// signed by the same team: torch's would not load. The venv holds COPIES of
-/// the interpreter (--copies), in the user's own folder, and those copies are
-/// re-signed ad hoc without the runtime flag. The bundle itself is untouched.
-fn unharden_venv_python(layout: &Layout) -> Result<(), String> {
+/// The `home` of a venv: the folder of the interpreter it was made from.
+pub(crate) fn venv_home(pyvenv_cfg: &str) -> Option<PathBuf> {
+    pyvenv_cfg.lines().find_map(|l| {
+        let (k, v) = l.split_once('=')?;
+        (k.trim() == "home").then(|| PathBuf::from(v.trim()))
+    })
+}
+
+/// The shared libpython the interpreter links through
+/// `@executable_path/../lib/`, beside the interpreter it was made from.
+/// python-build-standalone ships one; a system Python linked by absolute path
+/// has none there, and then there is nothing to copy.
+fn libpythons(home: &Path) -> Vec<PathBuf> {
+    let lib = home.join("../lib");
+    std::fs::read_dir(&lib)
+        .map(|d| {
+            d.flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    let n = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    n.starts_with("libpython") && n.ends_with(".dylib") && p.is_file()
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn adhoc_sign(path: &Path) -> Result<(), String> {
+    let out = Command::new("/usr/bin/codesign")
+        .args(["--force", "--sign", "-"])
+        .arg(path)
+        .output()
+        .map_err(|e| format!("codesign: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "cannot prepare {} for the toolkit: {}",
+            path.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
+}
+
+/// Make the venv's interpreter runnable and able to load torch.
+///
+/// WHY COPIES. The bundled interpreter is signed with the hardened runtime in a
+/// release build, and the runtime's library validation refuses every
+/// extension module not signed by the same team: torch's would not load from
+/// a symlinked interpreter. So the venv holds COPIES (--copies), in the user's
+/// own folder, re-signed ad hoc without the runtime flag. The bundle itself is
+/// never touched.
+///
+/// WHY libpython TOO. The standalone interpreter is a small launcher linked to
+/// `@executable_path/../lib/libpython3.12.dylib`. A copy in venv/bin looks for
+/// venv/lib/libpython3.12.dylib, which `venv --copies` does not create, and
+/// dyld aborts it before Python starts (the first install died in ensurepip
+/// with SIGABRT). The library is copied there and signed like the launcher:
+/// under the same ad hoc identity, the pair loads together.
+fn prepare_venv_python(layout: &Layout) -> Result<(), String> {
+    let cfg = std::fs::read_to_string(layout.venv().join("pyvenv.cfg")).map_err(|e| format!("pyvenv.cfg: {e}"))?;
+    let home = venv_home(&cfg).ok_or("pyvenv.cfg names no home interpreter")?;
+    let lib = layout.venv().join("lib");
+    std::fs::create_dir_all(&lib).map_err(|e| e.to_string())?;
+    for src in libpythons(&home) {
+        let dest = lib.join(src.file_name().unwrap_or_default());
+        let _ = std::fs::remove_file(&dest);
+        std::fs::copy(&src, &dest).map_err(|e| format!("copy {}: {e}", src.display()))?;
+        if cfg!(target_os = "macos") {
+            adhoc_sign(&dest)?;
+        }
+    }
     if !cfg!(target_os = "macos") {
         return Ok(());
     }
-    let bin = layout.venv().join("bin");
-    let entries = std::fs::read_dir(&bin).map_err(|e| e.to_string())?;
+    let entries = std::fs::read_dir(layout.venv().join("bin")).map_err(|e| e.to_string())?;
     for entry in entries.flatten() {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
         let real_file = std::fs::symlink_metadata(&path).map(|m| m.file_type().is_file()).unwrap_or(false);
-        if !name.starts_with("python") || !real_file {
-            continue;
-        }
-        let out = Command::new("/usr/bin/codesign")
-            .args(["--force", "--sign", "-"])
-            .arg(&path)
-            .output()
-            .map_err(|e| format!("codesign: {e}"))?;
-        if !out.status.success() {
-            return Err(format!(
-                "cannot prepare {name} for the toolkit: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ));
+        if name.starts_with("python") && real_file {
+            adhoc_sign(&path)?;
         }
     }
     Ok(())
 }
 
-fn install_blocking(layout: &Layout, toolkit: &Path, emit: Emit, cancel: &AtomicBool) -> Result<(), String> {
+/// The line of an install log that says WHY: a dyld or pip error when there is
+/// one, else the last line written. What the UI shows under "installation
+/// failed", instead of nothing.
+pub(crate) fn log_cause(log: &str) -> Option<String> {
+    const MARKERS: [&str; 8] = [
+        "Library not loaded",
+        "dyld",
+        "ERROR:",
+        "Error:",
+        "error:",
+        "DO NOT MATCH THE HASHES",
+        "No matching distribution",
+        "Traceback",
+    ];
+    let lines: Vec<&str> = log.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let pick = lines
+        .iter()
+        .rev()
+        .find(|l| MARKERS.iter().any(|m| l.contains(m)))
+        .or(lines.last())?;
+    Some(pick.chars().take(400).collect())
+}
+
+/// The install, step by step: `venv`, `pip` (install then import check),
+/// `base`. Each progress
+/// event names its step; `step` holds the one running, for the error event.
+fn install_blocking(
+    layout: &Layout,
+    toolkit: &Path,
+    emit: Emit,
+    cancel: &AtomicBool,
+    step: &Mutex<&'static str>,
+) -> Result<(), String> {
     layout.ensure()?;
-    let log = layout.root.join("install.log");
+    let log = install_log(layout);
     let _ = std::fs::remove_file(&log);
     let req_path = requirements(toolkit);
     let req = std::fs::read(&req_path).map_err(|e| format!("{}: {e}", req_path.display()))?;
+    let enter = |name: &'static str| {
+        *step.lock().unwrap_or_else(|e| e.into_inner()) = name;
+    };
+    let tagged = |name: &'static str| {
+        move |mut v: Value| {
+            v["step"] = json!(name);
+            emit(v)
+        }
+    };
     if !venv_ready(layout, Some(toolkit)) {
-        emit(json!({"phase": "install", "pct": 1, "message": "creating the Python environment"}));
+        enter("venv");
+        let e = tagged("venv");
+        e(json!({"phase": "install", "pct": 1, "message": "creating the Python environment"}));
         // FROM the bundled interpreter, never into it. --clear: a half-made
-        // venv from an interrupted install is started over.
+        // venv from an interrupted install is started over. Without pip: the
+        // bundle ships no ensurepip (prepare-engine.sh strips it), and the
+        // copied interpreter cannot even start before prepare_venv_python.
         let mut venv = python3_cmd();
-        venv.args(["-m", "venv", "--clear", "--copies"]).arg(layout.venv());
-        run_step(venv, emit, cancel, "install", (1.0, 5.0), &log, "python")?;
-        unharden_venv_python(layout)?;
-        let mut pip = Command::new(layout.python());
-        pip.args(["-E", "-s", "-m", "pip", "install", "--disable-pip-version-check", "--no-input"])
-            .args(["--require-hashes", "--prefer-binary", "-r"])
+        venv.args(["-m", "venv", "--clear", "--copies", "--without-pip"]).arg(layout.venv());
+        run_step(venv, &e, cancel, "install", (1.0, 4.0), &log, "python")?;
+        prepare_venv_python(layout)?;
+
+        enter("pip");
+        let e = tagged("pip");
+        e(json!({"phase": "install", "pct": 5, "message": "downloading torch, transformers and laya"}));
+        // The BUNDLE's pip, aimed at the venv (--python): pip re-runs itself
+        // under the venv's interpreter, so the packages land in the venv and
+        // no pip has to be bootstrapped into it. Wheels only, every one
+        // pinned by hash.
+        let mut pip = python3_cmd();
+        pip.args(["-m", "pip", "--python"])
+            .arg(layout.python())
+            .args(["install", "--disable-pip-version-check", "--no-input"])
+            .args(["--only-binary=:all:", "--require-hashes", "-r"])
             .arg(&req_path)
-            .env("PIP_NO_CACHE_DIR", "1");
-        run_step(pip, emit, cancel, "install", (5.0, 60.0), &log, "python")?;
+            .env("PIP_NO_CACHE_DIR", "1")
+            .env_remove("PYTHONPATH")
+            .env_remove("PYTHONHOME");
+        run_step(pip, &e, cancel, "install", (5.0, 58.0), &log, "python")?;
+
+        // Installed is not importable: prove torch and laya load in this
+        // interpreter before the toolkit is called ready.
+        // Part of the pip step for the UI, which knows three: venv, pip, base.
+        let e = tagged("pip");
+        e(json!({"phase": "install", "pct": 58, "message": "checking the toolkit"}));
+        let lines = run_step(learn_cmd(layout, toolkit, "status"), &e, cancel, "install", (58.0, 60.0), &log, "python")?;
+        if !lines.iter().any(|v| v.get("toolkit_ok") == Some(&json!(true))) {
+            return Err("the toolkit installed but does not load (learn.py status)".into());
+        }
         std::fs::write(layout.venv_marker(), fingerprint(&req)).map_err(|e| e.to_string())?;
     }
     if !base_ready(layout) {
-        download_base(layout, emit, cancel, (60.0, 99.0))?;
+        enter("base");
+        let e = tagged("base");
+        download_base(layout, &e, cancel, (60.0, 99.0))?;
     }
     emit(json!({"phase": "install", "pct": 100, "message": "installed", "done": true}));
     Ok(())
+}
+
+fn install_log(layout: &Layout) -> PathBuf {
+    layout.root.join("install.log")
 }
 
 // ------------------------------------------------------------------- train
@@ -1607,10 +1741,16 @@ pub async fn decisions_install(app: AppHandle) -> Result<(), String> {
         let _guard = guard;
         let emit = emitter(app);
         let layout = Layout::app();
-        match install_blocking(&layout, &toolkit, &emit, &cancel) {
+        let step = Mutex::new("venv");
+        match install_blocking(&layout, &toolkit, &emit, &cancel, &step) {
             Ok(()) => {}
             Err(e) if e == "cancelled" => emit(json!({"phase": "cancelled", "pct": 0, "message": "install cancelled", "job": "install"})),
-            Err(e) => emit(json!({"phase": "error", "pct": 0, "message": e, "job": "install"})),
+            Err(e) => {
+                let step = *step.lock().unwrap_or_else(|e| e.into_inner());
+                let log = std::fs::read_to_string(install_log(&layout)).unwrap_or_default();
+                let detail = log_cause(&log).unwrap_or_else(|| e.clone());
+                emit(json!({"phase": "error", "pct": 0, "message": e, "detail": detail, "step": step, "job": "install"}))
+            }
         }
     });
     Ok(())
@@ -2276,6 +2416,57 @@ mod tests {
         assert!(lines.last().unwrap().contains("y2"));
         forget_trace_meta(&path);
         let _ = std::fs::remove_dir_all(&layout.root);
+    }
+
+    // ---- install
+
+    #[test]
+    fn the_venv_home_is_read_from_its_config() {
+        let cfg = "home = /Applications/Galactus.app/Contents/Resources/python/bin\ninclude-system-site-packages = false\nversion = 3.12.11\n";
+        assert_eq!(venv_home(cfg), Some(PathBuf::from("/Applications/Galactus.app/Contents/Resources/python/bin")));
+        assert_eq!(venv_home("version = 3.12\n"), None);
+    }
+
+    #[test]
+    fn a_venv_whose_interpreter_moved_is_not_ready() {
+        let layout = temp_layout("home");
+        let toolkit = layout.root.join("toolkit");
+        std::fs::create_dir_all(&toolkit).unwrap();
+        std::fs::write(requirements(&toolkit), "torch==1\n").unwrap();
+        std::fs::create_dir_all(layout.venv().join("bin")).unwrap();
+        std::fs::write(layout.python(), "").unwrap();
+        std::fs::write(layout.venv_marker(), fingerprint(b"torch==1\n")).unwrap();
+        let home = layout.root.join("pyhome/bin");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(layout.venv().join("pyvenv.cfg"), format!("home = {}\n", home.display())).unwrap();
+        assert!(venv_ready(&layout, Some(&toolkit)));
+        std::fs::remove_dir_all(layout.root.join("pyhome")).unwrap();
+        assert!(!venv_ready(&layout, Some(&toolkit)), "the app moved: reinstall");
+        let _ = std::fs::remove_dir_all(&layout.root);
+    }
+
+    #[test]
+    fn libpython_is_found_beside_the_home_interpreter() {
+        let layout = temp_layout("libpy");
+        let home = layout.root.join("python/bin");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(layout.root.join("python/lib")).unwrap();
+        std::fs::write(layout.root.join("python/lib/libpython3.12.dylib"), "x").unwrap();
+        std::fs::write(layout.root.join("python/lib/libtcl.dylib"), "x").unwrap();
+        let found = libpythons(&home);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].ends_with("libpython3.12.dylib"));
+        let _ = std::fs::remove_dir_all(&layout.root);
+    }
+
+    #[test]
+    fn the_cause_of_a_failed_install_is_the_telling_line() {
+        let log = "Collecting torch\n  Downloading torch.whl\ndyld[123]: Library not loaded: @executable_path/../lib/libpython3.12.dylib\n  Reason: no such file\nError: Command '[python3 -m ensurepip]' died with <Signals.SIGABRT: 6>.\n";
+        assert!(log_cause(log).unwrap().starts_with("Error: Command"));
+        let pip = "Collecting x\nERROR: THESE PACKAGES DO NOT MATCH THE HASHES FROM THE REQUIREMENTS FILE.\n    x from https://...\n";
+        assert!(log_cause(pip).unwrap().contains("DO NOT MATCH"));
+        assert_eq!(log_cause("just a line\n\n").unwrap(), "just a line");
+        assert_eq!(log_cause(""), None);
     }
 
     // ---- confinement

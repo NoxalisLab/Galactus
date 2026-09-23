@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 // @ts-ignore Node types are deliberately not added to the app dependency graph.
 import fs from "node:fs";
 
-import { hasVerifiedDownload, modelAvailability, modelCertification,
+import { expertsMeta, hasVerifiedDownload, modelAvailability, modelCertification,
   recommendedModel,
 } from "../../src/model-policy.js";
 
@@ -190,4 +190,12 @@ test("a model this Mac cannot run is never the recommendation", () => {
     { id: "fits", gguf_bytes: 20e9, tps: 30, ok: true },
   ];
   assert.equal(recommendedModel(models), "fits");
+});
+
+test("a dense model says dense, never ?/? experts", () => {
+  assert.deepEqual(expertsMeta({ dense: true }), { kind: "dense" });
+  assert.deepEqual(expertsMeta({ dense: true, experts: 0, experts_used: 0 }), { kind: "dense" });
+  assert.deepEqual(expertsMeta({ experts: 128, experts_used: 8 }), { kind: "moe", used: 8, total: 128 });
+  assert.equal(expertsMeta({}), null);
+  assert.equal(expertsMeta({ experts: 128 }), null);
 });

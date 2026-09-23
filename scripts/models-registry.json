@@ -1496,7 +1496,9 @@
         "planner": "qwen38-27b",
         "coder": "qwen3-coder-next"
       },
-      "note": "tout résident, ~67 Go"
+      "note": "tout résident, ~67 Go",
+      "name_en": "Qwen3.8 plans, Qwen3-Coder-Next codes",
+      "note_en": "all resident, ~67 GB"
     },
     {
       "id": "plan-code-fast",
@@ -1505,7 +1507,9 @@
         "planner": "qwen38-27b",
         "coder": "qwen35-35b-a3b"
       },
-      "note": "tout résident, ~45 Go, codeur ~145 tok/s avec MTP"
+      "note": "tout résident, ~45 Go, codeur ~145 tok/s avec MTP",
+      "name_en": "Qwen3.8 plans, Qwen3.6 + MTP codes",
+      "note_en": "all resident, ~45 GB, coder ~145 tok/s with MTP"
     },
     {
       "id": "quality-max",
@@ -1514,7 +1518,9 @@
         "planner": "deepseek-v4-flash",
         "coder": "qwen35-35b-a3b"
       },
-      "note": "DeepSeek en streaming SSD, codeur résident"
+      "note": "DeepSeek en streaming SSD, codeur résident",
+      "name_en": "DeepSeek-V4-Flash plans, Qwen3.6 codes",
+      "note_en": "DeepSeek streamed from SSD, coder resident"
     },
     {
       "id": "hybrid-cloud",
@@ -1528,7 +1534,9 @@
           "model": ""
         }
       },
-      "note": "l'expert reçoit les tâches complexes ; modèle à choisir, clé requise"
+      "note": "l'expert reçoit les tâches complexes ; modèle à choisir, clé requise",
+      "name_en": "Local team + cloud expert (OpenRouter)",
+      "note_en": "the expert gets the hard tasks; choose its model, key required"
     },
     {
       "id": "hybrid-claude",
@@ -1538,7 +1546,9 @@
         "coder": "qwen3-coder-next",
         "expert": {"kind": "cloud", "provider": "anthropic", "model": "claude-opus-5"}
       },
-      "note": "clé Anthropic requise"
+      "note": "clé Anthropic requise",
+      "name_en": "Local team + Claude as the expert",
+      "note_en": "Anthropic key required"
     }
   ],
   "cloud_prices_source": "USD per million tokens, [input, output]. Anthropic list prices as cached on 2026-06-24. Keyed <provider>/<model>; a user entry in settings cloud_prices_user with the same key wins. OpenRouter needs none: it returns the cost of each call.",

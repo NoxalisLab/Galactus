@@ -26,6 +26,7 @@ import {
   cloudModelId,
   enginesToStop,
   presetEngineIds,
+  presetText,
   cloudProviderInfo,
   mergePrices,
   parsePrices,
@@ -465,4 +466,36 @@ test("an engine no live thread uses is stopped, unless a spawn or a turn is pend
   const ids = new Set(["c1", "cloud:openrouter/v/x", "old"]);
   assert.deepEqual(enginesToStop(running, ids, new Set(["c1"])), ["cloud:openrouter/v/x", "old"]);
   assert.deepEqual(enginesToStop(running, ids, new Set(["c1"]), new Set(["old"])), ["cloud:openrouter/v/x"]);
+});
+
+// ---------- interface text ----------
+
+test("a preset shows its English name and note in English, French otherwise", () => {
+  const p = { id: "x", name: "Équipe", note: "note fr", name_en: "Team", note_en: "note en", roles: { coder: "c" } };
+  assert.deepEqual(presetText(p, "en"), { name: "Team", note: "note en" });
+  assert.deepEqual(presetText(p, "fr"), { name: "Équipe", note: "note fr" });
+  assert.deepEqual(presetText({ id: "y", name: "Mine", roles: { coder: "c" } }, "en"), { name: "Mine", note: "" });
+  // Round trip keeps the translations of a user override.
+  const merged = mergePresets([], [p]);
+  assert.equal(JSON.parse(serializeUserPresets(merged))[0].name_en, "Team");
+});
+
+test("every shipped preset carries an English name and note", () => {
+  const raw = fs.readFileSync(new URL("../../../../../../scripts/models-registry.json", import.meta.url), "utf8");
+  for (const p of presetsFromRegistry(raw)) {
+    assert.ok(p.name_en, `${p.id}: no name_en`);
+    assert.ok(p.note_en, `${p.id}: no note_en`);
+  }
+});
+
+test("team and cloud strings fill EVERY occurrence of a placeholder", () => {
+  // "…a role on %p leave this Mac and are sent to %p…" has two: a single
+  // .replace left the second one on screen. Checked in the source, where the
+  // mistake is made.
+  for (const f of ["teamsview.ts", "main.ts"]) {
+    const src = fs.readFileSync(new URL(`../../../../../src/${f}`, import.meta.url), "utf8");
+    const chains = src.match(/t\((?:"|`)(?:teams|cloud)\.[^"`]+(?:"|`)\)(?:\s*\.replace(?:All)?\([^()]*(?:\([^()]*\))?[^()]*\))+/g) ?? [];
+    assert.ok(chains.length > 2, `${f}: the check found nothing to check`);
+    for (const c of chains) assert.doesNotMatch(c, /\.replace\(/, `${f}: ${c.slice(0, 80)}`);
+  }
 });

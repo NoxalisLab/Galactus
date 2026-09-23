@@ -10,7 +10,7 @@
 // Nothing here starts an engine. The engines start when a teammate is
 // recruited for a role (main.ts), and the backend plans the real memory then.
 
-import { t } from "./i18n";
+import { getLang, t } from "./i18n";
 import type { CloudUsage } from "./api";
 import {
   CLOUD_PROVIDERS,
@@ -22,6 +22,7 @@ import {
   type CloudState,
   type EngineInfo,
   presetFootprint,
+  presetText,
   roleKey,
   type SizedModel,
   type StoredPreset,
@@ -101,7 +102,7 @@ export function teamsSection(d: TeamsViewDeps): HTMLElement {
     const cloud = d.cloud.state();
 
     const options = [`<option value=""${active ? "" : " selected"}>${esc(t("teams.off"))}</option>`]
-      .concat(presets.map((p) => `<option value="${esc(p.id)}"${p.id === active ? " selected" : ""}>${esc(p.name)}</option>`))
+      .concat(presets.map((p) => `<option value="${esc(p.id)}"${p.id === active ? " selected" : ""}>${esc(presetText(p, getLang()).name)}</option>`))
       .join("");
 
     const cards = presets
@@ -110,9 +111,9 @@ export function teamsSection(d: TeamsViewDeps): HTMLElement {
         const verdict =
           fp.fits === null
             ? fp.missing.length
-              ? t("teams.fitUnknownModel").replace("%s", fp.missing.join(", "))
+              ? t("teams.fitUnknownModel").replaceAll("%s", fp.missing.join(", "))
               : t("teams.fitUnknown")
-            : (fp.fits ? t("teams.fits") : t("teams.noFit")).replace("%b", budget ? gb(budget) : "?");
+            : (fp.fits ? t("teams.fits") : t("teams.noFit")).replaceAll("%b", budget ? gb(budget) : "?");
         const streamed = fp.roles.filter((r) => r.streamed && r.bytes > 0).map((r) => nameOf(r.modelId));
         const cloudRoles = fp.roles.filter((r) => r.cloud).map((r) => r.role);
         // A provider that does not report cost needs a price before its role
@@ -129,7 +130,7 @@ export function teamsSection(d: TeamsViewDeps): HTMLElement {
             const cloudOpts = (selected: string | null) =>
               CLOUD_PROVIDERS.map(
                 (cp) =>
-                  `<option value="${CLOUD_OPTION}${esc(cp.id)}"${cp.id === selected ? " selected" : ""}>${esc(t("cloud.option").replace("%p", cp.name))}</option>`
+                  `<option value="${CLOUD_OPTION}${esc(cp.id)}"${cp.id === selected ? " selected" : ""}>${esc(t("cloud.option").replaceAll("%p", cp.name))}</option>`
               ).join("");
             if (isCloud(target)) {
               const info = cloudProviderInfo(target.provider);
@@ -148,12 +149,12 @@ export function teamsSection(d: TeamsViewDeps): HTMLElement {
               const block = cloudBlock(target, cloud);
               return `<div class="team-role cloud">
               <span class="mono">${esc(role)}</span>
-              <select data-role="${esc(role)}">${cloudOpts(target.provider)}${locals}</select>
-              <input class="team-slug mono" data-slug="${esc(role)}" list="cloudslugs-${esc(target.provider)}" value="${esc(target.model)}" placeholder="${esc(info.suggested || t("cloud.slugPlaceholder"))}"/>
+              <select data-role="${esc(role)}" aria-label="${esc(t("teams.roleModelAria").replaceAll("%r", role))}">${cloudOpts(target.provider)}${locals}</select>
+              <input class="team-slug mono" data-slug="${esc(role)}" aria-label="${esc(t("cloud.slugAria").replaceAll("%r", role))}" list="cloudslugs-${esc(target.provider)}" value="${esc(target.model)}" placeholder="${esc(info.suggested || t("cloud.slugPlaceholder"))}"/>
               ${del}
             </div>
             ${priceRow}
-            ${block && block !== "cloud-no-price" ? `<div class="team-note warn">${esc(t(`cloud.block.${block}`).replace("%p", info.name))}</div>` : ""}`;
+            ${block && block !== "cloud-no-price" ? `<div class="team-note warn">${esc(t(`cloud.block.${block}`).replaceAll("%p", info.name))}</div>` : ""}`;
             }
             const id = target;
             const cur = models.find((m) => m.id === id);
@@ -168,7 +169,7 @@ export function teamsSection(d: TeamsViewDeps): HTMLElement {
             if (!cur) opts.unshift(`<option value="${esc(id)}" selected>${esc(id)} (${esc(t("teams.unknownModel"))})</option>`);
             return `<div class="team-role">
               <span class="mono">${esc(role)}</span>
-              <select data-role="${esc(role)}">${opts.join("")}${cloudOpts(null)}</select>
+              <select data-role="${esc(role)}" aria-label="${esc(t("teams.roleModelAria").replaceAll("%r", role))}">${opts.join("")}${cloudOpts(null)}</select>
               ${del}
             </div>`;
           })
@@ -181,16 +182,16 @@ export function teamsSection(d: TeamsViewDeps): HTMLElement {
               : "";
         return `<div class="team-card${p.id === active ? " on" : ""}" data-id="${esc(p.id)}">
           <div class="team-head">
-            <input class="team-name" value="${esc(p.name)}" aria-label="${esc(t("teams.name"))}"/>
+            <input class="team-name" value="${esc(presetText(p, getLang()).name)}" aria-label="${esc(t("teams.name"))}"/>
             ${p.id === active ? `<span class="badge-auto">${esc(t("teams.active"))}</span>` : ""}
           </div>
-          ${p.note ? `<div class="team-note">${esc(p.note)}</div>` : ""}
+          ${presetText(p, getLang()).note ? `<div class="team-note">${esc(presetText(p, getLang()).note)}</div>` : ""}
           <div class="team-roles">${roles}</div>
-          <div class="team-add"><input class="team-newrole mono" placeholder="${esc(t("teams.rolePlaceholder"))}"/><button class="bs" data-addrole>${esc(t("teams.addRole"))}</button></div>
-          <div class="team-fp ${fp.fits === false ? "bad" : fp.fits ? "good" : ""}">≈ ${gb(fp.bytes)} ${esc(t("teams.gbEstimated"))} · ${esc(verdict)}${streamed.length ? ` · ${esc(t("teams.streamed").replace("%s", streamed.join(", ")))}` : ""}${cloudRoles.length ? ` · ${esc(t("cloud.fpRoles").replace("%s", cloudRoles.join(", ")))}` : ""}</div>
-          ${unpriced.length ? `<div class="team-note warn">${esc(t("cloud.unpriced").replace("%s", unpriced.join(", ")))}</div>` : ""}
+          <div class="team-add"><input class="team-newrole mono" aria-label="${esc(t("teams.addRole"))}" placeholder="${esc(t("teams.rolePlaceholder"))}"/><button class="bs" data-addrole>${esc(t("teams.addRole"))}</button></div>
+          <div class="team-fp ${fp.fits === false ? "bad" : fp.fits ? "good" : ""}">≈ ${gb(fp.bytes)} ${esc(t("teams.gbEstimated"))} · ${esc(verdict)}${streamed.length ? ` · ${esc(t("teams.streamed").replaceAll("%s", streamed.join(", ")))}` : ""}${cloudRoles.length ? ` · ${esc(t("cloud.fpRoles").replaceAll("%s", cloudRoles.join(", ")))}` : ""}</div>
+          ${unpriced.length ? `<div class="team-note warn">${esc(t("cloud.unpriced").replaceAll("%s", unpriced.join(", ")))}</div>` : ""}
           <div class="set-actions">
-            ${p.id === active ? "" : `<button class="bs" data-activate${unpriced.length ? ` disabled title="${esc(t("cloud.unpriced").replace("%s", unpriced.join(", ")))}"` : ""}>${esc(t("teams.activate"))}</button>`}
+            ${p.id === active ? "" : `<button class="bs" data-activate${unpriced.length ? ` disabled title="${esc(t("cloud.unpriced").replaceAll("%s", unpriced.join(", ")))}"` : ""}>${esc(t("teams.activate"))}</button>`}
             <button class="bs" data-dup>${esc(t("teams.duplicate"))}</button>
             ${reset}
           </div>
@@ -200,7 +201,7 @@ export function teamsSection(d: TeamsViewDeps): HTMLElement {
 
     box.innerHTML = `
       <div class="set-row"><div class="grow"><b>${esc(t("teams.activeTitle"))}</b><span>${esc(t("teams.activeHint"))}</span></div>
-        <select id="teamsel" class="teamsel">${options}</select>
+        <select id="teamsel" class="teamsel" aria-label="${esc(t("teams.activeTitle"))}">${options}</select>
       </div>
       <div class="team-cards">${presets.length ? cards : `<div class="team-note">${esc(t("teams.none"))}</div>`}</div>
       ${CLOUD_PROVIDERS.map((cp) => datalist(cp.id)).join("")}
@@ -252,9 +253,9 @@ export function teamsSection(d: TeamsViewDeps): HTMLElement {
     }
     const spend = st.usage
       ? t("cloud.spend")
-          .replace("%t", st.usage.total_usd.toFixed(2))
-          .replace("%c", st.usage.cap_usd.toFixed(2))
-          .replace("%n", String(st.usage.calls))
+          .replaceAll("%t", st.usage.total_usd.toFixed(2))
+          .replaceAll("%c", st.usage.cap_usd.toFixed(2))
+          .replaceAll("%n", String(st.usage.calls))
       : t("cloud.spendUnknown");
     // One block per provider: each is enabled on its own, with its own key,
     // because trusting one company with the work is not trusting all three.
@@ -262,13 +263,13 @@ export function teamsSection(d: TeamsViewDeps): HTMLElement {
       const on = !!st.state.enabled[cp.id];
       const keyed = !!st.state.keyed[cp.id];
       const pid = esc(cp.id);
-      return `<div class="set-row cloud-prov" data-provider="${pid}"><div class="grow"><b>${esc(cp.name)}</b><span>${esc(t("cloud.leaves").replace("%p", cp.name))}</span><span>${esc(keyed ? t("cloud.keySaved") : t("cloud.keyHint"))}</span></div>
+      return `<div class="set-row cloud-prov" data-provider="${pid}"><div class="grow"><b>${esc(cp.name)}</b><span>${esc(t("cloud.leaves").replaceAll("%p", cp.name))}</span><span>${esc(keyed ? t("cloud.keySaved") : t("cloud.keyHint"))}</span>${on && !keyed ? `<span class="warn">${esc(t("cloud.onNoKey").replaceAll("%p", cp.name))}</span>` : ""}</div>
         <div class="set-actions">
-          <input class="cloud-in" data-key="${pid}" type="password" autocomplete="off" spellcheck="false" placeholder="${esc(keyed ? t("cloud.keyReplace") : t("cloud.keyPlaceholder"))}"/>
+          <input class="cloud-in" data-key="${pid}" aria-label="${esc(t("cloud.keyAria").replaceAll("%p", cp.name))}" type="password" autocomplete="off" spellcheck="false" placeholder="${esc(keyed ? t("cloud.keyReplace") : t("cloud.keyPlaceholder"))}"/>
           <button class="bs" data-act="savekey">${esc(t("cloud.keySave"))}</button>
           ${keyed ? `<button class="bs" data-act="clearkey">${esc(t("cloud.keyClear"))}</button>` : ""}
           <button class="bs" data-act="list"${on && keyed ? "" : " disabled"} title="${esc(t("cloud.modelsHint"))}">${esc(t("cloud.list"))}</button>
-          <button class="tgl ${on ? "on" : ""}" data-act="toggle" role="switch" aria-checked="${on}" aria-label="${esc(cp.name)}"><span class="k"></span></button>
+          <button class="tgl ${on ? "on" : ""}" data-act="toggle" role="switch" aria-checked="${on}" aria-label="${esc(t("cloud.enableAria").replaceAll("%p", cp.name))}"><span class="k"></span></button>
         </div>
       </div>`;
     }).join("");
@@ -279,7 +280,7 @@ export function teamsSection(d: TeamsViewDeps): HTMLElement {
         <label class="samp"><small>USD / ${esc(t("cloud.day"))}</small><input id="cloudcap" type="number" min="0" step="0.5" value="${esc(st.cap)}"/></label>
       </div>
       <div class="set-row"><div class="grow"><b>${esc(t("cloud.redact"))}</b><span>${esc(t("cloud.redactHint"))}</span></div>
-        <button class="tgl ${st.redact ? "on" : ""}" id="cloudredact" role="switch" aria-checked="${st.redact}"><span class="k"></span></button>
+        <button class="tgl ${st.redact ? "on" : ""}" id="cloudredact" role="switch" aria-checked="${st.redact}" aria-label="${esc(t("cloud.redact"))}"><span class="k"></span></button>
       </div>`;
   };
 
@@ -360,7 +361,8 @@ export function teamsSection(d: TeamsViewDeps): HTMLElement {
       });
     } else if (target.classList.contains("team-name")) {
       const name = (target as HTMLInputElement).value.trim();
-      if (name) void edit(id, (p) => ({ ...p, name }));
+      // The typed name becomes the name in every language.
+      if (name) void edit(id, (p) => { const { name_en: _drop, ...rest } = p; return { ...rest, name }; });
       else paint();
     }
   });
@@ -392,9 +394,10 @@ export function teamsSection(d: TeamsViewDeps): HTMLElement {
       if (!src) return;
       const copy: TeamPreset = {
         id: copyId(list, id),
-        name: `${src.name} ${t("teams.copySuffix")}`,
+        // The copy is the user's: named in the language it was made in.
+        name: `${presetText(src, getLang()).name} ${t("teams.copySuffix")}`,
         roles: { ...src.roles },
-        ...(src.note ? { note: src.note } : {}),
+        ...(presetText(src, getLang()).note ? { note: presetText(src, getLang()).note } : {}),
         source: "user",
       };
       void commit([...list, copy]);
@@ -418,7 +421,7 @@ export function teamsSection(d: TeamsViewDeps): HTMLElement {
       if (!role) return;
       const p = d.presets().find((x) => x.id === id);
       if (!p || p.roles[role]) {
-        d.toast(t("teams.roleExists").replace("%s", role));
+        d.toast(t("teams.roleExists").replaceAll("%s", role));
         return;
       }
       // A new role starts on the first model this Mac can run, the same
@@ -459,7 +462,7 @@ export function teamsSection(d: TeamsViewDeps): HTMLElement {
           slugs[provider] = got;
           const dl = box.querySelector<HTMLElement>(`#cloudslugs-${CSS.escape(provider)}`);
           if (dl) dl.innerHTML = got.map((x) => `<option value="${esc(x)}"></option>`).join("");
-          d.toast(t("cloud.listed").replace("%n", String(got.length)), "ok");
+          d.toast(t("cloud.listed").replaceAll("%n", String(got.length)), "ok");
         }
       }
     } catch (e: any) {

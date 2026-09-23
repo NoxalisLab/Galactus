@@ -119,3 +119,22 @@ export function recommendedModel(models: Recommendable[]): string | null {
   }
   return best.id;
 }
+
+/**
+ * What the model card says about experts.
+ *
+ * A dense model has none, and "?/? experts" read as missing data on a model
+ * that is simply not a mixture. Unknown counts on a mixture are left out
+ * rather than shown as question marks.
+ */
+export function expertsMeta(m: {
+  dense?: boolean | null;
+  experts?: number | null;
+  experts_used?: number | null;
+}): { kind: "dense" } | { kind: "moe"; used: number; total: number } | null {
+  if (m.dense) return { kind: "dense" };
+  if (typeof m.experts === "number" && m.experts > 0 && typeof m.experts_used === "number" && m.experts_used > 0) {
+    return { kind: "moe", used: m.experts_used, total: m.experts };
+  }
+  return null;
+}
