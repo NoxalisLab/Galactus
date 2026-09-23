@@ -193,6 +193,15 @@ pub(crate) fn swift_helper(name: &str) -> Result<PathBuf, String> {
         std::env::current_dir()
             .unwrap_or_default()
             .join(format!("src-tauri/helpers/{name}.swift")),
+        // Tests: the crate's own directory. Without it a test found the source
+        // only through the root configured in the app's settings, which a CI
+        // runner does not have. Test builds only, so a shipped binary carries
+        // no path of the machine that built it.
+        if cfg!(test) {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("helpers/{name}.swift"))
+        } else {
+            PathBuf::new()
+        },
         // Packaged app: the helper ships as a bundle resource
         // (Contents/MacOS/<exe> → Contents/Resources/helpers/…).
         std::env::current_exe()
