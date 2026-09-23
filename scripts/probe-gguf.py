@@ -23,6 +23,19 @@ WHAT IT ANSWERS
               a pre-2024 quantization the engine cannot wire
   dense       no expert tensors at all, so there is nothing to stream
 
+A split checkpoint (`-00001-of-00003.gguf`) is judged as a whole. Its first
+shard often carries the metadata and no tensor at all, and reading it alone
+once reported DeepSeek-V4, GLM-5.3 and MiniMax-M3 as dense. When a shard
+declares `split.count > 1` and holds no expert tensor, the probe moves on to
+the next shard, and stops at the first one that answers.
+
+A fused layout is not enough either: GLM-5.3-Flash ships as `glm5next`, an
+architecture the pinned llama.cpp does not know, and a probe that stopped at
+the tensor names called its 93 GB usable. The architecture is checked against
+the pinned tree's `llama-arch.cpp` when the checkout is there:
+
+  unsupported the engine's llama.cpp has no graph for this architecture
+
 Usage:
   python3 scripts/probe-gguf.py https://huggingface.co/.../model.gguf
   python3 scripts/probe-gguf.py --json <url> [<url> ...]
@@ -34,7 +47,7 @@ import json
 import re
 import struct
 import subprocess
-import sys
+from pathlib import Path
 
 # How much of the head to pull. The directory of a 1000-tensor model is well
 # under a megabyte; 8 covers a large sharded checkpoint with room to spare, and
@@ -121,6 +134,7 @@ def inspect(buf: bytes) -> dict:
 
     arch = ""
     experts = None
+    split_count = 1
     for _ in range(n_kv):
         key = h.s()
         vt = h.u32()
@@ -129,6 +143,8 @@ def inspect(buf: bytes) -> dict:
         elif key.endswith(".expert_count") and vt in FIXED:
             raw = h.take(FIXED[vt])
             experts = int.from_bytes(raw, "little")
+        elif key == "split.count" and vt in FIXED:
+            split_count = int.from_bytes(h.take(FIXED[vt]), "little")
         else:
             h.skip_value(vt)
 
@@ -152,6 +168,7 @@ def inspect(buf: bytes) -> dict:
         "declared_experts": experts,
         "fused_expert_tensors": len(fused),
         "per_expert_tensors": len(per_expert),
+        "split_count": split_count,
     }
     if fused:
         res.update(verdict="usable",
@@ -166,6 +183,75 @@ def inspect(buf: bytes) -> dict:
     return res
 
 
+ARCH_TABLE = (Path(__file__).resolve().parent.parent
+              / "third_party" / "llama.cpp" / "src" / "llama-arch.cpp")
+
+
+def known_archs() -> set[str] | None:
+    """Architecture names the pinned llama.cpp builds a graph for, or None
+    when the checkout is absent and the question cannot be answered."""
+    try:
+        text = ARCH_TABLE.read_text()
+    except OSError:
+        return None
+    return set(re.findall(r'\{\s*LLM_ARCH_\w+,\s*"([^"]+)"\s*\}', text))
+
+
+def check_arch(r: dict) -> dict:
+    archs = known_archs()
+    if r.get("verdict") == "usable" and archs is not None and r.get("arch") not in archs:
+        r["verdict"] = "unsupported"
+        r["reason"] = (f"architecture {r.get('arch')!r} is unknown to the pinned llama.cpp "
+                       f"checkout, the layout alone does not load")
+    return r
+
+
+SHARD_RE = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$")
+
+
+def probe_one(target: str) -> dict:
+    """Judge one file. Raises instead of guessing when it cannot."""
+    # Retry wider rather than answering UNKNOWN: the directory sits at
+    # the start of the file, so a longer range request is the whole
+    # cost, and answering "I could not tell" about a file that could
+    # perfectly well be judged is the one outcome this tool must avoid.
+    for attempt in range(3):
+        want = head_bytes_for(attempt)
+        buf = fetch_head(target, want) if target.startswith("http") else read_local(target, want)
+        try:
+            return inspect(buf)
+        except EOFError:
+            # inspect RAISES when the buffer ends mid header, it does not
+            # return a verdict, so the retry has to catch it. Getting
+            # this wrong meant the loop gave up on its first attempt and
+            # reported UNKNOWN on a file three lines of code could read.
+            continue
+    raise EOFError(
+        f"the header is longer than {want // (1024 * 1024)} MB, which is "
+        "not a tensor directory any more, it is a new question")
+
+
+def probe_split(target: str) -> dict:
+    """Judge a split checkpoint by its shards, not by its metadata shard."""
+    r = probe_one(target)
+    m = SHARD_RE.search(target)
+    if r.get("verdict") != "dense" or r.get("split_count", 1) <= 1 or not m:
+        return r
+    first, count = int(m.group(1)), int(m.group(2))
+    for no in range(first + 1, count + 1):
+        sibling = target[: m.start()] + f"-{no:05d}-of-{count:05d}.gguf"
+        s = probe_one(sibling)
+        if s.get("verdict") in ("usable", "legacy"):
+            # Architecture and expert count live in the first shard only.
+            s["arch"] = r["arch"]
+            s["declared_experts"] = r["declared_experts"]
+            s["split_count"] = count
+            s["reason"] += f" (read from shard {no} of {count})"
+            return s
+    r["reason"] += f", in any of the {count} shards"
+    return r
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("target", nargs="+", help="an https URL or a local .gguf path")
@@ -175,28 +261,7 @@ def main() -> int:
     results = []
     for target in args.target:
         try:
-            # Retry wider rather than answering UNKNOWN: the directory sits at
-            # the start of the file, so a longer range request is the whole
-            # cost, and answering "I could not tell" about a file that could
-            # perfectly well be judged is the one outcome this tool must avoid.
-            r = None
-            for attempt in range(3):
-                want = head_bytes_for(attempt)
-                buf = fetch_head(target, want) if target.startswith("http") else read_local(target, want)
-                try:
-                    r = inspect(buf)
-                except EOFError:
-                    # inspect RAISES when the buffer ends mid header, it does not
-                    # return a verdict, so the retry has to catch it. Getting
-                    # this wrong meant the loop gave up on its first attempt and
-                    # reported UNKNOWN on a file three lines of code could read.
-                    r = None
-                    continue
-                break
-            if r is None:
-                raise EOFError(
-                    f"the header is longer than {want // (1024 * 1024)} MB, which is "
-                    "not a tensor directory any more, it is a new question")
+            r = check_arch(probe_split(target))
         except Exception as e:  # a probe that fails must say so, not guess
             r = {"ok": False, "verdict": "unknown", "reason": str(e)}
         r["target"] = target
