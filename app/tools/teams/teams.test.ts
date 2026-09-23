@@ -24,6 +24,8 @@ import {
   CLOUD_PROVIDERS,
   cloudBlock,
   cloudModelId,
+  enginesToStop,
+  presetEngineIds,
   cloudProviderInfo,
   mergePrices,
   parsePrices,
@@ -382,4 +384,85 @@ test("the registry's cloud prices parse whole and price every shipped Anthropic 
         assert.ok(priceFor(prices, target.provider, target.model), `${p.id}: no shipped price for ${target.provider}/${target.model}`);
       }
     }
+});
+
+// ---------- redaction of everything that leaves ----------
+
+const SECRET = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+
+test("a write_file whose arguments carry AWS_SECRET_ACCESS_KEY is masked, and stays valid JSON", () => {
+  const args = JSON.stringify({ path: ".env", content: `REGION=eu-west-3\nAWS_SECRET_ACCESS_KEY=${SECRET}\n` });
+  const msgs = [
+    {
+      role: "assistant",
+      content: null,
+      tool_calls: [{ id: "c1", type: "function", function: { name: "write_file", arguments: args } }],
+    },
+  ];
+  const r = redactMessages(msgs);
+  assert.ok(r.removed >= 1);
+  const sent = r.messages[0].tool_calls![0].function.arguments;
+  assert.doesNotMatch(sent, new RegExp(SECRET.slice(0, 12)));
+  const parsed = JSON.parse(sent);
+  assert.equal(parsed.path, ".env");
+  assert.match(parsed.content, /REGION=eu-west-3/);
+  assert.match(msgs[0].tool_calls[0].function.arguments, new RegExp(SECRET.slice(0, 12)), "history untouched");
+});
+
+test("a secret-named JSON key and unparsable arguments are masked too", () => {
+  const r = redactMessages([
+    {
+      role: "assistant",
+      content: null,
+      tool_calls: [
+        { id: "a", type: "function", function: { name: "http", arguments: JSON.stringify({ api_key: SECRET }) } },
+        { id: "b", type: "function", function: { name: "x", arguments: `AWS_SECRET_ACCESS_KEY=${SECRET} {broken` } },
+      ],
+    },
+  ]);
+  assert.equal(r.removed >= 2, true);
+  for (const c of r.messages[0].tool_calls!) assert.doesNotMatch(c.function.arguments, new RegExp(SECRET.slice(0, 12)));
+});
+
+test("multipart text parts are masked, image parts pass, and the count covers everything", () => {
+  const img = { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } };
+  const r = redactMessages([
+    { role: "user", content: [{ type: "text", text: `AWS_SECRET_ACCESS_KEY=${SECRET}` }, img] },
+    { role: "tool", content: `AWS_SECRET_ACCESS_KEY=${SECRET}` },
+  ]);
+  assert.equal(r.removed, 2);
+  const parts = r.messages[0].content as { type: string; text?: string }[];
+  assert.doesNotMatch(String(parts[0].text), new RegExp(SECRET.slice(0, 12)));
+  assert.equal(parts[1], img);
+});
+
+// ---------- stopping engines nobody needs ----------
+
+const running: EngineInfo[] = [
+  normalizeEngine({ model_id: "p1", port: 1, phase: "ready", primary: true })!,
+  normalizeEngine({ model_id: "c1", port: 2, phase: "ready" })!,
+  normalizeEngine({ model_id: "cloud:openrouter/v/x", port: 3, phase: "ready", kind: "cloud" })!,
+  normalizeEngine({ model_id: "old", port: 4, phase: "ready" })!,
+];
+
+test("teams off stops every extra engine, never the primary", () => {
+  assert.deepEqual(enginesToStop(running, null, new Set(["c1", "old"])), ["c1", "cloud:openrouter/v/x", "old"]);
+});
+
+test("a preset change stops the engines the new preset no longer names", () => {
+  const preset: TeamPreset = {
+    id: "n",
+    name: "N",
+    roles: { coder: "c1", expert: { kind: "cloud", provider: "openrouter", model: "v/x" }, empty: { kind: "cloud", provider: "openai", model: "" } },
+    source: "user",
+  };
+  const ids = presetEngineIds(preset);
+  assert.deepEqual([...ids].sort(), ["c1", "cloud:openrouter/v/x"]);
+  assert.deepEqual(enginesToStop(running, ids, new Set(["c1", "cloud:openrouter/v/x", "old"])), ["old"]);
+});
+
+test("an engine no live thread uses is stopped, unless a spawn or a turn is pending on it", () => {
+  const ids = new Set(["c1", "cloud:openrouter/v/x", "old"]);
+  assert.deepEqual(enginesToStop(running, ids, new Set(["c1"])), ["cloud:openrouter/v/x", "old"]);
+  assert.deepEqual(enginesToStop(running, ids, new Set(["c1"]), new Set(["old"])), ["cloud:openrouter/v/x"]);
 });

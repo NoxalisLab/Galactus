@@ -132,8 +132,22 @@ fn keychain_read(provider: &str) -> Option<String> {
     (!key.is_empty()).then_some(key)
 }
 
+/// Runs a blocking closure off the async workers. Every cloud command waits on
+/// a child process (security, curl), and those waits must not park a runtime
+/// thread that every other command shares.
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| format!("the cloud thread died: {e}"))?
+}
+
 #[tauri::command]
 pub async fn cloud_key_set(provider: String, key: String) -> Result<(), String> {
+    blocking(move || key_set_blocking(&provider, &key)).await
+}
+
+fn key_set_blocking(provider: &str, key: &str) -> Result<(), String> {
+    let provider = provider.to_string();
     provider_ok(&provider)?;
     let key = key.trim();
     if !key_is_plausible(key) {
@@ -165,11 +179,15 @@ pub async fn cloud_key_set(provider: String, key: String) -> Result<(), String> 
 
 #[tauri::command]
 pub async fn cloud_key_clear(provider: String) -> Result<(), String> {
-    provider_ok(&provider)?;
-    let svc = keychain_service(&provider);
+    blocking(move || key_clear_blocking(&provider)).await
+}
+
+fn key_clear_blocking(provider: &str) -> Result<(), String> {
+    provider_ok(provider)?;
+    let svc = keychain_service(provider);
     // Deleting a key that is not there is what the user asked for: done.
     let _ = security(&["delete-generic-password", "-s", &svc, "-a", KEYCHAIN_ACCOUNT]);
-    if keychain_read(&provider).is_some() {
+    if keychain_read(provider).is_some() {
         return Err("the Keychain refused to delete the key".into());
     }
     Ok(())
@@ -178,8 +196,12 @@ pub async fn cloud_key_clear(provider: String) -> Result<(), String> {
 /// Whether a key is stored. Never the key itself.
 #[tauri::command]
 pub async fn cloud_key_status(provider: String) -> Result<bool, String> {
-    provider_ok(&provider)?;
-    let svc = keychain_service(&provider);
+    blocking(move || key_status_blocking(&provider)).await
+}
+
+fn key_status_blocking(provider: &str) -> Result<bool, String> {
+    provider_ok(provider)?;
+    let svc = keychain_service(provider);
     // Without -w, find-generic-password prints the item's attributes and not
     // its secret, and asks the Keychain for nothing it would prompt over.
     Ok(security(&["find-generic-password", "-s", &svc, "-a", KEYCHAIN_ACCOUNT])
@@ -256,6 +278,13 @@ const LLAMA_ONLY: [&str; 12] = [
 /// The body for OpenAI: the role's model, the llama.cpp extras removed, and
 /// on a stream `include_usage`, without which the last chunk carries no token
 /// counts and the call could not be priced.
+///
+/// Two more rewrites, both because the reasoning models (o-series, gpt-5)
+/// answer 400 otherwise, and a role may name any OpenAI model:
+///   - `max_tokens` becomes `max_completion_tokens`. The reasoning models
+///     refuse the old name; every current chat model accepts the new one.
+///   - `temperature` and `top_p` are dropped. The reasoning models refuse any
+///     value but their default, and the agent sets them for the local models.
 pub(crate) fn rewrite_openai(body: &[u8], slug: &str) -> Result<Vec<u8>, String> {
     let mut v: Value = serde_json::from_slice(body).map_err(|e| format!("request is not JSON: {e}"))?;
     let obj = v.as_object_mut().ok_or("request body must be a JSON object")?;
@@ -263,6 +292,11 @@ pub(crate) fn rewrite_openai(body: &[u8], slug: &str) -> Result<Vec<u8>, String>
     for k in LLAMA_ONLY {
         obj.remove(k);
     }
+    if let Some(m) = obj.remove("max_tokens") {
+        obj.entry("max_completion_tokens").or_insert(m);
+    }
+    obj.remove("temperature");
+    obj.remove("top_p");
     if obj.get("stream").and_then(Value::as_bool) == Some(true) {
         obj.insert("stream_options".into(), json!({"include_usage": true}));
     }
@@ -328,6 +362,9 @@ pub(crate) fn curl_config(provider: &str, url: &str, key: &str, body: Option<&[u
     }
     if let Some(body) = body {
         lines.push(("header", "Content-Type: application/json".to_string()));
+        // An empty Expect disables curl's 100-continue on large bodies: one
+        // round trip less, and one interim response less to parse.
+        lines.push(("header", "Expect:".to_string()));
         lines.push(("data-binary", String::from_utf8_lossy(body).into_owned()));
     }
     let mut c = String::new();
@@ -370,6 +407,10 @@ pub(crate) struct CloudCall {
     pub(crate) prompt_tokens: u64,
     pub(crate) completion_tokens: u64,
     pub(crate) cost_usd: f64,
+    /// True when the provider's usage never arrived (a cut stream) and the
+    /// figures above are this app's cautious estimate.
+    #[serde(default)]
+    pub(crate) estimated: bool,
 }
 
 /// One day of calls. A file from another day reads as an empty ledger for
@@ -439,14 +480,50 @@ fn price_now(provider: &str, model: &str) -> Option<(f64, f64)> {
     price_for(provider, model, &shipped_prices(), settings_load().get("cloud_prices_user").map(|s| s.as_str()))
 }
 
-/// What one call cost: the provider's own figure when it gives one, else the
-/// token counts at the model's price.
-pub(crate) fn call_cost(provider: &str, price: Option<(f64, f64)>, prompt: u64, completion: u64, reported: f64) -> f64 {
-    if reports_cost(provider) {
-        return reported;
+/// Usage read from an answer: prompt and completion tokens, and the cost when
+/// the provider states one.
+pub(crate) type Usage = (u64, u64, Option<f64>);
+
+fn priced(price: (f64, f64), prompt: u64, completion: u64) -> f64 {
+    (prompt as f64 * price.0 + completion as f64 * price.1) / 1_000_000.0
+}
+
+/// Bytes per token for the estimate. Real text runs nearer four; three counts
+/// more tokens than there were, which is the side a cap must err on.
+const BYTES_PER_TOKEN: usize = 3;
+
+/// What one call is billed: tokens, cost, and whether that is an estimate.
+///
+/// With usage: the provider's stated cost (OpenRouter), else the counts at the
+/// model's price. WITHOUT usage (a stream cut before its last chunk) the call
+/// still happened and was still billed upstream, so zero would be a lie that
+/// the cap believes: the tokens are estimated from the bytes that crossed, at
+/// the model's price. With no price at all, the call is counted as the whole
+/// remaining allowance, which stops the next call until tomorrow rather than
+/// letting an unknown spend run on.
+pub(crate) fn settle(
+    provider: &str,
+    price: Option<(f64, f64)>,
+    usage: Option<Usage>,
+    request_bytes: usize,
+    response_bytes: usize,
+    remaining_cap: f64,
+) -> (u64, u64, f64, bool) {
+    if let Some((p, c, reported)) = usage {
+        if let (true, Some(cost)) = (reports_cost(provider), reported) {
+            return (p, c, cost, false);
+        }
+        return match price {
+            Some(pr) => (p, c, priced(pr, p, c), false),
+            None => (p, c, remaining_cap, true),
+        };
     }
-    let (i, o) = price.unwrap_or((0.0, 0.0));
-    (prompt as f64 * i + completion as f64 * o) / 1_000_000.0
+    let p = request_bytes.div_ceil(BYTES_PER_TOKEN) as u64;
+    let c = response_bytes.div_ceil(BYTES_PER_TOKEN) as u64;
+    match price {
+        Some(pr) => (p, c, priced(pr, p, c), true),
+        None => (p, c, remaining_cap, true),
+    }
 }
 
 /// Today in the Mac's own zone, the day the user means by "per day".
@@ -488,7 +565,7 @@ fn ledger_append(path: &Path, today: &str, call: CloudCall) {
 
 /// Usage from the end of a response: the whole JSON of a plain answer, or the
 /// last `data:` event carrying `usage` in a stream.
-pub(crate) fn extract_usage(tail: &[u8]) -> Option<(u64, u64, f64)> {
+pub(crate) fn extract_usage(tail: &[u8]) -> Option<Usage> {
     let text = String::from_utf8_lossy(tail);
     let read = |v: &Value| {
         let u = v.get("usage")?;
@@ -498,7 +575,7 @@ pub(crate) fn extract_usage(tail: &[u8]) -> Option<(u64, u64, f64)> {
         Some((
             u["prompt_tokens"].as_u64().unwrap_or(0),
             u["completion_tokens"].as_u64().unwrap_or(0),
-            u["cost"].as_f64().unwrap_or(0.0),
+            u["cost"].as_f64(),
         ))
     };
     if let Ok(v) = serde_json::from_str::<Value>(text.trim()) {
@@ -535,6 +612,10 @@ pub fn cloud_usage_today() -> CloudUsage {
 /// per million this app would bill against the cap, or null when unknown.
 #[tauri::command]
 pub async fn cloud_models(provider: String) -> Result<Vec<Value>, String> {
+    blocking(move || models_blocking(provider)).await
+}
+
+fn models_blocking(provider: String) -> Result<Vec<Value>, String> {
     provider_ok(&provider)?;
     let url = match provider.as_str() {
         ANTHROPIC => ANTHROPIC_MODELS,
@@ -732,7 +813,8 @@ fn chat(client: &mut TcpStream, head: &str, rest: Vec<u8>, ctx: &ProxyCtx, origi
     // overshoot by one call's cost; the cap bounds a day, not a cent.
     let today = (ctx.today)();
     let spent = ledger_load(&ctx.ledger, &today).total_usd();
-    if let Some(msg) = cap_refusal(spent, (ctx.cap_usd)()) {
+    let cap = (ctx.cap_usd)();
+    if let Some(msg) = cap_refusal(spent, cap) {
         return reply_error(client, 402, &msg, "cloud_cap", origin);
     }
     let upstream_body = match upstream_body(&ctx.provider, &body, &ctx.slug) {
@@ -763,6 +845,16 @@ fn chat(client: &mut TcpStream, head: &str, rest: Vec<u8>, ctx: &ProxyCtx, origi
     let mut buf: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 16 * 1024];
     let (status, content_type, body_start) = loop {
+        // The buffer is scanned BEFORE reading again: an interim 1xx head and
+        // the final head often arrive in the same read, and reading first
+        // would wait on a socket that has nothing more to say.
+        if let Some((status, ct, end)) = parse_upstream_head(&buf) {
+            if (100..200).contains(&status) {
+                buf.drain(..end);
+                continue;
+            }
+            break (status, ct, end);
+        }
         let n = out.read(&mut chunk).unwrap_or(0);
         if n == 0 {
             let _ = child.wait();
@@ -773,41 +865,57 @@ fn chat(client: &mut TcpStream, head: &str, rest: Vec<u8>, ctx: &ProxyCtx, origi
             return reply_error(client, 502, &format!("{} unreachable: {}", ctx.provider, err.trim()), "upstream", origin);
         }
         buf.extend_from_slice(&chunk[..n]);
-        let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else { continue };
-        let head_text = String::from_utf8_lossy(&buf[..end]).into_owned();
-        let status = head_text
-            .split_whitespace()
-            .nth(1)
-            .and_then(|s| s.parse::<u16>().ok())
-            .unwrap_or(502);
-        if (100..200).contains(&status) {
-            buf.drain(..end + 4);
-            continue;
-        }
-        let ct = header(&format!("{head_text}\r\n"), "content-type")
-            .unwrap_or("application/json")
-            .to_string();
-        break (status, ct, end + 4);
     };
     let rest = buf[body_start..].to_vec();
-    let usage = if ctx.provider == ANTHROPIC {
+    let (usage, received) = if ctx.provider == ANTHROPIC {
         relay_anthropic(client, &mut out, rest, status, &content_type, origin)
     } else {
         relay_as_is(client, &mut out, rest, status, &content_type, origin)
     };
     let _ = child.wait();
     if (200..300).contains(&status) {
-        let (prompt_tokens, completion_tokens, reported) = usage.unwrap_or((0, 0, 0.0));
+        let (prompt_tokens, completion_tokens, cost_usd, estimated) = settle(
+            &ctx.provider,
+            ctx.price,
+            usage,
+            upstream_body.len(),
+            received,
+            (cap - spent).max(0.0),
+        );
+        if estimated {
+            eprintln!(
+                "galactus cloud: {} {} ended without usage; billed an estimate of {cost_usd:.4} USD \
+                 ({prompt_tokens} + {completion_tokens} tokens) against the daily cap",
+                ctx.provider, ctx.slug
+            );
+        }
         let call = CloudCall {
             provider: ctx.provider.clone(),
             model: ctx.slug.clone(),
             prompt_tokens,
             completion_tokens,
-            cost_usd: call_cost(&ctx.provider, ctx.price, prompt_tokens, completion_tokens, reported),
+            cost_usd,
+            estimated,
         };
         ledger_append(&ctx.ledger, &today, call.clone());
         (ctx.on_call)(&call);
     }
+}
+
+/// The first complete response head in `buf`: status, content type, and where
+/// the head ends (the body, or the next head, starts there).
+pub(crate) fn parse_upstream_head(buf: &[u8]) -> Option<(u16, String, usize)> {
+    let end = buf.windows(4).position(|w| w == b"\r\n\r\n")?;
+    let head_text = String::from_utf8_lossy(&buf[..end]).into_owned();
+    let status = head_text
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(502);
+    let ct = header(&format!("{head_text}\r\n"), "content-type")
+        .unwrap_or("application/json")
+        .to_string();
+    Some((status, ct, end + 4))
 }
 
 /// Write to the client unless it has gone. A client that went away does not
@@ -836,10 +944,11 @@ fn relay_as_is(
     status: u16,
     content_type: &str,
     origin: &Option<String>,
-) -> Option<(u64, u64, f64)> {
+) -> (Option<Usage>, usize) {
     let mut gone = false;
     send(client, &mut gone, response_head(status, content_type, origin).as_bytes());
     send(client, &mut gone, &first);
+    let mut received = first.len();
     let mut tail = first;
     let mut chunk = [0u8; 16 * 1024];
     loop {
@@ -848,12 +957,13 @@ fn relay_as_is(
             Ok(n) => n,
         };
         send(client, &mut gone, &chunk[..n]);
+        received += n;
         tail.extend_from_slice(&chunk[..n]);
         if tail.len() > 2 * TAIL_KEEP {
             tail.drain(..tail.len() - TAIL_KEEP);
         }
     }
-    extract_usage(&tail)
+    (extract_usage(&tail), received)
 }
 
 /// Anthropic: every answer is translated back to the OpenAI shape. A stream
@@ -865,12 +975,13 @@ fn relay_anthropic(
     status: u16,
     content_type: &str,
     origin: &Option<String>,
-) -> Option<(u64, u64, f64)> {
+) -> (Option<Usage>, usize) {
     let mut gone = false;
     let mut chunk = [0u8; 16 * 1024];
     if (200..300).contains(&status) && content_type.contains("event-stream") {
         send(client, &mut gone, response_head(200, "text/event-stream", origin).as_bytes());
         let mut t = crate::anthropic::StreamTranslator::new();
+        let mut received = first.len();
         let translated = t.feed(&first);
         send(client, &mut gone, translated.as_bytes());
         loop {
@@ -878,29 +989,34 @@ fn relay_anthropic(
                 Ok(0) | Err(_) => break,
                 Ok(n) => n,
             };
+            received += n;
             let translated = t.feed(&chunk[..n]);
             send(client, &mut gone, translated.as_bytes());
         }
         let last = t.finish();
         send(client, &mut gone, last.as_bytes());
-        return Some((t.prompt_tokens, t.completion_tokens, 0.0));
+        // A stream cut before message_stop has partial counts: reported as
+        // unknown, so the call is estimated rather than under-billed.
+        let usage = t.completed().then_some((t.prompt_tokens, t.completion_tokens, None));
+        return (usage, received);
     }
     // Whole bodies are small (an answer or an error): read to the end.
     let mut body = first;
     let _ = out.read_to_end(&mut body);
+    let received = body.len();
     if !(200..300).contains(&status) {
         reply_json(client, status, &crate::anthropic::translate_error(status, &body), origin);
-        return None;
+        return (None, received);
     }
     match serde_json::from_slice::<Value>(&body) {
         Ok(v) => {
             let (answer, p, c) = crate::anthropic::translate_response(&v);
             reply_json(client, 200, &answer, origin);
-            Some((p, c, 0.0))
+            (Some((p, c, None)), received)
         }
         Err(_) => {
             reply_error(client, 502, "anthropic: unreadable answer", "upstream", origin);
-            None
+            (None, received)
         }
     }
 }
@@ -954,7 +1070,8 @@ pub(crate) fn app_ctx(app: AppHandle, provider: &str, slug: &str, price: Option<
             let _ = app.emit(
                 "galactus://cloud-call",
                 json!({"model": c.model, "provider": c.provider, "prompt_tokens": c.prompt_tokens,
-                       "completion_tokens": c.completion_tokens, "cost_usd": c.cost_usd}),
+                       "completion_tokens": c.completion_tokens, "cost_usd": c.cost_usd,
+                       "estimated": c.estimated}),
             );
         }),
     }
@@ -966,10 +1083,37 @@ pub(crate) fn preflight(model_id: &str) -> Result<(String, String, Option<(f64, 
     let settings = settings_load();
     // The setting first: with cloud off, not even the Keychain is asked.
     cloud_gate(&settings, &provider, true)?;
-    let price = price_now(&provider, &slug);
+    // OpenRouter reports each call's cost, but a cut stream reports nothing:
+    // its public price list is read once here (the user has just switched the
+    // role on) so that such a call can still be estimated in dollars.
+    let price = price_now(&provider, &slug).or_else(|| {
+        if provider != OPENROUTER {
+            return None;
+        }
+        let found = openrouter_price(&slug);
+        if found.is_none() {
+            eprintln!("galactus cloud: no OpenRouter price found for {slug}; a call without usage will count as the rest of the daily cap");
+        }
+        found
+    });
     require_price(&provider, &slug, price)?;
     cloud_gate(&settings, &provider, keychain_read(&provider).is_some())?;
     Ok((provider, slug, price))
+}
+
+/// USD per million [in, out] for one model in OpenRouter's public model list,
+/// whose prices are strings of USD per token.
+pub(crate) fn openrouter_price_in(list: &Value, slug: &str) -> Option<(f64, f64)> {
+    let m = list["data"].as_array()?.iter().find(|m| m["id"].as_str() == Some(slug))?;
+    let num = |v: &Value| v.as_f64().or_else(|| v.as_str()?.trim().parse::<f64>().ok());
+    let (i, o) = (num(&m["pricing"]["prompt"])?, num(&m["pricing"]["completion"])?);
+    (i.is_finite() && o.is_finite() && i >= 0.0 && o >= 0.0).then_some((i * 1e6, o * 1e6))
+}
+
+fn openrouter_price(slug: &str) -> Option<(f64, f64)> {
+    let out = Command::new("curl").args(["-sS", "--max-time", "20", OPENROUTER_MODELS]).output().ok()?;
+    let v: Value = serde_json::from_slice(&out.stdout).ok()?;
+    openrouter_price_in(&v, slug)
 }
 
 /// A provider that does not report its cost is only started with a price:
@@ -1088,9 +1232,11 @@ mod tests {
         let sse = b"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n\
                     data: {\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":3,\"cost\":0.0042}}\n\n\
                     data: [DONE]\n\n";
-        assert_eq!(extract_usage(sse), Some((12, 3, 0.0042)));
+        assert_eq!(extract_usage(sse), Some((12, 3, Some(0.0042))));
         let plain = br#"{"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":1,"cost":0.5}}"#;
-        assert_eq!(extract_usage(plain), Some((5, 1, 0.5)));
+        assert_eq!(extract_usage(plain), Some((5, 1, Some(0.5))));
+        let no_cost = br#"{"usage":{"prompt_tokens":5,"completion_tokens":1}}"#;
+        assert_eq!(extract_usage(no_cost), Some((5, 1, None)), "an absent cost is not a zero cost");
         assert_eq!(extract_usage(b"data: [DONE]\n"), None);
     }
 
@@ -1270,7 +1416,19 @@ mod tests {
         for k in ["id_slot", "cache_prompt", "chat_template_kwargs"] {
             assert!(v.get(k).is_none(), "{k}");
         }
-        assert_eq!(v["temperature"], 0.2, "OpenAI accepts the standard parameters");
+        assert!(v.get("temperature").is_none(), "the reasoning models refuse it");
+        let m: Value = serde_json::from_slice(
+            &rewrite_openai(br#"{"max_tokens":900,"top_p":0.9,"messages":[]}"#, "o4").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(m["max_completion_tokens"], 900);
+        assert!(m.get("max_tokens").is_none() && m.get("top_p").is_none(), "{m}");
+        let both: Value = serde_json::from_slice(
+            &rewrite_openai(br#"{"max_tokens":900,"max_completion_tokens":50,"messages":[]}"#, "o4").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(both["max_completion_tokens"], 50, "an explicit new-style value wins");
+        assert!(both.get("max_tokens").is_none());
         let whole: Value = serde_json::from_slice(&rewrite_openai(br#"{"messages":[]}"#, "gpt-5").unwrap()).unwrap();
         assert!(whole.get("stream_options").is_none(), "only a stream needs it");
     }
@@ -1291,10 +1449,78 @@ mod tests {
 
     #[test]
     fn cost_is_the_providers_or_the_token_counts_at_the_price() {
-        assert_eq!(call_cost(OPENROUTER, None, 1000, 1000, 0.42), 0.42);
-        // 1M in at $5 plus 200k out at $25.
-        assert!((call_cost(ANTHROPIC, Some((5.0, 25.0)), 1_000_000, 200_000, 99.0) - 10.0).abs() < 1e-9);
-        assert!((call_cost(OPENAI, Some((1.25, 10.0)), 2000, 500, 0.0) - 0.0075).abs() < 1e-12);
+        assert_eq!(settle(OPENROUTER, None, Some((1000, 1000, Some(0.42))), 0, 0, 5.0), (1000, 1000, 0.42, false));
+        // 1M in at $5 plus 200k out at $25; a stated cost from Anthropic is not trusted over the table.
+        let (_, _, cost, est) = settle(ANTHROPIC, Some((5.0, 25.0)), Some((1_000_000, 200_000, Some(99.0))), 0, 0, 5.0);
+        assert!((cost - 10.0).abs() < 1e-9 && !est);
+        let (_, _, cost, _) = settle(OPENAI, Some((1.25, 10.0)), Some((2000, 500, None)), 0, 0, 5.0);
+        assert!((cost - 0.0075).abs() < 1e-12);
+        // OpenRouter with usage but no stated cost falls back on its price.
+        let (_, _, cost, est) = settle(OPENROUTER, Some((2.0, 8.0)), Some((1_000_000, 0, None)), 0, 0, 5.0);
+        assert!((cost - 2.0).abs() < 1e-9 && !est);
+    }
+
+    #[test]
+    fn a_call_without_usage_is_estimated_never_free() {
+        // Cut stream, price known: bytes / 3 at the price, marked estimated.
+        let (p, c, cost, est) = settle(OPENAI, Some((1.0, 10.0)), None, 3000, 30_001, 5.0);
+        assert_eq!((p, c, est), (1000, 10_001, true));
+        assert!((cost - (1000.0 * 1.0 + 10_001.0 * 10.0) / 1e6).abs() < 1e-12);
+        assert!(cost > 0.0);
+        // No price at all: the rest of the allowance, so the next call is refused.
+        let (_, _, cost, est) = settle(OPENROUTER, None, None, 300, 300, 3.75);
+        assert_eq!((cost, est), (3.75, true));
+        assert!(cap_refusal(1.25 + cost, 5.0).is_some());
+        // Tokens known, no cost and no price: same rule.
+        assert_eq!(settle(OPENROUTER, None, Some((10, 10, None)), 0, 0, 2.0), (10, 10, 2.0, true));
+        // An old ledger line without the flag still reads.
+        let old: CloudCall = serde_json::from_str(
+            r#"{"provider":"openrouter","model":"m","prompt_tokens":1,"completion_tokens":1,"cost_usd":0.1}"#,
+        )
+        .unwrap();
+        assert!(!old.estimated);
+    }
+
+    #[test]
+    fn openrouter_prices_are_read_from_its_public_list() {
+        let list = json!({"data": [
+            {"id": "vendor/a", "pricing": {"prompt": "0.000003", "completion": "0.000015"}},
+            {"id": "vendor/b", "pricing": {"prompt": "x", "completion": "0"}}]});
+        let (i, o) = openrouter_price_in(&list, "vendor/a").unwrap();
+        assert!((i - 3.0).abs() < 1e-9 && (o - 15.0).abs() < 1e-9);
+        assert_eq!(openrouter_price_in(&list, "vendor/b"), None);
+        assert_eq!(openrouter_price_in(&list, "absent"), None);
+    }
+
+    #[test]
+    fn an_interim_head_is_skipped_even_when_the_final_one_arrived_with_it() {
+        let both = b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\ndata: x";
+        let (status, _, end) = parse_upstream_head(both).unwrap();
+        assert_eq!(status, 100);
+        let rest = &both[end..];
+        let (status, ct, end2) = parse_upstream_head(rest).unwrap();
+        assert_eq!((status, ct.as_str()), (200, "text/event-stream"));
+        assert_eq!(&rest[end2..], b"data: x");
+        assert!(curl_config(OPENAI, "u", "k", Some(b"{}")).contains("header = \"Expect:\""));
+    }
+
+    #[test]
+    fn blocking_commands_leave_the_async_workers() {
+        // Each of these waits on a process or holds the planning lock for
+        // seconds; run on an async worker, it parks a thread every other
+        // command shares.
+        let sources = [
+            (include_str!("engine.rs"), ["server_start", "server_stop"].as_slice()),
+            (include_str!("engines.rs"), ["engine_start", "engine_stop", "engines_stop_all_extras"].as_slice()),
+            (include_str!("cloud.rs"), ["cloud_key_set", "cloud_key_clear", "cloud_key_status", "cloud_models"].as_slice()),
+        ];
+        for (src, names) in sources {
+            for name in names {
+                let at = src.find(&format!("pub async fn {name}(")).unwrap_or_else(|| panic!("{name}"));
+                let body = &src[at..at + src[at..].find("\n}\n").unwrap()];
+                assert!(body.contains("spawn_blocking") || body.contains("blocking(move"), "{name} blocks a worker");
+            }
+        }
     }
 
     #[test]
@@ -1419,6 +1645,60 @@ mod tests {
         assert!(upstream_saw.contains("Authorization: Bearer sk-proj-test-0001"), "{upstream_saw}");
         assert!(upstream_saw.contains("\"include_usage\":true") && !upstream_saw.contains("id_slot"), "{upstream_saw}");
         assert!((calls.lock().unwrap()[0].cost_usd - 0.0075).abs() < 1e-12);
+        stop_proxy(&stop, port);
+    }
+
+    #[test]
+    fn a_cut_stream_is_billed_an_estimate_and_marked() {
+        // No usage chunk, no [DONE]: the connection just ends.
+        let sse = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"par\"}}]}\n\n";
+        let (up, _seen) = fake_upstream_with(200, "text/event-stream", sse.to_string());
+        let ledger = scratch_ledger("cut");
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let port = spawn_proxy(
+            ctx_for(OPENAI, "gpt-5", Some((1.25, 10.0)), format!("http://127.0.0.1:{up}/v1/chat/completions"),
+                    ledger.clone(), Ok("sk-proj-test-0001".into()), calls.clone()),
+            stop.clone(),
+        )
+        .unwrap();
+        let _ = post_json(port, &json!({"stream": true, "messages": [{"role": "user", "content": "hi"}]}));
+        let c = calls.lock().unwrap()[0].clone();
+        assert!(c.estimated && c.cost_usd > 0.0, "{c:?}");
+        assert!(ledger_load(&ledger, "2026-09-23").calls[0].estimated);
+        stop_proxy(&stop, port);
+    }
+
+    #[test]
+    fn an_interim_continue_from_upstream_is_passed_over() {
+        let l = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let up = l.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut s, _)) = l.accept() {
+                let (head, rest) = crate::relay::read_head(&mut s).unwrap();
+                let len = crate::relay::content_length(&head).unwrap_or(0);
+                let _ = crate::relay::read_body(&mut s, rest, len);
+                let body = r#"{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"cost":0.01}}"#;
+                // Both heads in one write: the proxy must not wait for more.
+                let _ = write!(
+                    s,
+                    "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        let ledger = scratch_ledger("continue");
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let port = spawn_proxy(
+            ctx(format!("http://127.0.0.1:{up}/v1/chat/completions"), ledger, Ok("sk-test-key-123".into()), calls.clone()),
+            stop.clone(),
+        )
+        .unwrap();
+        let reply = post(port, r#"{"messages":[]}"#);
+        assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+        assert!(reply.contains("\"content\":\"ok\""), "{reply}");
+        assert_eq!(calls.lock().unwrap()[0].cost_usd, 0.01);
         stop_proxy(&stop, port);
     }
 }

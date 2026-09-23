@@ -700,6 +700,20 @@ const dict: Record<string, { en: string; fr: string }> = {
     en: "No installed model can run on this Mac.",
     fr: "Aucun modèle installé ne peut tourner sur ce Mac.",
   },
+  "teams.engines": { en: "Running engines", fr: "Moteurs en cours" },
+  "teams.enginesHint": {
+    en: "Each extra engine holds a model in memory until it is stopped",
+    fr: "Chaque moteur supplémentaire garde un modèle en mémoire jusqu'à son arrêt",
+  },
+  "teams.enginesNone": { en: "No engine running.", fr: "Aucun moteur en cours." },
+  "teams.enginePrimary": { en: "primary", fr: "principal" },
+  "teams.engineCloud": { en: "cloud", fr: "cloud" },
+  "teams.engineStop": { en: "Stop", fr: "Arrêter" },
+  "teams.gb": { en: "GB", fr: "Go" },
+  "teams.backToPrimary": {
+    en: "%m is no longer in the active team: this teammate now runs on the current model.",
+    fr: "%m ne fait plus partie de l'équipe active : ce coéquipier tourne désormais sur le modèle en cours.",
+  },
   "teams.loading": { en: "Loading %s…", fr: "Chargement de %s…" },
   "teams.fellBack": {
     en: "%m is not available (%e): this turn runs on the current model.",
@@ -769,6 +783,10 @@ const dict: Record<string, { en: string; fr: string }> = {
   "cloud.sent": {
     en: "Sent to %p (%m) · %n tokens · $%c",
     fr: "Envoyé à %p (%m) · %n tokens · $%c",
+  },
+  "cloud.estimated": {
+    en: " (estimated: the provider sent no usage, counted against the cap from the bytes exchanged)",
+    fr: " (estimé : le fournisseur n'a pas renvoyé d'usage, compté au plafond d'après les octets échangés)",
   },
   "cloud.redacted": {
     en: "%n secret(s) masked before sending to %p.",

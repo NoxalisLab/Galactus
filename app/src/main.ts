@@ -40,6 +40,8 @@ import {
   NO_CLOUD,
   type CloudState,
   engineFor,
+  enginesToStop,
+  presetEngineIds,
   mergePresets,
   presetsFromRegistry,
   resolveRole,
@@ -431,6 +433,8 @@ function pruneConversations(): void {
     }
     store.release(victimId);
     ids.delete(victimId);
+    // Its teammates' engines go with it once no other thread runs on them.
+    void reapEngines();
   }
 }
 
@@ -1095,6 +1099,42 @@ async function saveTeams(activeId: string, list: TeamPreset[]): Promise<void> {
   teamPresets = mergePresets(shippedPresets, serializeUserPresets(list));
   teamPresetId = activePreset(teamPresets, activeId) ? activeId : "";
   publishTeam();
+  // Off, another preset, or a role moved to another model: whatever the team
+  // no longer names is memory (or a paid proxy) held for nothing.
+  await reapEngines();
+}
+
+/** Engines started for a spawn whose teammate does not exist yet. */
+const pendingEngines = new Set<string>();
+
+/**
+ * Stop the additional engines nothing should hold any more (teams.ts,
+ * enginesToStop). A model a teammate is generating on right now is kept
+ * until its turn ends: stopping it would kill the answer mid-sentence.
+ * Never throws: an engine that refuses to stop is reported by the list in the
+ * settings, not by an error in whatever called this.
+ */
+async function reapEngines(): Promise<void> {
+  let engines: EngineInfo[];
+  try { engines = await api.enginesStatus(); } catch { return; }
+  const p = activePreset(teamPresets, teamPresetId);
+  const inUse = new Set<string>();
+  const keep = new Set<string>(pendingEngines);
+  for (const th of threads.values()) {
+    const id = th.sub?.model_id;
+    if (!id) continue;
+    inUse.add(id);
+    if (th.generating) keep.add(id);
+  }
+  const stop = enginesToStop(engines, p ? presetEngineIds(p) : null, inUse, keep);
+  if (!stop.length) return;
+  const extras = engines.filter((e) => !e.primary).length;
+  if (!p && stop.length === extras) {
+    try { await api.enginesStopAllExtras(); return; } catch { /* older backend: one by one */ }
+  }
+  for (const id of stop) {
+    try { await api.engineStop(id); } catch { /* shown as still running in the settings */ }
+  }
 }
 
 /**
@@ -1131,6 +1171,16 @@ async function routeThread(sess: Thread): Promise<void> {
   if (!inst) return;
   if (!want || want === server.model_id) {
     if (inst.enginePort() !== server.port || inst.isCloud()) inst.setEngine(server.port, null);
+    return;
+  }
+  // Teams turned off, or the active preset no longer names this model: the
+  // teammate comes back to the primary instead of restarting an engine the
+  // user just let go of.
+  if (!presetEngineIds(activePreset(teamPresets, teamPresetId)).has(want)) {
+    if (inst.enginePort() !== server.port || inst.isCloud()) {
+      inst.setEngine(server.port, null);
+      store.pushNotice(sess, t("teams.backToPrimary").replace("%m", modelName(want)));
+    }
     return;
   }
   try {
@@ -2939,16 +2989,21 @@ const teamDirectory: AgentDirectory = {
         try {
           // Started now, not at its first turn: loading takes tens of seconds
           // and the orchestrator usually spawns everyone before asking anyone.
+          pendingEngines.add(r.modelId);
           await api.engineStart(r.modelId, teamRole.trim().toLowerCase());
           team = { role: teamRole.trim().toLowerCase(), modelId: r.modelId };
         } catch (e: any) {
+          pendingEngines.delete(r.modelId);
           note = `${modelName(r.modelId)} could not be started for role "${teamRole.trim()}" (${String(e?.message ?? e)}), so this teammate runs on the current model.`;
         }
       }
     }
     const sub = store.addSubAgent(conv, name, role, brief, team);
-    if (!sub) return `the team is full (${store.teamLimit()} members); reuse one with ask_agent`;
-    const th = threadOf(conv, sub);
+    const th = sub ? threadOf(conv, sub) : null;
+    // The thread now holds the engine (or nothing does, and the next reap
+    // stops it): either way the spawn no longer needs protecting.
+    if (team) pendingEngines.delete(team.modelId);
+    if (!sub || !th) return `the team is full (${store.teamLimit()} members); reuse one with ask_agent`;
     store.pushNotice(threadOf(conv), t("team.created").replace("%n", sub.name).replace("%r", sub.role || "-"));
     if (conv.id === store.current().id) { paintChat(); scrollChatDown(); }
     render();
@@ -4492,6 +4547,9 @@ function settingsView(): HTMLElement {
       presets: () => teamPresets,
       activeId: () => teamPresetId,
       save: saveTeams,
+      engines: () => api.enginesStatus(),
+      stopEngine: (id) => api.engineStop(id),
+      modelName,
       cloud: {
         status: async () => {
           const st = await api.settingsGet();
@@ -5435,6 +5493,7 @@ function convRowEl(m: ConvMeta, activeId: string): HTMLElement {
         if (th.holdsSlot) { th.holdsSlot = false; releaseSlot(); }
         threads.delete(th.key);
       }
+      void reapEngines();
       const wasActive = store.current().id === delId;
       await store.remove(delId);
       if (wasActive) { focusAgent = null; hideActivity(); }
@@ -5754,7 +5813,7 @@ async function boot() {
         .replace("%p", providerName(cloudProvider(sess.sub?.model_id)))
         .replace("%m", slug)
         .replace("%n", tokens.toLocaleString(getLang() === "fr" ? "fr-FR" : "en-US"))
-        .replace("%c", cost.toFixed(cost < 0.01 ? 4 : 2))
+        .replace("%c", cost.toFixed(cost < 0.01 ? 4 : 2)) + (p?.estimated ? t("cloud.estimated") : "")
     );
     if (sess.key === active().key || (!!sess.sub && active().key === threadKey(sess.conv.id))) paintChat();
   });

@@ -482,6 +482,42 @@ export function portFor(modelId: string | null | undefined, engines: EngineInfo[
   return engineFor(modelId, engines)?.port ?? primaryPort;
 }
 
+/** The engine ids a preset's roles run on: local model ids and cloud proxy ids. */
+export function presetEngineIds(preset: TeamPreset | null): Set<string> {
+  const out = new Set<string>();
+  if (!preset) return out;
+  for (const t of Object.values(preset.roles)) {
+    if (isCloud(t)) {
+      if (t.model) out.add(cloudModelId(t));
+    } else {
+      out.add(t);
+    }
+  }
+  return out;
+}
+
+/**
+ * The additional engines nothing should be holding any more.
+ *
+ * An extra engine is a whole model resident in memory (or a proxy that can
+ * spend money), so it stays only while BOTH hold: the active preset still
+ * names its model (`presetIds` null means teams are off), and a live thread
+ * still runs on it. The primary is never stopped here: server_stop owns it.
+ * `pending` protects an engine started for a spawn whose thread does not
+ * exist yet.
+ */
+export function enginesToStop(
+  engines: EngineInfo[],
+  presetIds: Set<string> | null,
+  inUse: Set<string>,
+  pending: Set<string> = new Set()
+): string[] {
+  return engines
+    .filter((e) => !e.primary && !pending.has(e.modelId))
+    .filter((e) => !presetIds || !presetIds.has(e.modelId) || !inUse.has(e.modelId))
+    .map((e) => e.modelId);
+}
+
 /**
  * Per-engine memory beyond the weights: KV cache and compute arena.
  *
@@ -646,14 +682,91 @@ export function teamToolText(
  * read on this Mac must not leave it just because a teammate is remote. Copies,
  * never mutates: the local history keeps what the user's files really say.
  */
-export function redactMessages<M extends { content: string | null }>(messages: M[]): { messages: M[]; removed: number } {
+export function redactMessages<M extends { content: unknown; tool_calls?: unknown }>(
+  messages: M[]
+): { messages: M[]; removed: number } {
   let removed = 0;
-  const out = messages.map((m) => {
-    if (typeof m.content !== "string" || !m.content) return m;
-    const r = redact(m.content);
-    if (r.removed === 0) return m;
+  const text = (v: string): string => {
+    const r = redact(v);
     removed += r.removed;
-    return { ...m, content: r.text };
+    return r.removed ? r.text : v;
+  };
+  const out = messages.map((m) => {
+    const before = removed;
+    let next: M = m;
+    // Plain text, or multipart content whose text parts are masked one by one
+    // (an image part carries no text to mask and goes through untouched).
+    if (typeof m.content === "string" && m.content) {
+      next = { ...next, content: text(m.content) };
+    } else if (Array.isArray(m.content)) {
+      next = {
+        ...next,
+        content: m.content.map((part: unknown) =>
+          isRecord(part) && part["type"] === "text" && typeof part["text"] === "string"
+            ? { ...part, text: text(part["text"] as string) }
+            : part
+        ),
+      };
+    }
+    // What the model itself wrote into a tool call is history too: a
+    // write_file whose content holds a key would carry it to the provider on
+    // every later turn.
+    if (Array.isArray(m.tool_calls)) {
+      next = {
+        ...next,
+        tool_calls: m.tool_calls.map((c: unknown) => {
+          if (!isRecord(c) || !isRecord(c["function"])) return c;
+          const fn = c["function"] as Record<string, unknown>;
+          if (typeof fn["arguments"] !== "string") return c;
+          return { ...c, function: { ...fn, arguments: redactArguments(fn["arguments"] as string, text) } };
+        }),
+      };
+    }
+    // Untouched messages keep their identity: nothing to copy, nothing to say.
+    return removed === before ? m : next;
   });
   return { messages: out, removed };
+}
+
+/**
+ * Mask a tool call's JSON arguments value by value, so the result is still
+ * the JSON the provider expects. Arguments that do not parse are masked as
+ * plain text, which is what they are.
+ */
+function redactArguments(args: string, text: (v: string) => string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(args);
+  } catch {
+    return text(args);
+  }
+  let changed = false;
+  const walk = (v: unknown): unknown => {
+    if (typeof v === "string") {
+      const r = text(v);
+      if (r !== v) changed = true;
+      return r;
+    }
+    if (Array.isArray(v)) return v.map(walk);
+    if (isRecord(v)) {
+      const o: Record<string, unknown> = {};
+      for (const [k, x] of Object.entries(v)) {
+        // A key named like a secret ({"api_key": "…"}) is only recognised by
+        // redact() with its name beside it, so the pair is checked as text.
+        if (typeof x === "string") {
+          const pair = text(`${k}=${x}`);
+          if (pair !== `${k}=${x}`) {
+            changed = true;
+            o[k] = pair.startsWith(`${k}=`) ? pair.slice(k.length + 1) : pair;
+            continue;
+          }
+        }
+        o[k] = walk(x);
+      }
+      return o;
+    }
+    return v;
+  };
+  const out = walk(parsed);
+  return changed ? JSON.stringify(out) : args;
 }

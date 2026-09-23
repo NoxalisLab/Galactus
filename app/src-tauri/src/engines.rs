@@ -27,8 +27,11 @@ pub(crate) struct HeldEngine {
     /// planned footprint and the measured RSS, so a plan that was optimistic
     /// is corrected by what the process actually took.
     pub(crate) bytes: u64,
-    /// False while the engine is still loading. Its memory is then not yet out
-    /// of vm_stat's free pages, so the live reading still counts it as free.
+    /// What the process measurably holds already (RSS), 0 when unknown. While
+    /// an engine loads this grows toward `bytes`.
+    pub(crate) resident: u64,
+    /// False while the engine is still loading. What it has not yet allocated
+    /// is still counted as free by vm_stat.
     pub(crate) allocated: bool,
 }
 
@@ -134,9 +137,10 @@ pub(crate) fn planning_lock() -> std::sync::MutexGuard<'static, ()> {
 /// bound in first keeps the sum of every engine under BOTH bounds, which is
 /// the guarantee that the Metal working set is never oversubscribed.
 ///
-/// The LIVE reading (vm_stat) already excludes an engine that has allocated,
-/// so only the engines still loading are subtracted from it: counting a loaded
-/// engine twice would refuse a teammate that fits.
+/// The LIVE reading (vm_stat) already excludes whatever an engine has
+/// allocated, so what comes off it is only what the engines still loading have
+/// NOT yet taken: their plan minus their measured RSS. Subtracting their whole
+/// plan counted the resident part twice and refused a teammate that fits.
 ///
 /// `ram_gb` is left alone: it is what `min_ram_gb` gates are written against,
 /// a property of the Mac and not of the moment.
@@ -145,7 +149,11 @@ pub(crate) fn limits_after(machine: MachineLimits, held: &[HeldEngine]) -> Machi
         return machine;
     }
     let total: u64 = held.iter().map(|h| h.bytes).sum();
-    let pending: u64 = held.iter().filter(|h| !h.allocated).map(|h| h.bytes).sum();
+    let pending: u64 = held
+        .iter()
+        .filter(|h| !h.allocated)
+        .map(|h| h.bytes.saturating_sub(h.resident))
+        .sum();
     let installed = machine.ram_gb * 1_000_000_000;
     let hardware = engine_budget_bytes(installed, MachineLimits { available: None, ..machine });
     MachineLimits {
@@ -261,11 +269,9 @@ pub(crate) fn held_engines(skip_primary: bool, skip_model: Option<&str>) -> Vec<
     }
     found
         .into_iter()
-        .map(|(model_id, role, planned, pid, allocated)| HeldEngine {
-            model_id,
-            role,
-            bytes: planned.max(pid.and_then(rss_bytes).unwrap_or(0)),
-            allocated,
+        .map(|(model_id, role, planned, pid, allocated)| {
+            let resident = pid.and_then(rss_bytes).unwrap_or(0);
+            HeldEngine { model_id, role, bytes: planned.max(resident), resident, allocated }
         })
         .collect()
 }
@@ -388,6 +394,14 @@ fn emit_engine(app: &AppHandle, model_id: &str, phase: &str, extra: Value) {
 /// `galactus://engine`) for "ready" before sending it anything.
 #[tauri::command]
 pub async fn engine_start(app: AppHandle, model_id: String, role: String) -> Result<EngineInfo, String> {
+    // A blocking thread: the start holds the planning lock (a std Mutex)
+    // through seconds of preflight, and a cloud start may fetch a price list.
+    tauri::async_runtime::spawn_blocking(move || engine_start_blocking(app, model_id, role))
+        .await
+        .map_err(|e| format!("the engine start thread died: {e}"))?
+}
+
+fn engine_start_blocking(app: AppHandle, model_id: String, role: String) -> Result<EngineInfo, String> {
     let model_id = model_id.trim().to_string();
     if model_id.is_empty() {
         return Err("engine_start: no model id".into());
@@ -661,6 +675,13 @@ fn watch_extra(app: AppHandle, model_id: String, generation: u64, port: u16, log
 /// app (the relay, the status poller) is built around.
 #[tauri::command]
 pub async fn engine_stop(model_id: String) -> Result<(), String> {
+    // child.wait() lasts as long as the engine's teardown.
+    tauri::async_runtime::spawn_blocking(move || engine_stop_blocking(model_id))
+        .await
+        .map_err(|e| format!("the engine stop thread died: {e}"))?
+}
+
+fn engine_stop_blocking(model_id: String) -> Result<(), String> {
     let taken = {
         let mut map = extras().lock().unwrap_or_else(|e| e.into_inner());
         map.remove(model_id.trim())
@@ -708,6 +729,37 @@ pub fn engines_status() -> Vec<EngineInfo> {
     out
 }
 
+/// Stop every teammate engine and cloud proxy, leaving the primary running.
+#[tauri::command]
+pub async fn engines_stop_all_extras() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(stop_all)
+        .await
+        .map_err(|e| format!("the engine stop thread died: {e}"))
+}
+
+/// Remove the LOCAL teammate engine for `model_id` from the table, if any.
+/// A cloud proxy is left alone: it holds no memory and loads no weights.
+pub(crate) fn take_local_extra(map: &mut HashMap<String, ExtraEngine>, model_id: &str) -> Option<ExtraEngine> {
+    if map.get(model_id).is_some_and(|e| e.kind == "local") {
+        map.remove(model_id)
+    } else {
+        None
+    }
+}
+
+/// Stop the teammate engine running `model_id`, before the primary loads the
+/// same model. Blocking: waits for the process to go.
+pub(crate) fn stop_extra_serving(model_id: &str) {
+    let taken = {
+        let mut map = extras().lock().unwrap_or_else(|e| e.into_inner());
+        take_local_extra(&mut map, model_id)
+    };
+    if let Some(mut child) = taken.and_then(|mut e| e.child.take()) {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
 /// Kill every teammate engine. Called on app exit, beside the primary.
 pub(crate) fn stop_all() {
     let children: Vec<Child> = {
@@ -741,7 +793,7 @@ mod budget_tests {
     }
 
     fn holder(id: &str, role: &str, gb: u64) -> HeldEngine {
-        HeldEngine { model_id: id.into(), role: role.into(), bytes: gb * GB, allocated: true }
+        HeldEngine { model_id: id.into(), role: role.into(), bytes: gb * GB, resident: gb * GB, allocated: true }
     }
 
     fn plan(entry: &Value, machine: MachineLimits, held: &[HeldEngine]) -> Result<CachePlan, String> {
@@ -805,8 +857,15 @@ mod budget_tests {
         let m = MachineLimits { ram_gb: 64, available: Some(40 * GB), gpu_working_set: None };
         let loaded = limits_after(m, &[holder("a", "primary", 10)]);
         assert_eq!(loaded.available, Some(40 * GB));
-        let loading = HeldEngine { allocated: false, ..holder("a", "primary", 10) };
-        assert_eq!(limits_after(m, &[loading]).available, Some(30 * GB));
+        // Loading, nothing resident yet: its whole plan is still to come out.
+        let loading = HeldEngine { allocated: false, resident: 0, ..holder("a", "primary", 10) };
+        assert_eq!(limits_after(m, &[loading.clone()]).available, Some(30 * GB));
+        // Loading, 6 of its 10 GB already resident: those 6 are already out of
+        // vm_stat, so only the 4 still to come are taken off.
+        let halfway = HeldEngine { resident: 6 * GB, ..loading };
+        assert_eq!(limits_after(m, &[halfway.clone()]).available, Some(36 * GB));
+        // The hardware bound still counts the whole plan.
+        assert_eq!(limits_after(m, &[halfway]).gpu_working_set, Some(44_800_000_000 - 10 * GB));
     }
 
     #[test]
@@ -850,6 +909,20 @@ mod idempotence_tests {
         e.port = 8741;
         let Claim::Existing(info) = claim(&mut map, "m", "coder", 2) else { panic!() };
         assert_eq!((info.port, info.phase.as_str()), (8741, "ready"));
+    }
+
+    #[test]
+    fn the_primary_takes_over_a_local_teammate_but_not_a_cloud_one() {
+        let mut map = HashMap::new();
+        claim(&mut map, "qwen38-27b", "planner", 1);
+        claim(&mut map, "cloud:openrouter/x", "expert", 2);
+        map.get_mut("cloud:openrouter/x").unwrap().kind = "cloud".into();
+        let taken = take_local_extra(&mut map, "qwen38-27b").expect("the teammate is handed over");
+        assert_eq!(taken.role, "planner");
+        assert!(!map.contains_key("qwen38-27b"), "no longer counted, no longer listed");
+        assert!(take_local_extra(&mut map, "cloud:openrouter/x").is_none());
+        assert!(take_local_extra(&mut map, "absent").is_none());
+        assert_eq!(map.len(), 1);
     }
 
     #[test]

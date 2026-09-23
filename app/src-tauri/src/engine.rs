@@ -1251,6 +1251,16 @@ pub(crate) fn spawn_engine_watchdog(srv_pid: u32) {
 // must not run on the main thread.
 #[tauri::command]
 pub async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -> Result<(), String> {
+    // On a blocking thread, not a runtime worker: the start reads the engine
+    // binary and every dylib, probes the machine and holds the planning lock
+    // (a std Mutex) through all of it, which is seconds. On an async worker
+    // that parks the thread every other command is waiting on.
+    tauri::async_runtime::spawn_blocking(move || server_start_blocking(app, model_id, cache_gb))
+        .await
+        .map_err(|e| format!("the engine start thread died: {e}"))?
+}
+
+fn server_start_blocking(app: AppHandle, model_id: String, cache_gb: Option<u64>) -> Result<(), String> {
     // One start at a time, and the second caller is TOLD rather than queued.
     //
     // Two clicks on two cards ran two of these concurrently, and the window
@@ -1282,9 +1292,14 @@ pub async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64
     // held until the new engine is recorded in the state, which is where the
     // next plan reads it. No await happens under it.
     let _planning = crate::engines::planning_lock();
+    // The same model already running as a teammate is stopped first. Planned
+    // beside it, the primary would load the same weights a second time; and
+    // once the primary serves it, engine_start hands the primary out for that
+    // model anyway, so the teammate would only be holding memory.
+    crate::engines::stop_extra_serving(&model_id);
     // What the teammate engines hold. The primary itself is not in it: it is
     // about to be replaced, and its memory comes back with the stop below.
-    let held = crate::engines::held_engines(true, None);
+    let held = crate::engines::held_engines(true, Some(&model_id));
     let launch = prepare_launch(&root, &model_id, cache_gb, true, &held)?;
 
     // Every deterministic preflight has succeeded. Only now may this request
@@ -1493,10 +1508,13 @@ pub async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64
     Ok(())
 }
 
-// Async: child.wait() can block for the whole engine teardown.
+// Async, and on a blocking thread: child.wait() can block for the whole
+// engine teardown.
 #[tauri::command]
 pub async fn server_stop() -> Result<(), String> {
-    server_stop_impl()
+    tauri::async_runtime::spawn_blocking(server_stop_impl)
+        .await
+        .map_err(|e| format!("the engine stop thread died: {e}"))?
 }
 
 pub(crate) fn server_stop_impl() -> Result<(), String> {

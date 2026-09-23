@@ -309,6 +309,9 @@ pub(crate) struct StreamTranslator {
     finish: Option<&'static str>,
     sent_text: bool,
     done: bool,
+    /// message_stop was seen: the usage counted is the final one. Without it
+    /// (a cut stream, an error event) the counts are partial.
+    stopped: bool,
 }
 
 impl StreamTranslator {
@@ -342,6 +345,11 @@ impl StreamTranslator {
     #[cfg(test)]
     pub(crate) fn is_done(&self) -> bool {
         self.done
+    }
+
+    /// Whether the answer ended normally, so its usage is the final count.
+    pub(crate) fn completed(&self) -> bool {
+        self.stopped
     }
 
     pub(crate) fn feed(&mut self, bytes: &[u8]) -> String {
@@ -453,6 +461,7 @@ impl StreamTranslator {
             }
             "message_stop" => {
                 self.done = true;
+                self.stopped = true;
                 let finish = self.finish.unwrap_or("stop");
                 let mut out = String::new();
                 if finish == "content_filter" && !self.sent_text {

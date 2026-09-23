@@ -169,6 +169,8 @@ export interface CloudCall {
   prompt_tokens: number;
   completion_tokens: number;
   cost_usd: number;
+  /** True when the provider sent no usage and the cost is an estimate from bytes. */
+  estimated?: boolean;
 }
 
 export interface ServerStatus {
@@ -533,6 +535,11 @@ export const api = {
   },
   /** Stop an additional engine. The primary is stopped by serverStop only. */
   engineStop: (modelId: string) => invoke<void>("engine_stop", { modelId }),
+  /**
+   * Stop every additional engine in one call, when the backend has it; the
+   * caller falls back to engineStop per engine when it does not.
+   */
+  enginesStopAllExtras: () => invoke<void>("engines_stop_all_extras"),
   /** Every running engine, primary first. Empty rather than an error when unknown. */
   enginesStatus: async (): Promise<EngineInfo[]> => {
     const raw = await invoke<unknown>("engines_status");
@@ -803,7 +810,6 @@ export function onEvent(
 
 // ---- llama-server OpenAI-compatible client ----
 
-/** Real context window of the loaded model (llama-server /props). */
 /**
  * The port of the engine serving `modelId`, from a fresh engines_status.
  *
@@ -820,6 +826,7 @@ export async function portFor(modelId: string | null | undefined, primaryPort: n
   }
 }
 
+/** Real context window of the loaded model (llama-server /props). */
 export async function fetchCtxSize(port: number): Promise<number> {
   const r = await fetch(`http://127.0.0.1:${port}/props`);
   if (!r.ok) throw new Error(`server ${r.status}`);

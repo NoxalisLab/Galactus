@@ -2050,3 +2050,9 @@ html.pane-dragging .pvw-frame { pointer-events: none; }
 .team-price.missing > span { color: var(--warn); }
 .team-note.warn { color: var(--warn); }
 .cloud-prov .set-actions { flex-wrap: wrap; justify-content: flex-end; max-width: 60%; }
+.team-engine-list { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.team-engine { display: grid; grid-template-columns: 1fr 90px 70px 70px 76px; align-items: center; gap: 10px; font-size: 12px; color: var(--tx2); }
+.team-engine .mono { font-size: 11px; color: var(--dim2); }
+.team-engine .ph-ready { color: var(--good); }
+.team-engine .ph-starting { color: var(--warn); }
+.team-engine .ph-failed { color: var(--bad); }

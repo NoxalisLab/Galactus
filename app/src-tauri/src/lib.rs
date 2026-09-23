@@ -2861,6 +2861,7 @@ pub fn run() {
             engines::engine_start,
             engines::engine_stop,
             engines::engines_status,
+            engines::engines_stop_all_extras,
             cloud::cloud_key_set,
             cloud::cloud_key_clear,
             cloud::cloud_key_status,

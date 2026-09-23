@@ -20,6 +20,7 @@ import {
   isCloud,
   priceFor,
   type CloudState,
+  type EngineInfo,
   presetFootprint,
   roleKey,
   type SizedModel,
@@ -45,6 +46,12 @@ export interface TeamsViewDeps {
   /** Persist both settings and re-apply them to the live agents. */
   save(activeId: string, presets: TeamPreset[]): Promise<void>;
   cloud: CloudDeps;
+  /** Every running engine, primary first (engines_status). */
+  engines(): Promise<EngineInfo[]>;
+  /** Stop one additional engine. */
+  stopEngine(modelId: string): Promise<void>;
+  /** Display name of a model or cloud id. */
+  modelName(id: string): string;
 }
 
 /** The cloud providers block. Keys are write-only: nothing here can read one back. */
@@ -197,8 +204,37 @@ export function teamsSection(d: TeamsViewDeps): HTMLElement {
       </div>
       <div class="team-cards">${presets.length ? cards : `<div class="team-note">${esc(t("teams.none"))}</div>`}</div>
       ${CLOUD_PROVIDERS.map((cp) => datalist(cp.id)).join("")}
+      <div class="team-engines"></div>
       <div class="cloudbox"></div>`;
+    void paintEngines();
     void paintCloud();
+  };
+
+  /**
+   * What is running right now, with a way to stop each extra engine. A team
+   * holds whole models in memory; the user must be able to see them and let
+   * one go without stopping the conversation's own model.
+   */
+  const paintEngines = async (): Promise<void> => {
+    const host = box.querySelector<HTMLElement>(".team-engines");
+    if (!host) return;
+    let engines: EngineInfo[] = [];
+    try { engines = await d.engines(); } catch { /* shown as none */ }
+    const rows = engines
+      .map((e) => {
+        const mem = e.kind === "cloud" ? t("teams.engineCloud") : e.footprintBytes > 0 ? `${gb(e.footprintBytes)} ${t("teams.gb")}` : "-";
+        const who = e.primary ? t("teams.enginePrimary") : e.role || "-";
+        return `<div class="team-engine">
+          <span class="grow">${esc(d.modelName(e.modelId))}</span>
+          <span class="mono">${esc(who)}</span>
+          <span class="mono ph-${esc(e.phase)}">${esc(e.phase)}</span>
+          <span class="mono">${esc(mem)}</span>
+          ${e.primary ? `<span class="bs-gap"></span>` : `<button class="bs" data-stopengine="${esc(e.modelId)}">${esc(t("teams.engineStop"))}</button>`}
+        </div>`;
+      })
+      .join("");
+    host.innerHTML = `<div class="set-row"><div class="grow"><b>${esc(t("teams.engines"))}</b><span>${esc(t("teams.enginesHint"))}</span>
+      ${engines.length ? `<div class="team-engine-list">${rows}</div>` : `<span>${esc(t("teams.enginesNone"))}</span>`}</div></div>`;
   };
 
   /**
@@ -330,6 +366,15 @@ export function teamsSection(d: TeamsViewDeps): HTMLElement {
   });
 
   box.addEventListener("click", (e) => {
+    const stop = (e.target as HTMLElement).closest<HTMLElement>("[data-stopengine]");
+    if (stop) {
+      stop.setAttribute("disabled", "");
+      void d
+        .stopEngine(stop.dataset.stopengine!)
+        .catch((err: any) => d.toast(String(err?.message ?? err)))
+        .then(paintEngines);
+      return;
+    }
     const cb = (e.target as HTMLElement).closest<HTMLElement>(".cloudbox button");
     if (cb) {
       void onCloudClick(cb);
