@@ -1200,11 +1200,12 @@ fn write_probe_file(path: &Path, size: u64) -> Result<(), String> {
     let mut f = std::fs::File::create(path).map_err(|e| e.to_string())?;
     let mut block = vec![0u8; BW_CHUNK];
     let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
-    for b in block.chunks_exact_mut(8) {
+    // Same bytes as chunks_exact_mut(8): whole 8-byte words, any tail left at 0.
+    for b in block.as_chunks_mut::<8>().0 {
         x ^= x << 13;
         x ^= x >> 7;
         x ^= x << 17;
-        b.copy_from_slice(&x.to_le_bytes());
+        *b = x.to_le_bytes();
     }
     let mut written = 0u64;
     while written < size {
