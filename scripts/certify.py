@@ -309,7 +309,12 @@ def certify(model_id: str, layer: int, internal_pack: str | None = None,
         pack_internal = pack_external = str(pack)
     corpus = pick_corpus()
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    # The second is not unique: two certifications started in the same second
+    # (one per engine, launched side by side) wrote the same three file names,
+    # and the later run silently replaced the earlier run's logs and verdict.
+    # The run stamp keeps its readable form and gains the process id, which is
+    # unique among runs alive at the same instant.
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + f"-p{os.getpid()}"
     day = time.strftime("%Y-%m-%d", time.gmtime())
     # Suffixes are appended, not substituted. base.with_suffix(".stock.out")
     # replaces everything after the first dot of the name, so glm-4.5-air wrote
