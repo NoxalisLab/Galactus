@@ -727,6 +727,116 @@
       "context_length": 262144
     },
     {
+      "id": "qwen3-coder-next",
+      "name": "Qwen3-Coder-Next 80B-A3B (UD-Q4_K_XL, non-thinking)",
+      "arch": "qwen3next",
+      "gguf_bytes": 49608478720,
+      "expert_bytes_total": 46917484544,
+      "non_expert_bytes": 2690994176,
+      "layers_moe": 48,
+      "experts": 512,
+      "experts_used": 10,
+      "record_bytes": 2310144,
+      "record_classes": 2,
+      "status": "certified_bit_transparent",
+      "native_fit_ram_gb": 64,
+      "min_ram_gb": 16,
+      "measured": [
+        {
+          "cache_gb": 7.6,
+          "gen_tps": 29.5,
+          "prompt_tps": 41.7,
+          "mac_gb": 16,
+          "passes": 8,
+          "spread_pct": 0.3,
+          "prompt_spread_pct": 3.8
+        },
+        {
+          "cache_gb": 15.6,
+          "gen_tps": 34.9,
+          "prompt_tps": 60.5,
+          "mac_gb": 24,
+          "passes": 3,
+          "spread_pct": 3.4,
+          "prompt_spread_pct": 0.7
+        },
+        {
+          "cache_gb": 22.4,
+          "gen_tps": 41.1,
+          "prompt_tps": 99.6,
+          "mac_gb": 32,
+          "passes": 3,
+          "spread_pct": 0.2,
+          "prompt_spread_pct": 1.5
+        },
+        {
+          "cache_gb": 25.2,
+          "gen_tps": 42.1,
+          "prompt_tps": 108.0,
+          "mac_gb": 36,
+          "passes": 3,
+          "spread_pct": 0.2,
+          "prompt_spread_pct": 3.2
+        },
+        {
+          "cache_gb": 33.6,
+          "gen_tps": 42.4,
+          "prompt_tps": 141.6,
+          "mac_gb": 48,
+          "passes": 3,
+          "spread_pct": 2.1,
+          "prompt_spread_pct": 4.4
+        },
+        {
+          "cache_gb": 44.8,
+          "gen_tps": 41.8,
+          "prompt_tps": 120.9,
+          "mac_gb": 64,
+          "passes": 4,
+          "spread_pct": 0.0,
+          "prompt_spread_pct": 0.6
+        },
+        {
+          "cache_gb": 46.92,
+          "gen_tps": 41.7,
+          "prompt_tps": 458.8,
+          "mac_gb": 128,
+          "passes": 3,
+          "spread_pct": 0.0,
+          "prompt_spread_pct": 0.5
+        }
+      ],
+      "download": {
+        "base": "https://huggingface.co/unsloth/Qwen3-Coder-Next-GGUF/resolve/main",
+        "files": [
+          "Qwen3-Coder-Next-UD-Q4_K_XL.gguf"
+        ]
+      },
+      "tasks": [
+        "code",
+        "scripting"
+      ],
+      "context_length": 262144,
+      "certified_ppl": {
+        "stock": 9.0313,
+        "wired": 9.0313,
+        "corpus": "corpus/materialized/stage1/long-context-multifieldqa-zh-0029.txt",
+        "corpus_sha256": "2baf18f90cd4b6e09411f3e870e5d734943fc07828d5a0e3b6d8b527f485aa33",
+        "corpus_bytes": 20737,
+        "seed": 42,
+        "ctx": 512,
+        "batch": 512,
+        "ubatch": 2,
+        "regime": "llama-perplexity, CPU expert reference: --n-cpu-moe 99 --no-repack --fit off --chunks 1, stock against wired (GALACTUS_H4=1, --no-mmap)",
+        "date": "2026-09-23",
+        "run": "20260923T104707Z-p264",
+        "recorded_by": "scripts/certify.py",
+        "engine": "b1ff4ca2"
+      },
+      "certified_date": "2026-09-23",
+      "measured_note": "MacBook Pro M5 Max, 128 GB, internal SSD, shipped path (standard Metal experts), batch 512, planner ubatch, 192 predicted tokens on a 24-paragraph prompt, bench 2026-09-23 by scripts/bench-curve.py; cache = app planning ceiling per Mac tier, curve stops at full residency (46.92 GB); PROVISIONAL: tsc and cargo test ran on this Mac during the sweep (24 GB spread 3.4 %, prompt at 64 GB below 48 GB), to be re-measured on a quiet machine"
+    },
+    {
       "id": "olmoe-1b-7b",
       "name": "OLMoE 1B-7B 0924 Instruct (Q4_K_M)",
       "arch": "olmoe",
@@ -962,22 +1072,26 @@
     },
     {
       "id": "qwen35-35b-a3b",
-      "name": "Qwen3.6 35B-A3B (UD-Q4_K_M)",
+      "name": "Qwen3.6 35B-A3B (UD-Q4_K_M, MTP)",
       "arch": "qwen35moe",
-      "gguf_bytes": 22134528992,
+      "gguf_bytes": 22663387424,
       "layers_moe": 40,
       "experts": 256,
       "experts_used": 8,
       "status": "certified_bit_transparent",
       "expert_bytes_total": 19574816768,
-      "non_expert_bytes": 2559712224,
+      "non_expert_bytes": 3088570656,
       "min_ram_gb": 16,
       "context_length": 262144,
       "download": {
-        "base": "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main",
+        "base": "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/resolve/main",
         "files": [
           "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
         ]
+      },
+      "speculative": {
+        "type": "draft-mtp",
+        "n_max": 1
       },
       "tasks": [
         "code",
@@ -987,8 +1101,8 @@
       ],
       "certified_date": "2026-09-23",
       "certified_ppl": {
-        "stock": 22.5598,
-        "wired": 22.5598,
+        "stock": 22.4153,
+        "wired": 22.4153,
         "corpus": "corpus/materialized/stage1/long-context-multifieldqa-zh-0029.txt",
         "corpus_sha256": "2baf18f90cd4b6e09411f3e870e5d734943fc07828d5a0e3b6d8b527f485aa33",
         "corpus_bytes": 20737,
@@ -998,7 +1112,7 @@
         "ubatch": 2,
         "regime": "llama-perplexity, CPU expert reference: --n-cpu-moe 99 --no-repack --fit off --chunks 1, stock against wired (GALACTUS_H4=1, --no-mmap)",
         "date": "2026-09-23",
-        "run": "20260923T094839Z-p43066",
+        "run": "20260923T103429Z-p79734",
         "recorded_by": "scripts/certify.py",
         "engine": "b1ff4ca2"
       },
@@ -1117,7 +1231,50 @@
         "reasoning",
         "general"
       ],
-      "measured": [],
+      "measured": [
+        {
+          "cache_gb": 2.54,
+          "gen_tps": 8.4,
+          "prompt_tps": 9.8,
+          "passes": 3,
+          "spread_pct": 1.2,
+          "prompt_spread_pct": 3.1
+        },
+        {
+          "cache_gb": 5.08,
+          "gen_tps": 19.2,
+          "prompt_tps": 25.1,
+          "passes": 3,
+          "spread_pct": 0.0,
+          "prompt_spread_pct": 2.8
+        },
+        {
+          "cache_gb": 7.62,
+          "gen_tps": 43.8,
+          "prompt_tps": 60.1,
+          "passes": 7,
+          "spread_pct": 3.7,
+          "prompt_spread_pct": 5.3
+        },
+        {
+          "cache_gb": 9.38,
+          "gen_tps": 69.6,
+          "prompt_tps": 89.8,
+          "mac_gb": 16,
+          "passes": 3,
+          "spread_pct": 0.4,
+          "prompt_spread_pct": 3.6
+        },
+        {
+          "cache_gb": 10.15,
+          "gen_tps": 85.5,
+          "prompt_tps": 674.5,
+          "mac_gb": 24,
+          "passes": 3,
+          "spread_pct": 0.1,
+          "prompt_spread_pct": 1.3
+        }
+      ],
       "certified_ppl": {
         "stock": 147.0271,
         "wired": 147.0271,
@@ -1134,7 +1291,8 @@
         "recorded_by": "scripts/certify.py",
         "engine": "b1ff4ca2"
       },
-      "certified_date": "2026-09-23"
+      "certified_date": "2026-09-23",
+      "measured_note": "MacBook Pro M5 Max, 128 GB, internal SSD, shipped path (standard Metal experts), batch 512, planner ubatch, 192 predicted tokens on a 24-paragraph prompt, bench 2026-09-23 by scripts/bench-curve.py; cache = app planning ceiling per Mac tier, curve stops at full residency (10.15 GB)"
     },
     {
       "id": "nemotron35-30b-a3b",
@@ -1329,5 +1487,48 @@
       "temp": 0.6,
       "system": "You are Galactus, a helpful local assistant. Be concise, warm and useful."
     }
-  }
+  },
+  "team_presets": [
+    {
+      "id": "plan-code-next",
+      "name": "Qwen3.8 planifie, Qwen3-Coder-Next code",
+      "roles": {
+        "planner": "qwen38-27b",
+        "coder": "qwen3-coder-next"
+      },
+      "note": "tout résident, ~67 Go"
+    },
+    {
+      "id": "plan-code-fast",
+      "name": "Qwen3.8 planifie, Qwen3.6 + MTP code",
+      "roles": {
+        "planner": "qwen38-27b",
+        "coder": "qwen35-35b-a3b"
+      },
+      "note": "tout résident, ~45 Go, codeur ~145 tok/s avec MTP"
+    },
+    {
+      "id": "quality-max",
+      "name": "DeepSeek-V4-Flash planifie, Qwen3.6 code",
+      "roles": {
+        "planner": "deepseek-v4-flash",
+        "coder": "qwen35-35b-a3b"
+      },
+      "note": "DeepSeek en streaming SSD, codeur résident"
+    },
+    {
+      "id": "hybrid-cloud",
+      "name": "Équipe locale + expert cloud (OpenRouter)",
+      "roles": {
+        "planner": "qwen38-27b",
+        "coder": "qwen3-coder-next",
+        "expert": {
+          "kind": "cloud",
+          "provider": "openrouter",
+          "model": ""
+        }
+      },
+      "note": "l'expert reçoit les tâches complexes ; modèle à choisir, clé requise"
+    }
+  ]
 }
