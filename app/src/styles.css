@@ -435,6 +435,12 @@ html.pane-dragging iframe { pointer-events: none !important; }
 .tgl.on .k { transform: translateX(17px); }
 .tgl.busy { animation: gx-pulse 1.1s infinite; pointer-events: none; }
 .tgl.sm { width: 36px; height: 21px; } .tgl.sm .k { width: 17px; height: 17px; } .tgl.sm.on .k { transform: translateX(15px); }
+/* The newer toggles are <button role="switch"> (focusable, announced) with a
+   <span> knob. A span is inline, so its width and height were ignored and the
+   switch rendered as a bare coloured bar with no knob; a button also brings a
+   border and centred content of its own. Both are reset here. */
+button.tgl { display: block; border: 0; margin: 0; font: inherit; text-align: left; }
+.tgl .k { display: block; }
 
 /* segmented */
 .seg { display: inline-flex; padding: 3px; border-radius: 0; background: rgba(255, 255, 255, 0.045); border: 1px solid var(--bd); }

@@ -143,7 +143,7 @@ export function learningSection(d: LearningViewDeps): HTMLElement {
     box.innerHTML = `
       <div class="team-note">${esc(t("learn.intro"))}</div>
       <div class="set-row"><div class="grow"><b>${esc(t("learn.collect"))}</b><span>${esc(t("learn.collectHint"))}</span>
-          <span class="mono learn-count">${esc(t("learn.count").replace("%n", String(status.traces)))}</span></div>
+          <span class="mono learn-count">${esc(t(status.traces === 1 ? "learn.countOne" : "learn.count").replace("%n", String(status.traces)))}</span></div>
         ${tgl("lrncollect", settings.collect, loaded, "", t("learn.collect"))}
       </div>
       <div class="set-row"><div class="grow"><b>${esc(t("learn.toolkit"))}</b><span>${esc(t("learn.toolkitHint"))}</span>
@@ -153,7 +153,7 @@ export function learningSection(d: LearningViewDeps): HTMLElement {
       <div class="set-row"><div class="grow"><b>${esc(t("learn.train"))}</b><span>${esc(t("learn.trainHint"))}</span>
           ${busy !== "train"
             ? ps.trainMissing
-                .map((k) => `<span class="d learn-missing">${esc(t(k).replace("%n", String(status.traces)).replace("%m", String(status.minTraces)))}</span>`)
+                .map((k) => `<span class="d learn-missing">${esc(t(k === "learn.block.fewTraces" && status.traces === 1 ? "learn.block.fewTracesOne" : k).replace("%n", String(status.traces)).replace("%m", String(status.minTraces)))}</span>`)
                 .join("")
             : ""}
           ${busy === "train" ? bar() : ""}</div>
@@ -328,7 +328,7 @@ export function learningSection(d: LearningViewDeps): HTMLElement {
         void (async () => {
           const ok = await d.confirm({
             title: t("learn.forgetTitle"),
-            detail: forgetText("learn.forgetDetail").replace("%n", String(status.traces)),
+            detail: forgetText(status.traces === 1 ? "learn.forgetDetailOne" : "learn.forgetDetail").replace("%n", String(status.traces)),
             confirmLabel: t("learn.forget"),
           });
           if (!ok) return;
