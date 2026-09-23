@@ -14,6 +14,7 @@ import {
   onEvent,
 } from "./api";
 import type { SearchEvent, SearchOptsWire } from "./api";
+import { redactMessages } from "./teams";
 import { getLang, t } from "./i18n";
 import { isSummaryMessage, liveFrom, placeSummary, stripSummary, wholeTurnsOnly } from "./agent-history";
 import {
@@ -552,6 +553,13 @@ export interface TeamMember {
   busy: boolean;
   /** Entries already in its thread, so the model knows if it is warm. */
   messages: number;
+  /** Display name of the model it runs on, when known. */
+  model?: string;
+  /**
+   * Set by spawn when a team role could not be honoured (no preset, unknown
+   * role, engine refused): one sentence, carried into the tool result.
+   */
+  teamNote?: string;
 }
 
 /**
@@ -561,8 +569,12 @@ export interface TeamMember {
  */
 export interface AgentDirectory {
   team(convId: string): TeamMember[];
-  /** Recruit a teammate. Resolves to the member, or to an error string. */
-  spawn(convId: string, name: string, role: string, brief: string): Promise<TeamMember | string>;
+  /**
+   * Recruit a teammate. Resolves to the member, or to an error string.
+   * `teamRole` names a role of the active team preset: the teammate then runs
+   * on that role's model, or on the primary with `teamNote` saying why not.
+   */
+  spawn(convId: string, name: string, role: string, brief: string, teamRole?: string): Promise<TeamMember | string>;
   /**
    * Deliver `message` to a teammate and resolve with its answer. BLOCKING and
    * bounded by the implementation; `chain` carries every thread already
@@ -590,6 +602,55 @@ export function setAgentDirectory(d: AgentDirectory | null): void {
  * architect is refused at the first hop back, so a team always terminates.
  */
 export const MAX_DELEGATION_DEPTH = 2;
+
+/**
+ * The active team preset, as the spawn tool presents it.
+ *
+ * Module level for the same reason as the sampling: main.ts owns the settings
+ * and the registry, and an Agent is built in more places than one. `text` is
+ * appended to the tool description, `roles` are the valid team_role values.
+ */
+let teamInfo: { text: string; roles: string[] } = { text: "", roles: [] };
+
+export function configureTeam(next: { text: string; roles: string[] }): void {
+  teamInfo = { text: next.text, roles: next.roles.map((r) => r.trim().toLowerCase()).filter(Boolean) };
+}
+
+/**
+ * How an agent whose engine is a CLOUD proxy treats what it sends.
+ *
+ * `redact`: mask secrets in every request before it leaves (settings key
+ * cloud_redact). `onRedacted` tells the thread how many were masked, so the
+ * user sees it happened instead of trusting that it did.
+ */
+export interface CloudRoute {
+  redact: boolean;
+  onRedacted(removed: number): void;
+}
+
+/** The spawn tool as the model sees it right now: the team, when there is one. */
+function spawnTool(): ToolDef {
+  if (!teamInfo.text) return SPAWN_TOOL;
+  const params = SPAWN_TOOL.function.parameters as { properties: Record<string, unknown> } & Record<string, unknown>;
+  return {
+    ...SPAWN_TOOL,
+    function: {
+      ...SPAWN_TOOL.function,
+      description: SPAWN_TOOL.function.description + teamInfo.text,
+      parameters: {
+        ...params,
+        properties: {
+          ...params.properties,
+          team_role: {
+            type: "string",
+            enum: teamInfo.roles,
+            description: "Optional. The team role whose model this teammate runs on. Omit to run it on your own model.",
+          },
+        },
+      },
+    },
+  };
+}
 
 const SPAWN_TOOL: ToolDef = {
   type: "function",
@@ -624,7 +685,7 @@ const LIST_AGENTS_TOOL: ToolDef = {
   function: {
     name: "list_agents",
     description:
-      "List this conversation's team: each sub-agent's name, role, whether it is busy, and how much is already in its thread. Call it before ask_agent, and to find out which teammate to consult.",
+      "List this conversation's team: each sub-agent's name, role, the model it runs on, whether it is busy, and how much is already in its thread. Call it before ask_agent, and to find out which teammate to consult.",
     parameters: { type: "object", properties: {} },
   },
 };
@@ -987,7 +1048,7 @@ function builtinTools(
   // Only the conversation's own agent recruits: the team belongs to the
   // conversation, and letting teammates recruit teammates is how a bounded
   // team becomes an unbounded crowd.
-  if (role === "main" && hasTeam) tools.push(SPAWN_TOOL);
+  if (role === "main" && hasTeam) tools.push(spawnTool());
   // Teammates DO get list_agents and ask_agent: an engineer consulting the
   // reviewer without going back through the parent is what makes this a team
   // rather than a fan-out. Past the depth cap the tools are not merely
@@ -1552,6 +1613,10 @@ export class Agent {
   private readonly seat = nextSeat++;
   /** Resolved from `seat` once the slot count is known; cleared on restart. */
   private slot: number | null = null;
+  /** Slot count of a non-primary engine (setEngine); null reads the primary's. */
+  private engineSlots: number | null = null;
+  /** Set when the engine is a cloud proxy (setEngine). */
+  private cloud: CloudRoute | null = null;
   private contextSummary = "";
 
   private async ensureCtxSize(): Promise<number> {
@@ -1575,6 +1640,10 @@ export class Agent {
    */
   private async ensureSlot(): Promise<number> {
     if (this.slot !== null) return this.slot;
+    if (this.engineSlots !== null) {
+      this.slot = this.seat % this.engineSlots;
+      return this.slot;
+    }
     let count = 1;
     try {
       count = Math.max(1, Math.floor(Number((await api.serverStatus()).slots ?? 1)));
@@ -1828,10 +1897,10 @@ export class Agent {
       (
         await chatOnce(
           this.port,
-          [
+          this.outbound([
             { role: "system", content: SYSTEM },
             { role: "user", content: "Summarize this conversation segment faithfully:\n\n" + text },
-          ],
+          ]),
           0.1,
           this.abort?.signal
         )
@@ -1924,7 +1993,7 @@ export class Agent {
     const chosen = samplingFor(this.sampling, this.taskTemp ?? undefined);
     const ok = await streamChat(
       this.port,
-      this.messages,
+      this.outbound(this.messages),
       tools,
       handlers,
       this.abort.signal,
@@ -1932,7 +2001,8 @@ export class Agent {
       { top_p: chosen.top_p, top_k: chosen.top_k },
       thinkingEnabled,
       undefined,
-      await this.ensureSlot(),
+      // A provider has no slots to pin: id_slot is llama-server's.
+      this.cloud ? -1 : await this.ensureSlot(),
     );
     if (!ok && !this.abort.signal.aborted) {
       // Context overflow (huge tool outputs, long thread): shrink and retry
@@ -2198,7 +2268,7 @@ export class Agent {
     }
   }
 
-  private async spawnAgent(name: string, role: string, brief: string): Promise<string> {
+  private async spawnAgent(name: string, role: string, brief: string, teamRole: string): Promise<string> {
     if (!directory) return "error: no team available in this conversation";
     if (this.role !== "main") {
       return "error: only the conversation's own agent recruits teammates; ask it if you need one";
@@ -2211,10 +2281,15 @@ export class Agent {
       elevated: false,
     });
     if (!ok) return this.denialReason;
-    const member = await directory.spawn(this.convId, name.trim(), role.trim(), brief.trim());
+    // A model that wrote the team role into `role` instead of `team_role`
+    // meant it: honoured when it is exactly one of the preset's roles.
+    const asked = teamRole.trim() || (teamInfo.roles.includes(role.trim().toLowerCase()) ? role.trim() : "");
+    const member = await directory.spawn(this.convId, name.trim(), role.trim(), brief.trim(), asked || undefined);
     if (typeof member === "string") return `error: ${member}`;
     return (
-      `teammate "${member.name}" is ready (role: ${member.role || "unspecified"}).\n` +
+      `teammate "${member.name}" is ready (role: ${member.role || "unspecified"}` +
+      `${member.model ? `, model: ${member.model}` : ""}).\n` +
+      (member.teamNote ? `${member.teamNote}\n` : "") +
       `Send it work with ask_agent(agent: "${member.name}", message: …). Its thread is visible to the user.`
     );
   }
@@ -2362,6 +2437,44 @@ export class Agent {
     this.port = port;
     this.nCtx = null;
     this.slot = null;
+    this.engineSlots = null;
+    this.cloud = null;
+  }
+
+  /**
+   * Point this agent at an engine that is not the primary (a team role).
+   *
+   * The slot count then comes from that engine, not from server_status: a
+   * seat wrapped on the primary's count could pin a slot the other engine
+   * does not have. Null goes back to the primary's.
+   */
+  setEngine(port: number, slots: number | null, cloud: CloudRoute | null = null): void {
+    this.setPort(port);
+    this.engineSlots = slots && slots > 0 ? Math.floor(slots) : null;
+    this.cloud = cloud;
+  }
+
+  /** Whether this agent's requests leave the Mac. */
+  isCloud(): boolean {
+    return this.cloud !== null;
+  }
+
+  /**
+   * The messages as they may be sent to this agent's engine.
+   *
+   * Unchanged for a local engine. For a cloud one with redaction on, a masked
+   * copy: the local history keeps the real text, only the wire is masked.
+   */
+  private outbound<M extends { content: string | null }>(messages: M[]): M[] {
+    if (!this.cloud?.redact) return messages;
+    const r = redactMessages(messages);
+    if (r.removed > 0) this.cloud.onRedacted(r.removed);
+    return r.messages;
+  }
+
+  /** The port this agent talks to. */
+  enginePort(): number {
+    return this.port;
   }
 
   /**
@@ -2683,7 +2796,8 @@ export class Agent {
         result = await this.spawnAgent(
           String(args.name ?? ""),
           String(args.role ?? ""),
-          String(args.brief ?? "")
+          String(args.brief ?? ""),
+          String(args.team_role ?? "")
         );
       } else if (name === "search_knowledge") {
         // Through the gate as a read.
@@ -2804,7 +2918,7 @@ export class Agent {
           ? rows
               .map(
                 (m) =>
-                  `${m.name}\t${m.role || "(no role)"}\t${m.busy ? "busy" : "idle"}\t${m.messages} entries${m.id === this.threadId ? "\t(you)" : ""}`
+                  `${m.name}\t${m.role || "(no role)"}\t${m.model ? `model ${m.model}` : "model ?"}\t${m.busy ? "busy" : "idle"}\t${m.messages} entries${m.id === this.threadId ? "\t(you)" : ""}`
               )
               .join("\n")
           : "(no teammate yet; the conversation's agent can create one with spawn_agent)";
@@ -2942,6 +3056,9 @@ export class Agent {
     request: string,
     underSkill: boolean
   ): void {
+    // Not on a cloud engine: learning is extra passes over the whole turn,
+    // which nobody asked to send to a provider or to pay for.
+    if (this.cloud) return;
     // The snapshot is passed in, not read off `this`: by the time this runs
     // the user may already have sent the next message, which resets the fields.
     void maybeLearn({

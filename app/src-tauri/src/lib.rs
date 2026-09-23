@@ -49,6 +49,8 @@ mod code;
 mod conversations;
 mod documents;
 mod engine;
+mod engines;
+mod cloud;
 mod install;
 mod library;
 mod mcp;
@@ -2855,6 +2857,14 @@ pub fn run() {
             server_start,
             server_stop,
             engine_diagnose,
+            engines::engine_start,
+            engines::engine_stop,
+            engines::engines_status,
+            cloud::cloud_key_set,
+            cloud::cloud_key_clear,
+            cloud::cloud_key_status,
+            cloud::cloud_usage_today,
+            cloud::cloud_models,
             install::install_model,
             install::cancel_install,
             install::delete_model,
@@ -3043,6 +3053,9 @@ pub fn run() {
                     s.phase = "stopped".into();
                     s.port = 0;
                 }
+                // Teammate engines hold their models resident exactly like the
+                // primary, and go with it.
+                engines::stop_all();
                 // By pid, not through the server locks: a connector may be
                 // mid-call and holding its own lock for another minute, and the
                 // window must close now. The process group is left to the system

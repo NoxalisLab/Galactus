@@ -248,7 +248,7 @@ Connection: close\r\n\
 /// The remainder matters: a client that sends its head and the start of its
 /// body in the same packet must not have those body bytes dropped. They are
 /// handed back and written to the engine before the copy loop starts.
-fn read_head(sock: &mut TcpStream) -> Result<(String, Vec<u8>), String> {
+pub(crate) fn read_head(sock: &mut TcpStream) -> Result<(String, Vec<u8>), String> {
     let mut buf: Vec<u8> = Vec::with_capacity(1024);
     let mut chunk = [0u8; 1024];
     let started = std::time::Instant::now();
@@ -336,7 +336,7 @@ pub fn is_chunked(head: &str) -> bool {
 }
 
 /// Read the rest of a body of known length, `first` being what already arrived.
-fn read_body(sock: &mut TcpStream, first: Vec<u8>, want: usize) -> Result<Vec<u8>, String> {
+pub(crate) fn read_body(sock: &mut TcpStream, first: Vec<u8>, want: usize) -> Result<Vec<u8>, String> {
     let mut body = first;
     if body.len() > want {
         body.truncate(want);

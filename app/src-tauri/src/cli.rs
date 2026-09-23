@@ -64,6 +64,9 @@ fn serve(root: &Path, model_id: &str, args: &[String]) -> Result<(), String> {
     if !dense && (!pack_internal.is_file() || !pack_external.is_file()) {
         return Err("pack introuvable : lance `galactus install` d'abord".into());
     }
+    // Meme lecture que l'app : une entree qui porte "speculative" sert avec
+    // son brouillon, sinon `serve` mesurerait un autre moteur que l'app.
+    let speculative = speculative_args(&entry)?;
     let ram_mode = ram_mode_from_args(args);
     let ram_gb = hw_info_impl().ram_gb.max(8);
     // Same opt-in surface as the app: flag, registry entry, or the shared
@@ -170,26 +173,16 @@ fn serve(root: &Path, model_id: &str, args: &[String]) -> Result<(), String> {
     // `galactus serve` up to twice slower than the app on the same model, for
     // answers that are as good either way.
     if cpu_moe {
-        cmd.env("GALACTUS_H4_CPU_MOE", "1").arg("--n-cpu-moe").arg("99");
+        cmd.env("GALACTUS_H4_CPU_MOE", "1");
     } else if bit_exact_numerics(settings_load().get("numerics").map(|v| v.as_str())) {
         cmd.env("GALACTUS_METAL_BITEXACT", "1");
     }
+    // Les memes drapeaux que l'app, depuis la meme fonction (server_argv), y
+    // compris `--reasoning-format deepseek` : `serve` passait `--jinja` seul,
+    // et un client branche sur le serveur du CLI recevait des balises
+    // `<think>` melees a la reponse alors que l'app, elle, les separait.
     let status = cmd
-        .arg("--model").arg(&gguf)
-        .arg("--host").arg("127.0.0.1")
-        .arg("--port").arg(port.to_string())
-        .arg("--ctx-size").arg(ctx_total.to_string())
-        .arg("--n-gpu-layers").arg("99")
-        .arg("--no-repack").arg("--fit").arg("off").arg("--no-mmap")
-        .arg("--batch-size").arg("512")
-        .arg("--ubatch-size").arg(ubatch.to_string())
-        .arg("--parallel").arg(slots.to_string())
-        // Les memes que l'app, depuis la meme fonction. `serve` passait
-        // `--jinja` seul : sans `--reasoning-format deepseek` le moteur laisse
-        // la reflexion dans `message.content`, donc un client branche sur le
-        // serveur du CLI recevait des balises `<think>` melees a la reponse
-        // alors que l'app, elle, les separait.
-        .args(crate::chat_parsing_args())
+        .args(server_argv(&gguf, port, ctx_total, ubatch, slots, cpu_moe, &speculative))
         .status()
         .map_err(|e| e.to_string())?;
     if !status.success() {

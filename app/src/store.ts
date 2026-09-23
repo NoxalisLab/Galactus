@@ -103,6 +103,13 @@ export interface SubAgent extends ThreadData {
   role: string;
   /** Standing instructions; becomes its system persona. */
   brief: string;
+  /**
+   * The team-preset role it was recruited for, and the model that role
+   * resolved to. Absent: it runs on the primary model, like every teammate
+   * before teams. Kept so a reopened conversation puts it back on its model.
+   */
+  team_role?: string;
+  model_id?: string;
   created: number;
   updated: number;
 }
@@ -278,6 +285,8 @@ function hydrateSub(v: any): SubAgent | null {
     name,
     role: String(v.role ?? ""),
     brief: String(v.brief ?? ""),
+    ...(typeof v.team_role === "string" && v.team_role ? { team_role: v.team_role } : {}),
+    ...(typeof v.model_id === "string" && v.model_id ? { model_id: v.model_id } : {}),
     created: Number(v.created ?? Date.now()),
     updated: Number(v.updated ?? Date.now()),
     items: settleInterrupted(Array.isArray(v.items) ? v.items : []),
@@ -444,7 +453,8 @@ export function addSubAgent(
   conv: Conversation,
   name: string,
   role: string,
-  brief: string
+  brief: string,
+  team?: { role: string; modelId: string }
 ): SubAgent | null {
   if (conv.team.length >= MAX_TEAM) return null;
   const now = Date.now();
@@ -453,6 +463,7 @@ export function addSubAgent(
     name: teamHandle(conv, name),
     role: role.trim().slice(0, 200),
     brief: brief.trim().slice(0, 4000),
+    ...(team ? { team_role: team.role, model_id: team.modelId } : {}),
     created: now,
     updated: now,
     items: [],

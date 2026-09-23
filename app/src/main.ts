@@ -8,6 +8,7 @@ import {
   AgentDirectory,
   clearStandingPermissions,
   configureSampling,
+  configureTeam,
   configureThinking,
   loadStandingPermissions,
   PermissionDecision,
@@ -25,6 +26,26 @@ import { REASONING_TRUNCATED, reasoningGist, visibleReasoning } from "./reasonin
 import { Cosmos } from "./cosmos";
 import { detectPreviewable, PreviewKind, PreviewPanel } from "./preview";
 import { currentTask, loadTasks, pickModelFor, setCurrentTask, TaskDef, TaskId } from "./tasks";
+import {
+  activePreset,
+  cloudProvider,
+  cloudSlug,
+  isCloud,
+  isCloudId,
+  NO_CLOUD,
+  type CloudState,
+  engineFor,
+  mergePresets,
+  presetsFromRegistry,
+  resolveRole,
+  serializeUserPresets,
+  teamBudget,
+  teamToolText,
+  type EngineInfo,
+  type StoredPreset,
+  type TeamPreset,
+} from "./teams";
+import { teamsSection } from "./teamsview";
 import { detectTask, getAutoMode, mayAutoSwap, planSwap, setAutoMode, type AutoMode } from "./autotask";
 import { exportConversationMarkdown, formatStats, searchConversations, wireDropZone } from "./chatx";
 import * as store from "./store";
@@ -961,11 +982,166 @@ function installedIds(): string[] {
 
 /** Load task_personas/task_models from the raw registry file (with fallbacks). */
 async function loadTaskDefs(): Promise<void> {
-  if (!root) { tasks = loadTasks(null); return; }
+  if (!root) { tasks = loadTasks(null); shippedPresets = []; await loadTeams(); return; }
   try {
-    tasks = loadTasks(await api.fsRead(root + "/scripts/models-registry.json", 500_000));
+    const raw = await api.fsRead(root + "/scripts/models-registry.json", 500_000);
+    tasks = loadTasks(raw);
+    shippedPresets = presetsFromRegistry(raw);
   } catch {
     tasks = loadTasks(null);
+    shippedPresets = [];
+  }
+  await loadTeams();
+}
+
+// ---------- model teams (a model per role, see teams.ts) ----------
+
+/** Presets as the registry ships them; the user's overrides are merged on top. */
+let shippedPresets: StoredPreset[] = [];
+let teamPresets: TeamPreset[] = [];
+/** Active preset id; "" is teams off, the default. */
+let teamPresetId = "";
+/**
+ * What the user allowed for cloud roles. Off by default: Galactus runs on this
+ * Mac, and a provider is used only after the user enables it and stores a key.
+ */
+let cloudState: CloudState = NO_CLOUD;
+/** Mask secrets before a request leaves for a provider. On unless set to "0". */
+let cloudRedact = true;
+
+/** Providers any preset names: the only ones whose key status is worth asking. */
+function cloudProviders(): string[] {
+  const out = new Set<string>(["openrouter"]);
+  for (const p of teamPresets) for (const r of Object.values(p.roles)) if (isCloud(r)) out.add(r.provider);
+  return [...out];
+}
+
+/** The display name of a provider, for the thread notices. */
+function providerName(p: string): string {
+  return p === "openrouter" ? "OpenRouter" : p;
+}
+
+/** Installed and allowed to run on this Mac: the only models a role may pick. */
+function runnable(m: ModelEntry): boolean {
+  return !!m.installed && modelAvailability(m.status, m.min_ram_gb, hw?.ram_gb).canExecute;
+}
+
+function modelName(id: string | null | undefined): string {
+  if (!id) return "?";
+  if (isCloudId(id)) return `${providerName(cloudProvider(id))} · ${cloudSlug(id)}`;
+  return registry.find((m) => m.id === id)?.name ?? id;
+}
+
+async function loadTeams(): Promise<void> {
+  let st: Record<string, string> = {};
+  try { st = await api.settingsGet(); } catch { /* defaults: teams off */ }
+  teamPresets = mergePresets(shippedPresets, st["team_presets_user"] ?? "");
+  teamPresetId = (st["team_preset"] ?? "").trim();
+  await loadCloud(st);
+  publishTeam();
+}
+
+/** Re-read what the user allowed for cloud providers. Never throws. */
+async function loadCloud(st?: Record<string, string>): Promise<void> {
+  if (!st) {
+    try { st = await api.settingsGet(); } catch { st = {}; }
+  }
+  const next: CloudState = { enabled: {}, keyed: {} };
+  for (const p of cloudProviders()) {
+    next.enabled[p] = st[`cloud_${p}_enabled`] === "1";
+    // A backend without the command, or a Keychain that says no, is "no key":
+    // the role falls back with a sentence rather than failing the spawn.
+    try { next.keyed[p] = await api.cloudKeyStatus(p); } catch { next.keyed[p] = false; }
+  }
+  cloudState = next;
+  cloudRedact = (st["cloud_redact"] ?? "1") !== "0";
+}
+
+/**
+ * Tell every Agent what the spawn tool should say about the team.
+ *
+ * Called whenever the preset or the primary model changes: the description
+ * says which role the orchestrator itself runs as, and that is only true for
+ * the model actually serving it.
+ */
+function publishTeam(): void {
+  const p = activePreset(teamPresets, teamPresetId);
+  // A cloud role that cannot run (disabled, no key, no model) is not offered:
+  // the model would pick it and every spawn would fall back.
+  const offered = p
+    ? Object.entries(p.roles)
+        .filter(([, r]) => !isCloud(r) || (!!r.model && cloudState.enabled[r.provider] && cloudState.keyed[r.provider]))
+        .map(([k]) => k)
+    : [];
+  configureTeam({
+    text: teamToolText(p, modelName, server.model_id ?? null, cloudState),
+    roles: offered,
+  });
+}
+
+async function saveTeams(activeId: string, list: TeamPreset[]): Promise<void> {
+  await api.settingsSet("team_presets_user", serializeUserPresets(list));
+  await api.settingsSet("team_preset", activeId);
+  teamPresets = mergePresets(shippedPresets, serializeUserPresets(list));
+  teamPresetId = activePreset(teamPresets, activeId) ? activeId : "";
+  publishTeam();
+}
+
+/**
+ * Wait until an additional engine serves requests.
+ *
+ * engine_start returns as soon as the child is spawned; a 20 GB model then
+ * takes tens of seconds to load. A request sent before that is refused by the
+ * server, so the teammate's turn waits here instead. Bounded, because an
+ * engine that never comes up must end the turn with a reason, not hang it.
+ */
+async function engineReady(modelId: string, first: EngineInfo): Promise<EngineInfo> {
+  let e: EngineInfo | null = first;
+  const deadline = Date.now() + 600_000;
+  while (e && e.phase !== "ready") {
+    if (e.phase === "stopped" || e.phase === "failed") throw new Error(`${modelName(modelId)}: ${e.phase}`);
+    if (Date.now() > deadline) throw new Error(`${modelName(modelId)} did not become ready in 600 s`);
+    await new Promise((r) => setTimeout(r, 1000));
+    e = engineFor(modelId, await api.enginesStatus());
+  }
+  if (!e) throw new Error(`${modelName(modelId)}: the engine went away while loading`);
+  return e;
+}
+
+/**
+ * Put a teammate's agent on the engine of its model before a turn.
+ *
+ * Idempotent (engine_start returns the running engine). A teammate whose model
+ * is now the primary goes back to the primary port; one whose engine cannot
+ * start runs this turn on the primary, and its thread says so once.
+ */
+async function routeThread(sess: Thread): Promise<void> {
+  const inst = sess.agent;
+  const want = sess.sub?.model_id;
+  if (!inst) return;
+  if (!want || want === server.model_id) {
+    if (inst.enginePort() !== server.port || inst.isCloud()) inst.setEngine(server.port, null);
+    return;
+  }
+  try {
+    const started = await api.engineStart(want, sess.sub?.team_role ?? "");
+    // Said only while it is loading: an engine already up answers at once.
+    if (started.phase !== "ready") onThreadActivity(sess, "thinking", t("teams.loading").replace("%s", modelName(want)));
+    const e = await engineReady(want, started);
+    if (e.kind === "cloud") {
+      // Set every turn, not only on a port change: the redaction setting may
+      // have changed since the last one, and it must hold for this request.
+      inst.setEngine(e.port, null, {
+        redact: cloudRedact,
+        onRedacted: (n) =>
+          store.pushNotice(sess, t("cloud.redacted").replace("%n", String(n)).replace("%p", providerName(cloudProvider(want)))),
+      });
+    } else if (inst.enginePort() !== e.port || inst.isCloud()) {
+      inst.setEngine(e.port, e.slots);
+    }
+  } catch (err: any) {
+    if (inst.enginePort() !== server.port || inst.isCloud()) inst.setEngine(server.port, null);
+    store.pushNotice(sess, t("teams.fellBack").replace("%m", modelName(want)).replace("%e", String(err?.message ?? err)));
   }
 }
 
@@ -2650,6 +2826,7 @@ async function dispatchTurn(sess: Thread, text: string, opts: TurnOptions = {}):
     await ensureAgent(sess);
     const inst = sess.agent;
     if (!inst) return;
+    if (sess.sub) await routeThread(sess);
     inst.setChain(opts.chain ?? []);
     // One-shot: whatever branch wins, the deep-research arm is consumed. It
     // only ever belongs to a turn the user typed, never to a delegated one.
@@ -2712,6 +2889,7 @@ function memberOf(th: Thread): TeamMember {
     role: th.sub ? th.sub.role : t("team.parentRole"),
     busy: th.generating,
     messages: th.data.items.length,
+    model: modelName(th.sub?.model_id ?? server.model_id),
   };
 }
 
@@ -2724,16 +2902,47 @@ const teamDirectory: AgentDirectory = {
     return [threadOf(conv), ...teamThreads(conv)].map(memberOf);
   },
 
-  async spawn(convId, name, role, brief): Promise<TeamMember | string> {
+  async spawn(convId, name, role, brief, teamRole): Promise<TeamMember | string> {
     const conv = store.get(convId);
     if (!conv) return "this conversation is no longer live";
-    const sub = store.addSubAgent(conv, name, role, brief);
+    if (conv.team.length >= store.teamLimit()) {
+      return `the team is full (${store.teamLimit()} members); reuse one with ask_agent`;
+    }
+    // Resolve the role BEFORE creating the teammate, so the model it runs on
+    // is part of it from its first entry. Every failure lands on the primary
+    // with a sentence: a spawn is never refused over a model choice.
+    let team: { role: string; modelId: string } | undefined;
+    let note = "";
+    if (teamRole) {
+      const r = resolveRole(
+        activePreset(teamPresets, teamPresetId),
+        teamRole,
+        registry.map((m) => ({ id: m.id, name: m.name, runnable: runnable(m) })),
+        server.model_id ?? null,
+        cloudState
+      );
+      if (r.kind === "primary") {
+        note = r.sentence;
+      } else if (r.primary) {
+        team = { role: teamRole.trim().toLowerCase(), modelId: r.modelId };
+      } else {
+        try {
+          // Started now, not at its first turn: loading takes tens of seconds
+          // and the orchestrator usually spawns everyone before asking anyone.
+          await api.engineStart(r.modelId, teamRole.trim().toLowerCase());
+          team = { role: teamRole.trim().toLowerCase(), modelId: r.modelId };
+        } catch (e: any) {
+          note = `${modelName(r.modelId)} could not be started for role "${teamRole.trim()}" (${String(e?.message ?? e)}), so this teammate runs on the current model.`;
+        }
+      }
+    }
+    const sub = store.addSubAgent(conv, name, role, brief, team);
     if (!sub) return `the team is full (${store.teamLimit()} members); reuse one with ask_agent`;
     const th = threadOf(conv, sub);
     store.pushNotice(threadOf(conv), t("team.created").replace("%n", sub.name).replace("%r", sub.role || "-"));
     if (conv.id === store.current().id) { paintChat(); scrollChatDown(); }
     render();
-    return memberOf(th);
+    return { ...memberOf(th), ...(note ? { teamNote: note } : {}) };
   },
 
   async ask(convId, targetId, message, from, chain): Promise<string> {
@@ -4217,6 +4426,8 @@ function settingsView(): HTMLElement {
           <button data-am="auto">${esc(t("auto.auto"))}</button>
         </div>
       </div>
+      <div class="sect"><b>${esc(t("teams.title"))}</b><span>${esc(t("teams.hint"))}</span></div>
+      <div id="teamsbox"></div>
       <div class="sect"><b>${esc(t("sect.ide"))}</b><span>${esc(t("sect.ideHint"))}</span></div>
       <div class="set-row"><div class="grow"><b>${esc(t("settings.autoTab"))}</b><span>${esc(t("settings.autoTabHint"))}</span></div>
         <button class="tgl ${autoTabOn ? "on" : ""}" id="autotab" role="switch" aria-checked="${autoTabOn}"><span class="k"></span></button>
@@ -4252,6 +4463,64 @@ function settingsView(): HTMLElement {
       </div>`).join("") : `<div class="set-row"><div class="grow"><span>${esc(t("net.needOpen"))}</span></div></div>`}
       <div class="set-row"><div class="grow"><b>${esc(t("settings.permissions"))}</b><span>${esc(t("settings.permissionsHint"))}</span></div><button class="bs" id="pclear">${esc(t("settings.permissionsClear"))}</button></div>
     </div></div></div>`);
+  wrap.querySelector("#teamsbox")?.replaceWith(
+    teamsSection({
+      esc,
+      toast,
+      models: () =>
+        registry.map((m) => ({
+          id: m.id,
+          name: m.name,
+          runnable: runnable(m),
+          gguf_bytes: m.gguf_bytes,
+          non_expert_bytes: m.non_expert_bytes,
+          expert_bytes_total: m.expert_bytes_total,
+          dense: m.dense,
+        })),
+      budget: () => teamBudget(hw),
+      shipped: () => shippedPresets,
+      presets: () => teamPresets,
+      activeId: () => teamPresetId,
+      save: saveTeams,
+      cloud: {
+        status: async () => {
+          const st = await api.settingsGet();
+          let keyed = false;
+          try { keyed = await api.cloudKeyStatus("openrouter"); } catch { /* no backend: no key */ }
+          let usage = null;
+          try { usage = await api.cloudUsageToday(); } catch { /* shown as unknown */ }
+          return {
+            enabled: st["cloud_openrouter_enabled"] === "1",
+            keyed,
+            redact: (st["cloud_redact"] ?? "1") !== "0",
+            cap: st["cloud_daily_cap_usd"] || "5",
+            usage,
+          };
+        },
+        setEnabled: async (on) => {
+          await api.settingsSet("cloud_openrouter_enabled", on ? "1" : "");
+          await loadCloud();
+          publishTeam();
+        },
+        saveKey: async (key) => {
+          await api.cloudKeySet("openrouter", key);
+          await loadCloud();
+          publishTeam();
+        },
+        clearKey: async () => {
+          await api.cloudKeyClear("openrouter");
+          await loadCloud();
+          publishTeam();
+        },
+        setCap: (usd) => api.settingsSet("cloud_daily_cap_usd", usd),
+        setRedact: async (on) => {
+          await api.settingsSet("cloud_redact", on ? "1" : "0");
+          await loadCloud();
+        },
+        listModels: () => api.cloudModels("openrouter"),
+      },
+    })
+  );
   wrap.querySelector<HTMLButtonElement>("#updcheck")!.addEventListener("click", () => { void checkUpdate(false); });
   {
     const seg = wrap.querySelector<HTMLElement>("#updautoseg")!;
@@ -4727,11 +4996,13 @@ async function setRoot(p: string) {
 let footprintNoticed = "";
 
 async function refreshServer() {
+  const before = server.model_id;
   try {
     server = await api.serverStatus();
   } catch {
     return;
   }
+  if (server.model_id !== before) publishTeam();
   // A step-down is said out loud. A user who picked Performance and silently
   // got Eco would rightly call that a bug, and a user who is never told why
   // learns nothing about his own machine.
@@ -5443,6 +5714,29 @@ async function boot() {
       const msg = String(p.text ?? "");
       toast(msg === "permission_denied" ? t("voice.denied") : t("voice.error").replace("%s", msg));
     }
+  });
+  // Every request that left for a provider is shown in the thread that sent
+  // it, with what it cost: a cloud role is never silent about leaving the Mac.
+  // The event names the model, not the thread, so it goes to the teammate on
+  // that model that is generating (or the last one that did).
+  await onEvent("galactus://cloud-call", (p: any) => {
+    // Accepts the bare slug or the full "cloud:<provider>/<slug>" id.
+    const raw = String(p?.model ?? "");
+    const slug = isCloudId(raw) ? cloudSlug(raw) : raw;
+    const onIt = [...threads.values()].filter((th) => isCloudId(th.sub?.model_id) && cloudSlug(th.sub?.model_id) === slug);
+    const sess = onIt.find((th) => th.generating) ?? onIt.sort((a, b) => (b.touched ?? 0) - (a.touched ?? 0))[0];
+    if (!sess) return;
+    const tokens = Number(p?.prompt_tokens ?? 0) + Number(p?.completion_tokens ?? 0);
+    const cost = Number(p?.cost_usd ?? 0);
+    store.pushNotice(
+      sess,
+      t("cloud.sent")
+        .replace("%p", providerName(cloudProvider(sess.sub?.model_id)))
+        .replace("%m", slug)
+        .replace("%n", tokens.toLocaleString(getLang() === "fr" ? "fr-FR" : "en-US"))
+        .replace("%c", cost.toFixed(cost < 0.01 ? 4 : 2))
+    );
+    if (sess.key === active().key || (!!sess.sub && active().key === threadKey(sess.conv.id))) paintChat();
   });
   await onEvent("galactus://server", async (p: any) => {
     if (p && (p.phase === "failed" || p.phase === "timeout")) {

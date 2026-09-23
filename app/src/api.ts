@@ -4,6 +4,8 @@ import { listen, UnlistenFn } from "@tauri-apps/api/event";
 // Type only, so this adds no runtime edge from api.ts into the Code view. It
 // stops the wire shape from drifting away from the module that consumes it.
 import type { RustLspStatus } from "./code/rust-lsp";
+import { normalizeEngine, portFor as routePort, type EngineInfo } from "./teams";
+export type { EngineInfo } from "./teams";
 
 /** One tier of CPU cores, named as macOS names it. */
 export interface CoreLevel {
@@ -152,6 +154,21 @@ export interface RelayStatus {
   port: number;
   /** Whether a key is set. The key itself never crosses this boundary twice. */
   keyed: boolean;
+}
+
+/** What cloud_usage_today reports. */
+export interface CloudUsage {
+  total_usd: number;
+  cap_usd: number;
+  calls: number;
+}
+
+/** One galactus://cloud-call event: a request the proxy sent to a provider. */
+export interface CloudCall {
+  model: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cost_usd: number;
 }
 
 export interface ServerStatus {
@@ -485,6 +502,43 @@ export const api = {
     invoke<void>("server_start", { modelId, cacheGb }),
   serverStop: () => invoke<void>("server_stop"),
   /**
+   * Start an ADDITIONAL engine for a team role, or get the one already up.
+   *
+   * Idempotent on the backend. Refused with a sentence saying how many GB are
+   * missing and which engine holds them when the Mac cannot take it; the
+   * primary engine is never touched by this, only by serverStart/serverStop.
+   */
+  engineStart: async (modelId: string, role: string): Promise<EngineInfo> => {
+    const e = normalizeEngine(await invoke<unknown>("engine_start", { modelId, role }));
+    if (!e) throw new Error(`engine_start returned no usable engine for ${modelId}`);
+    return e;
+  },
+  // Cloud providers for team roles. The key goes to the macOS Keychain through
+  // the backend and never comes back: status says only whether one is stored.
+  cloudKeySet: (provider: string, key: string) => invoke<void>("cloud_key_set", { provider, key }),
+  cloudKeyClear: (provider: string) => invoke<void>("cloud_key_clear", { provider }),
+  cloudKeyStatus: (provider: string) => invoke<boolean>("cloud_key_status", { provider }),
+  /** Today's spend across providers, against the daily cap. */
+  cloudUsageToday: () => invoke<CloudUsage>("cloud_usage_today"),
+  /**
+   * The provider's model list, fetched by the backend only when the user asks.
+   * Normalised to slugs, whatever shape the command returns them in.
+   */
+  cloudModels: async (provider: string): Promise<string[]> => {
+    const raw: any = await invoke<unknown>("cloud_models", { provider });
+    const list: unknown[] = Array.isArray(raw) ? raw : Array.isArray(raw?.data) ? raw.data : [];
+    return list
+      .map((m: any) => (typeof m === "string" ? m : typeof m?.id === "string" ? m.id : ""))
+      .filter((m) => m.length > 0);
+  },
+  /** Stop an additional engine. The primary is stopped by serverStop only. */
+  engineStop: (modelId: string) => invoke<void>("engine_stop", { modelId }),
+  /** Every running engine, primary first. Empty rather than an error when unknown. */
+  enginesStatus: async (): Promise<EngineInfo[]> => {
+    const raw = await invoke<unknown>("engines_status");
+    return Array.isArray(raw) ? raw.map(normalizeEngine).filter((e): e is EngineInfo => e !== null) : [];
+  },
+  /**
    * Ask the backend what the engine's own log says about a failure.
    *
    * Never called speculatively: only when a turn ended on one of the engine's
@@ -750,6 +804,22 @@ export function onEvent(
 // ---- llama-server OpenAI-compatible client ----
 
 /** Real context window of the loaded model (llama-server /props). */
+/**
+ * The port of the engine serving `modelId`, from a fresh engines_status.
+ *
+ * Every chat call site takes a port; this is how a teammate on another model
+ * gets the right one. No model, no engine for it, or a backend without the
+ * command: the primary port, which is where every request went before teams.
+ */
+export async function portFor(modelId: string | null | undefined, primaryPort: number): Promise<number> {
+  if (!modelId) return primaryPort;
+  try {
+    return routePort(modelId, await api.enginesStatus(), primaryPort);
+  } catch {
+    return primaryPort;
+  }
+}
+
 export async function fetchCtxSize(port: number): Promise<number> {
   const r = await fetch(`http://127.0.0.1:${port}/props`);
   if (!r.ok) throw new Error(`server ${r.status}`);

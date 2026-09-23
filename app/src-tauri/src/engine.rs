@@ -395,8 +395,13 @@ pub(crate) fn reap_orphan_servers(root: &Path) {
         })
         .unwrap_or_default();
     let me = std::process::id() as i32;
+    // Engines this process is running on purpose are not orphans. With one
+    // engine that never mattered, since every start stopped the old one
+    // first; with teammate engines beside the primary, a primary restart
+    // reaped every teammate along with the leftovers of a crash.
+    let live = crate::engines::live_engine_pids();
     for pid in pids {
-        if pid == me {
+        if pid == me || live.contains(&(pid as u32)) {
             continue;
         }
         let args = run_capture("ps", &["-p", &pid.to_string(), "-o", "command="]);
@@ -408,8 +413,15 @@ pub(crate) fn reap_orphan_servers(root: &Path) {
 
 pub(crate) fn pick_free_port() -> Result<u16, String> {
     use std::net::TcpListener;
+    // A port handed to an engine that is still loading its weights may not be
+    // bound yet, so the bind test below would call it free and give it out a
+    // second time. The ports this process already assigned are skipped.
+    let taken = crate::engines::assigned_ports();
     for offset in 0..SERVER_PORT_SPAN {
         let port = SERVER_PORT_BASE + offset;
+        if taken.contains(&port) {
+            continue;
+        }
         match TcpListener::bind(("127.0.0.1", port)) {
             Ok(l) => {
                 drop(l); // released immediately; llama-server takes it next
@@ -596,7 +608,8 @@ pub async fn engine_diagnose(message: String) -> EngineDiagnosis {
 
 #[cfg(test)]
 mod chat_parsing_tests {
-    use super::{bit_exact_numerics, chat_parsing_args};
+    use super::{bit_exact_numerics, chat_parsing_args, server_argv};
+    use std::path::Path;
 
     #[test]
     fn the_engine_is_told_to_separate_thinking_from_the_answer() {
@@ -662,11 +675,20 @@ mod chat_parsing_tests {
         // Read from the source rather than asserted about a string, because
         // what went wrong was a second copy of the list drifting from the
         // first, and a test with its own third copy would not have caught it.
+        //
+        // The flags now reach both through server_argv, the one list the app's
+        // engines and `serve` share, so what is pinned is that serve calls it
+        // and that it carries the parsing flags.
         let cli = include_str!("cli.rs");
         assert!(
-            cli.contains("crate::chat_parsing_args()"),
-            "serve must take its parsing flags from the one function that defines them"
+            cli.contains(".args(server_argv("),
+            "serve must take its flags from the one function that defines them"
         );
+        let argv: Vec<String> = server_argv(Path::new("/m.gguf"), 1, 8192, 512, 1, false, &[])
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(chat_parsing_args().iter().all(|f| argv.iter().any(|a| a == f)));
         assert!(
             !cli.contains(".arg(\"--jinja\")"),
             "and must not carry its own copy of any of them"
@@ -753,56 +775,168 @@ pub(crate) fn engine_is_wired(bin: &Path) -> Result<(), String> {
     ))
 }
 
-// must not run on the main thread.
-#[tauri::command]
-pub async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -> Result<(), String> {
-    // One start at a time, and the second caller is TOLD rather than queued.
-    //
-    // Two clicks on two cards ran two of these concurrently, and the window
-    // between spawning the engine and taking the state lock includes launching
-    // a watchdog shell: the second start's stop could land inside it, leaving
-    // the first process alive with the whole model resident and nothing
-    // pointing at it.
-    //
-    // A blocking mutex would be wrong here: this function awaits, and holding a
-    // std lock across an await parks a runtime worker and invites a deadlock.
-    // An atomic that refuses is also the better behaviour, since loading a
-    // model takes minutes and a silently queued second start is a surprise.
-    static STARTING: AtomicBool = AtomicBool::new(false);
-    if STARTING.swap(true, Ordering::SeqCst) {
-        return Err("a model is already starting: wait for it, or stop it first".into());
+/// The speculative-decoding flags a registry entry asks for, or none.
+///
+/// An entry opts in with `"speculative": {"type": "draft-mtp", "n_max": 1}`,
+/// and the engine then gets `--spec-type <type> --spec-draft-n-max <n_max>`.
+/// It lives in the registry and not in a setting because whether it pays is a
+/// property of the checkpoint: an MTP draft only exists in weights trained with
+/// the extra head, and the bench measures each model with and without it
+/// against the same server before the entry is allowed to carry it.
+///
+/// A MALFORMED entry is refused rather than skipped. Dropping it silently would
+/// start the model at the speed without the draft while the catalogue shows
+/// the speed with it, and a typo in the registry would read as a slow Mac.
+pub(crate) fn speculative_args(entry: &Value) -> Result<Vec<String>, String> {
+    let spec = &entry["speculative"];
+    if spec.is_null() {
+        return Ok(Vec::new());
     }
-    struct Done;
-    impl Drop for Done {
-        fn drop(&mut self) {
-            STARTING.store(false, Ordering::SeqCst);
-        }
+    let id = entry["id"].as_str().unwrap_or("this model");
+    let kind = spec["type"]
+        .as_str()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        // It becomes one argv element, so it cannot inject a flag, but a value
+        // llama-server does not know fails the start with a usage dump. The
+        // charset of every --spec-type value it accepts is checked here instead.
+        .filter(|t| t.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+        .ok_or_else(|| format!("registry entry {id}: speculative.type is missing or malformed"))?;
+    let n_max = spec["n_max"]
+        .as_u64()
+        .filter(|n| (1..=64).contains(n))
+        .ok_or_else(|| {
+            format!("registry entry {id}: speculative.n_max must be a whole number from 1 to 64")
+        })?;
+    Ok(vec![
+        "--spec-type".into(),
+        kind.to_string(),
+        "--spec-draft-n-max".into(),
+        n_max.to_string(),
+    ])
+}
+
+/// The llama-server argument list, shared by the app (every engine) and by
+/// `galactus serve`. The environment differs between them; the flags must not,
+/// or the CLI ends up measuring a server the app never runs.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn server_argv(
+    gguf: &Path,
+    port: u16,
+    ctx_total: u32,
+    ubatch: u32,
+    slots: u32,
+    cpu_moe: bool,
+    speculative: &[String],
+) -> Vec<std::ffi::OsString> {
+    let mut argv: Vec<std::ffi::OsString> = vec!["--model".into(), gguf.into()];
+    for a in [
+        "--host".to_string(),
+        "127.0.0.1".into(),
+        "--port".into(),
+        port.to_string(),
+        "--ctx-size".into(),
+        ctx_total.to_string(),
+        "--n-gpu-layers".into(),
+        "99".into(),
+        "--no-repack".into(),
+        "--fit".into(),
+        "off".into(),
+        "--no-mmap".into(),
+    ] {
+        argv.push(a.into());
     }
-    // Released on every path out, including the early returns and a panic.
-    let _done = Done;
-    let root = galactus_root()?;
-    let entry = registry_entry(&root, &model_id)?;
+    if cpu_moe {
+        argv.push("--n-cpu-moe".into());
+        argv.push("99".into());
+    }
+    // Logical batch stays normal (the server sizes its output buffers from
+    // it, a tiny value asserts in output_reserve). Only the PHYSICAL
+    // micro-batch is constrained by the expert-cache probation guard.
+    for a in [
+        "--batch-size".to_string(),
+        "512".into(),
+        "--ubatch-size".into(),
+        ubatch.to_string(),
+        // One slot per conversation the app is allowed to run at once.
+        "--parallel".into(),
+        slots.to_string(),
+    ] {
+        argv.push(a.into());
+    }
+    argv.extend(speculative.iter().map(std::ffi::OsString::from));
+    argv.extend(chat_parsing_args().iter().map(std::ffi::OsString::from));
+    argv
+}
+
+/// Everything a start decided before anything was spawned.
+///
+/// Split out of server_start when a second engine became possible: the primary
+/// and every teammate engine must pass the SAME preflight (certification,
+/// wiring, profile, plan) and be started with the same regime, and two copies
+/// of eighty lines of preflight would have drifted by the second release.
+pub(crate) struct Launch {
+    pub(crate) server_bin: PathBuf,
+    pub(crate) gguf: PathBuf,
+    pub(crate) dense: bool,
+    pub(crate) pack_internal: PathBuf,
+    pub(crate) pack_external: PathBuf,
+    /// The engine profile sidecar, when the install produced one.
+    pub(crate) profile: Option<PathBuf>,
+    /// The dual-pack split ratio recorded at install, as a cross-check.
+    pub(crate) pack_ratio: Option<String>,
+    pub(crate) cpu_moe: bool,
+    pub(crate) bit_exact: bool,
+    pub(crate) slots: u32,
+    pub(crate) ctx_per_slot: u32,
+    pub(crate) full_residency: bool,
+    pub(crate) speculative: Vec<String>,
+    pub(crate) plan: CachePlan,
+}
+
+/// Run every deterministic preflight for one engine and plan its memory.
+///
+/// `held` is what the OTHER engines already running on this Mac hold: the
+/// plan is taken against what they leave, never against the whole machine
+/// (see engines::plan_beside). `primary` decides whether the user's cache
+/// override applies; that setting was written for the one model the app used
+/// to run, and applying it to a teammate would size two arenas by one number.
+pub(crate) fn prepare_launch(
+    root: &Path,
+    model_id: &str,
+    cache_gb: Option<u64>,
+    primary: bool,
+    held: &[crate::engines::HeldEngine],
+) -> Result<Launch, String> {
+    let entry = registry_entry(root, model_id)?;
     require_certified_model(&entry)?;
     require_compatible_hardware(&entry, hw_info_impl().ram_gb)?;
-    let (model_dir, _pack, profile) = model_paths(&root, &model_id);
+    let (model_dir, _pack, profile) = model_paths(root, model_id);
     let gguf = find_gguf(&model_dir).ok_or("model GGUF not found")?;
     // Dual-pack resolution: two distinct paths make the engine split every
     // record across both SSDs and read them in parallel (P0v2); identical
     // paths are the classic mono pack.
     let dense = is_dense(&entry);
-    let (pack_internal, pack_external) = resolve_packs(&root, &model_id, &entry)?;
+    let (pack_internal, pack_external) = resolve_packs(root, model_id, &entry)?;
     // A dense model has no pack and never will: demanding one here would refuse
     // to start a model whose weights are sitting on disk, complete.
     if !dense && (!pack_internal.is_file() || !pack_external.is_file()) {
         return Err("pack not found, install the model first".into());
     }
+    // Read before the machine probe, so a malformed entry is refused in a
+    // millisecond rather than after seconds of planning.
+    let speculative = speculative_args(&entry)?;
 
     let settings = settings_load();
-    let override_gb = cache_gb.or_else(|| {
-        settings
-            .get("cache_gb")
-            .and_then(|s| s.trim().parse::<u64>().ok())
-    });
+    let override_gb = if primary {
+        cache_gb.or_else(|| {
+            settings
+                .get("cache_gb")
+                .and_then(|s| s.trim().parse::<u64>().ok())
+        })
+    } else {
+        None
+    };
     let ram_gb = hw_info_impl().ram_gb.max(8);
     let ram_mode = settings
         .get("ram_mode")
@@ -826,8 +960,17 @@ pub async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64
     // both to price the plan and to build --ctx-size. They were two separate
     // reads for one release, and the plan priced a window the engine did not get.
     let ctx_per_slot = crate::planner::ctx_per_slot_for(&entry);
-    let plan = crate::planner::plan_cache(&entry, machine, override_gb, &ram_mode, cpu_moe, slots, ctx_per_slot)?;
-    let (cache_bytes, fraction, ubatch) = (plan.cache_bytes, plan.protected, plan.ubatch);
+    let plan = crate::engines::plan_beside(
+        model_id,
+        &entry,
+        machine,
+        held,
+        override_gb,
+        &ram_mode,
+        cpu_moe,
+        slots,
+        ctx_per_slot,
+    )?;
 
     // Engine resolution: a developer checkout build wins (always freshest);
     // otherwise the fully relocated llama-server shipped INSIDE the app
@@ -864,63 +1007,13 @@ pub async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64
         ));
     }
 
-    // Every deterministic preflight has succeeded. Only now may this request
-    // replace the active server.
-    server_stop_impl()?;
-    // The generation to beat, read AFTER that stop and not before it.
-    //
-    // WHY THE ORDER IS THE WHOLE FIX. `server_stop_impl` bumps this counter,
-    // which is what lets a Stop reach a start that has not spawned anything
-    // yet. Reading the counter at the top of this function therefore compared
-    // against a value that this function's OWN internal stop had already
-    // invalidated, so the check below fired on every start and every model
-    // refused to load with "cancelled". Read here, the only thing that can
-    // move it is a Stop the user pressed during the slow part that follows:
-    // the engine binary and every dylib read to verify the patches, the
-    // machine probe, the cache plan, which together are the seconds where
-    // Stop used to do nothing at all.
-    let entry_gen = SERVER_GEN.load(Ordering::SeqCst);
-    reap_orphan_servers(&root);
-    let port = pick_free_port()?;
-
-    // Keep the server's output so failures are visible instead of hanging.
-    // The PREVIOUS run is kept alongside: a failed start is usually reported
-    // after the user has already retried, and truncating on every start
-    // destroyed the only evidence of what actually failed.
-    let log_path = app_support().join("llama-server.log");
-    let _ = std::fs::create_dir_all(app_support());
-    let _ = std::fs::rename(&log_path, app_support().join("llama-server.log.1"));
-    let log_out = std::fs::File::create(&log_path).map_err(|e| e.to_string())?;
-    let log_err = log_out.try_clone().map_err(|e| e.to_string())?;
-
-    // Engine regime, ALWAYS the H4 wiring, ALWAYS the certified numerics.
-    //
-    // Certification rule (product law): a certified model runs BIT-EXACT.
-    // That is the CPU-experts regime the certification benches validated:
-    // the upstream Metal mv_id kernels diverge from CPU truth on iq quants
-    // (patch comment, probe v4: 1-2% relative per layer; ppl 8.89 vs 2.67 on
-    // GLM at 1.58 bpw), so Metal experts are OPT-IN and explicitly outside
-    // the certification envelope ("metal_experts": true in the registry
-    // entry, or setting metal_experts=1).
-    //
-    // The physical micro-batch stays at the planner's guarded value: the
-    // certified curves were measured in this envelope, and a different batch
-    // shape changes kernel paths and accumulation order, do not trade
-    // bit-exactness for prompt speed silently.
     // Residency is judged on the SAME geometry the planner used (the profile
     // measured at install when there is one), not on the registry estimate:
     // the two can drift and the badge would then contradict the plan.
     let expert_total = crate::planner::measured_geometry(&entry)
         .map(|g| g.1)
         .unwrap_or_else(|| entry["expert_bytes_total"].as_u64().unwrap_or(u64::MAX));
-    let full_residency = cache_bytes >= expert_total;
-    // The Metal parity path (patches 0002-0004) now covers EVERY expert quant
-    // type of the certified registry (iq1_s..q3_K, q8_0, q5_0, q4_K, q6_K,
-    // mxfp4), verified 32768/32768 identical bits by the parity probe: Metal
-    // experts ARE the certified numerics, and the default everywhere. CPU
-    // experts stay as an explicit cross-check regime ("cpu_moe": true per
-    // model, or setting cpu_moe=1). Resolved before planning, above.
-    let metal_experts = !cpu_moe;
+    let full_residency = plan.cache_bytes >= expert_total;
     // Whether the Metal expert kernels replay the CPU algorithm bit for bit, or
     // run llama.cpp's own mul_mat_id.
     //
@@ -948,95 +1041,245 @@ pub async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64
     // speed. It is per-machine, it survives a restart, and the badge says which
     // regime is running so the choice is never invisible.
     let bit_exact = bit_exact_numerics(settings.get("numerics").map(|v| v.as_str()));
-    let eff_ubatch: u32 = ubatch;
-
-    let mut cmd = Command::new(&server_bin);
-    cmd.env("LC_ALL", "C");
-    // The streaming layer is what makes a model larger than memory possible, and
-    // it substitutes expert tensors to do it. A dense model has none, so setting
-    // these would point the engine at a pack that does not exist. It runs as
-    // plain llama.cpp here, which is the whole reason its card says so.
-    if !dense {
-        cmd.env("GALACTUS_H4", "1")
-            .env("GALACTUS_H4_INTERNAL", &pack_internal)
-            .env("GALACTUS_H4_EXTERNAL", &pack_external)
-            .env("GALACTUS_H4_CACHE_BYTES", cache_bytes.to_string())
-            .env("GALACTUS_H4_PROTECTED", format!("{fraction:.2}"))
-            .env("GALACTUS_H4_QD", "32");
-    }
-    // Without GALACTUS_PROFILE the engine adopts its builtin GLM-5.2 geometry.
-    // That is right for GLM-5.2 itself and wrong for every other model, so the
-    // sidecar is mandatory as soon as the install produced a profile: a
-    // renamed or deleted profile.engine.txt would otherwise read experts at
-    // the wrong offsets instead of failing.
-    if has_engine_profile {
-        cmd.env("GALACTUS_PROFILE", &profile);
-    }
     // The split ratio the install recorded for this model, handed to the
     // engine as a CROSS-CHECK. The engine cuts by the .split record the pack
     // writer left beside the pack; this is the app's independent copy of the
     // same number, and the engine refuses to start when the two disagree
     // rather than reading one of the two volumes at the wrong offset. Only
     // dual installs have it: a mono pack has nothing to split.
-    if pack_internal != pack_external {
-        if let Some(r) = settings
+    let pack_ratio = if pack_internal != pack_external {
+        settings
             .get(&format!("pack_ratio_{model_id}"))
-            .map(|v| v.trim())
+            .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty())
-        {
-            cmd.env("GALACTUS_H4_RATIO", r);
+    } else {
+        None
+    };
+    Ok(Launch {
+        server_bin,
+        gguf,
+        dense,
+        pack_internal,
+        pack_external,
+        profile: has_engine_profile.then_some(profile),
+        pack_ratio,
+        cpu_moe,
+        bit_exact,
+        slots,
+        ctx_per_slot,
+        full_residency,
+        speculative,
+        plan,
+    })
+}
+
+impl Launch {
+    /// The regime badge for this engine.
+    ///
+    /// Both expert paths are bit-exact, so the regime worth showing is the
+    /// residency one: it is what tells the user the model runs in a fraction
+    /// of its own size. CPU experts stay named, being the cross-check regime
+    /// rather than the default.
+    pub(crate) fn mode(&self) -> String {
+        if self.dense {
+            // Named for what it is. Every other regime here is a claim about
+            // expert numerics; this one has no experts and makes no such claim.
+            "stock-llamacpp".into()
+        } else if self.cpu_moe {
+            "cpu-bit-exact".into()
+        } else if !self.bit_exact {
+            // The user chose speed over the parity path. The name says so,
+            // because a badge that still read "bit-exact" would be a claim this
+            // engine is no longer making.
+            if self.full_residency { "resident-fast".into() } else { "streamed-fast".into() }
+        } else if self.full_residency {
+            "resident-bit-exact".into()
+        } else {
+            "streamed-bit-exact".into()
         }
     }
-    if cpu_moe {
-        cmd.env("GALACTUS_H4_CPU_MOE", "1");
-    } else if bit_exact {
-        // Metal experts run through the bit-exact parity path (patches 0002 +
-        // 0003): the Metal mul_mat_id replays the CPU algorithm bit for bit
-        // for every expert quant type of the flagged models. Certified
-        // numerics on the GPU.
-        cmd.env("GALACTUS_METAL_BITEXACT", "1");
-    }
-    // Slots and window: --ctx-size is the TOTAL KV budget and llama-server
-    // divides it by --parallel, so it is scaled with the slot count. Splitting
-    // a fixed 8192 instead would silently give a two-conversation user a
-    // 4096-token window per thread.
-    //
-    // `slots` was resolved before planning, and must stay the same number: the
-    // engine has to be started with exactly the slot count the ceiling paid for.
-    // The window the planner sized the memory for, not the constant: the two
-    // must be the same number or the engine is started with a cache the ceiling
-    // never accounted for.
-    let ctx_total = ctx_per_slot * slots;
-    cmd.arg("--model")
-        .arg(&gguf)
-        .arg("--host")
-        .arg("127.0.0.1")
-        .arg("--port")
-        .arg(port.to_string())
-        .arg("--ctx-size")
-        .arg(ctx_total.to_string())
-        .arg("--n-gpu-layers")
-        .arg("99")
-        .arg("--no-repack")
-        .arg("--fit")
-        .arg("off")
-        .arg("--no-mmap");
-    if cpu_moe {
-        cmd.arg("--n-cpu-moe").arg("99");
-    }
-    // Logical batch stays normal (the server sizes its output buffers from
-    // it, a tiny value asserts in output_reserve). Only the PHYSICAL
-    // micro-batch is constrained by the expert-cache probation guard.
-    cmd.arg("--batch-size")
-        .arg("512")
-        .arg("--ubatch-size")
-        .arg(eff_ubatch.to_string())
-        // One slot per conversation the app is allowed to run at once.
-        .arg("--parallel")
-        .arg(slots.to_string())
-        .args(chat_parsing_args())
-        .stdout(Stdio::from(log_out))
+
+    /// The llama-server command for this launch, its output going to `log`.
+    ///
+    /// Engine regime, ALWAYS the H4 wiring, ALWAYS the certified numerics.
+    ///
+    /// Certification rule (product law): a certified model runs BIT-EXACT.
+    /// That is the CPU-experts regime the certification benches validated:
+    /// the upstream Metal mv_id kernels diverge from CPU truth on iq quants
+    /// (patch comment, probe v4: 1-2% relative per layer; ppl 8.89 vs 2.67 on
+    /// GLM at 1.58 bpw), so Metal experts are OPT-IN and explicitly outside
+    /// the certification envelope ("metal_experts": true in the registry
+    /// entry, or setting metal_experts=1).
+    ///
+    /// The Metal parity path (patches 0002-0004) now covers EVERY expert quant
+    /// type of the certified registry (iq1_s..q3_K, q8_0, q5_0, q4_K, q6_K,
+    /// mxfp4), verified 32768/32768 identical bits by the parity probe: Metal
+    /// experts ARE the certified numerics, and the default everywhere. CPU
+    /// experts stay as an explicit cross-check regime ("cpu_moe": true per
+    /// model, or setting cpu_moe=1).
+    ///
+    /// The physical micro-batch stays at the planner's guarded value: the
+    /// certified curves were measured in this envelope, and a different batch
+    /// shape changes kernel paths and accumulation order, do not trade
+    /// bit-exactness for prompt speed silently.
+    pub(crate) fn command(&self, port: u16, log: std::fs::File) -> Result<Command, String> {
+        let log_err = log.try_clone().map_err(|e| e.to_string())?;
+        let mut cmd = Command::new(&self.server_bin);
+        cmd.env("LC_ALL", "C");
+        // The streaming layer is what makes a model larger than memory possible,
+        // and it substitutes expert tensors to do it. A dense model has none, so
+        // setting these would point the engine at a pack that does not exist.
+        // It runs as plain llama.cpp here, which is the whole reason its card
+        // says so.
+        if !self.dense {
+            cmd.env("GALACTUS_H4", "1")
+                .env("GALACTUS_H4_INTERNAL", &self.pack_internal)
+                .env("GALACTUS_H4_EXTERNAL", &self.pack_external)
+                .env("GALACTUS_H4_CACHE_BYTES", self.plan.cache_bytes.to_string())
+                .env("GALACTUS_H4_PROTECTED", format!("{:.2}", self.plan.protected))
+                .env("GALACTUS_H4_QD", "32");
+        }
+        // Without GALACTUS_PROFILE the engine adopts its builtin GLM-5.2
+        // geometry. That is right for GLM-5.2 itself and wrong for every other
+        // model, so the sidecar is mandatory as soon as the install produced a
+        // profile (checked in prepare_launch).
+        if let Some(profile) = &self.profile {
+            cmd.env("GALACTUS_PROFILE", profile);
+        }
+        if let Some(r) = &self.pack_ratio {
+            cmd.env("GALACTUS_H4_RATIO", r);
+        }
+        if self.cpu_moe {
+            cmd.env("GALACTUS_H4_CPU_MOE", "1");
+        } else if self.bit_exact {
+            // Metal experts run through the bit-exact parity path (patches 0002
+            // + 0003): the Metal mul_mat_id replays the CPU algorithm bit for
+            // bit for every expert quant type of the flagged models. Certified
+            // numerics on the GPU.
+            cmd.env("GALACTUS_METAL_BITEXACT", "1");
+        }
+        // Slots and window: --ctx-size is the TOTAL KV budget and llama-server
+        // divides it by --parallel, so it is scaled with the slot count.
+        // Splitting a fixed 8192 instead would silently give a two-conversation
+        // user a 4096-token window per thread.
+        //
+        // `slots` and the window are the ones the plan paid for: the engine has
+        // to be started with exactly those, or with a cache the ceiling never
+        // accounted for.
+        cmd.args(server_argv(
+            &self.gguf,
+            port,
+            self.ctx_per_slot * self.slots,
+            self.plan.ubatch,
+            self.slots,
+            self.cpu_moe,
+            &self.speculative,
+        ))
+        .stdout(Stdio::from(log))
         .stderr(Stdio::from(log_err));
+        Ok(cmd)
+    }
+}
+
+/// Open an engine log for a new run, keeping the previous run beside it.
+///
+/// A failed start is usually reported after the user has already retried, and
+/// truncating on every start destroyed the only evidence of what actually
+/// failed.
+pub(crate) fn fresh_engine_log(name: &str) -> Result<std::fs::File, String> {
+    let log_path = app_support().join(name);
+    let _ = std::fs::create_dir_all(app_support());
+    let _ = std::fs::rename(&log_path, app_support().join(format!("{name}.1")));
+    std::fs::File::create(&log_path).map_err(|e| e.to_string())
+}
+
+/// Watchdog: an engine must die WITH the app in every death mode (crash,
+/// force quit, kill -9), not only on the clean RunEvent::Exit path. A tiny
+/// detached shell outlives us, watches our PID, and kills the server when
+/// we are gone. It verifies the command name first so PID reuse can never
+/// make it kill an unrelated process.
+pub(crate) fn spawn_engine_watchdog(srv_pid: u32) {
+    let app_pid = std::process::id();
+    let _ = Command::new("/bin/zsh")
+        .arg("-c")
+        .arg(format!(
+            // It watches BOTH pids and leaves when either is gone. Watching
+            // only the app meant one of these shells survived every model
+            // change and every stop, waking up every three seconds until
+            // the app closed: twenty models tried in a session left twenty
+            // of them behind.
+            "while kill -0 {app_pid} 2>/dev/null && kill -0 {srv_pid} 2>/dev/null; do sleep 3; done; \
+             if kill -0 {app_pid} 2>/dev/null; then exit 0; fi; \
+             if ps -p {srv_pid} -o comm= 2>/dev/null | grep -q llama-server; then \
+               kill {srv_pid} 2>/dev/null; sleep 2; kill -9 {srv_pid} 2>/dev/null; fi"
+        ))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+}
+
+// must not run on the main thread.
+#[tauri::command]
+pub async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64>) -> Result<(), String> {
+    // One start at a time, and the second caller is TOLD rather than queued.
+    //
+    // Two clicks on two cards ran two of these concurrently, and the window
+    // between spawning the engine and taking the state lock includes launching
+    // a watchdog shell: the second start's stop could land inside it, leaving
+    // the first process alive with the whole model resident and nothing
+    // pointing at it.
+    //
+    // A blocking mutex would be wrong here: this function awaits, and holding a
+    // std lock across an await parks a runtime worker and invites a deadlock.
+    // An atomic that refuses is also the better behaviour, since loading a
+    // model takes minutes and a silently queued second start is a surprise.
+    static STARTING: AtomicBool = AtomicBool::new(false);
+    if STARTING.swap(true, Ordering::SeqCst) {
+        return Err("a model is already starting: wait for it, or stop it first".into());
+    }
+    struct Done;
+    impl Drop for Done {
+        fn drop(&mut self) {
+            STARTING.store(false, Ordering::SeqCst);
+        }
+    }
+    // Released on every path out, including the early returns and a panic.
+    let _done = Done;
+    let root = galactus_root()?;
+    // Planning and spawning are one step for every engine on this Mac, the
+    // primary included: a teammate planned between this plan and this spawn
+    // would be sized against memory this start is about to take. The lock is
+    // held until the new engine is recorded in the state, which is where the
+    // next plan reads it. No await happens under it.
+    let _planning = crate::engines::planning_lock();
+    // What the teammate engines hold. The primary itself is not in it: it is
+    // about to be replaced, and its memory comes back with the stop below.
+    let held = crate::engines::held_engines(true, None);
+    let launch = prepare_launch(&root, &model_id, cache_gb, true, &held)?;
+
+    // Every deterministic preflight has succeeded. Only now may this request
+    // replace the active server.
+    server_stop_impl()?;
+    // The generation to beat, read AFTER that stop and not before it.
+    //
+    // WHY THE ORDER IS THE WHOLE FIX. `server_stop_impl` bumps this counter,
+    // which is what lets a Stop reach a start that has not spawned anything
+    // yet. Reading the counter at the top of this function therefore compared
+    // against a value that this function's OWN internal stop had already
+    // invalidated, so the check below fired on every start and every model
+    // refused to load with "cancelled". Read here, the only thing that can
+    // move it is a Stop the user pressed during the slow part that follows:
+    // the engine binary and every dylib read to verify the patches, the
+    // machine probe, the cache plan, which together are the seconds where
+    // Stop used to do nothing at all.
+    let entry_gen = SERVER_GEN.load(Ordering::SeqCst);
+    reap_orphan_servers(&root);
+    let port = pick_free_port()?;
+
+    // Keep the server's output so failures are visible instead of hanging.
+    let log_out = fresh_engine_log("llama-server.log")?;
+    let mut cmd = launch.command(port, log_out)?;
     let mut child = cmd.spawn().map_err(|e| format!("spawn llama-server: {e}"))?;
     // Did somebody press Stop while all of the above was running?
     if SERVER_GEN.load(Ordering::SeqCst) != entry_gen {
@@ -1044,34 +1287,9 @@ pub async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64
         let _ = child.wait();
         return Err("cancelled".into());
     }
+    spawn_engine_watchdog(child.id());
 
-    // Watchdog: the engine must die WITH the app in every death mode (crash,
-    // force quit, kill -9), not only on the clean RunEvent::Exit path. A tiny
-    // detached shell outlives us, watches our PID, and kills the server when
-    // we are gone. It verifies the command name first so PID reuse can never
-    // make it kill an unrelated process.
-    {
-        let app_pid = std::process::id();
-        let srv_pid = child.id();
-        let _ = Command::new("/bin/zsh")
-            .arg("-c")
-            .arg(format!(
-                // It watches BOTH pids and leaves when either is gone. Watching
-                // only the app meant one of these shells survived every model
-                // change and every stop, waking up every three seconds until
-                // the app closed: twenty models tried in a session left twenty
-                // of them behind.
-                "while kill -0 {app_pid} 2>/dev/null && kill -0 {srv_pid} 2>/dev/null; do sleep 3; done; \
-                 if kill -0 {app_pid} 2>/dev/null; then exit 0; fi; \
-                 if ps -p {srv_pid} -o comm= 2>/dev/null | grep -q llama-server; then \
-                   kill {srv_pid} 2>/dev/null; sleep 2; kill -9 {srv_pid} 2>/dev/null; fi"
-            ))
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
-    }
-
+    let plan = launch.plan.clone();
     let generation = SERVER_GEN.fetch_add(1, Ordering::SeqCst) + 1;
     {
         let mut s = server_state().lock().unwrap_or_else(|e| e.into_inner());
@@ -1086,35 +1304,17 @@ pub async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64
         }
         s.child = Some(child);
         s.model_id = Some(model_id.clone());
-        // Both expert paths are bit-exact, so the regime worth showing is the
-        // residency one: it is what tells the user the model runs in a
-        // fraction of its own size. CPU experts stay named, being the
-        // cross-check regime rather than the default.
-        s.mode = if dense {
-            // Named for what it is. Every other regime here is a claim about
-            // expert numerics; this one has no experts and makes no such claim.
-            "stock-llamacpp".into()
-        } else if !metal_experts {
-            "cpu-bit-exact".into()
-        } else if !bit_exact {
-            // The user chose speed over the parity path. The name says so,
-            // because a badge that still read "bit-exact" would be a claim this
-            // engine is no longer making.
-            if full_residency { "resident-fast".into() } else { "streamed-fast".into() }
-        } else if full_residency {
-            "resident-bit-exact".into()
-        } else {
-            "streamed-bit-exact".into()
-        };
+        s.mode = launch.mode();
         s.phase = "starting".into();
-    // Verdict of the PREVIOUS model: it says nothing about this one.
-    s.tools_ok = None;
+        // Verdict of the PREVIOUS model: it says nothing about this one.
+        s.tools_ok = None;
         s.generation = generation;
         s.port = port;
-        s.slots = slots;
-        s.ctx_per_slot = ctx_per_slot;
+        s.slots = launch.slots;
+        s.ctx_per_slot = launch.ctx_per_slot;
         s.footprint = Some(plan.decision.clone());
     }
+    drop(_planning);
     let _ = app.emit(
         "galactus://server",
         json!({"phase": "starting", "footprint": plan.decision}),
@@ -1348,5 +1548,71 @@ mod server_generation_tests {
             too_early + 1,
             "reading before the stop is what shipped, and it cancelled every start"
         );
+    }
+}
+
+/// Speculative decoding, read from the registry and handed to every engine.
+#[cfg(test)]
+mod speculative_tests {
+    use super::{server_argv, speculative_args};
+    use serde_json::json;
+    use std::path::Path;
+
+    fn argv(spec: &[String], cpu_moe: bool) -> Vec<String> {
+        server_argv(Path::new("/models/x.gguf"), 8740, 16384, 512, 2, cpu_moe, spec)
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn an_entry_without_the_key_starts_as_before() {
+        assert_eq!(speculative_args(&json!({"id": "m"})), Ok(vec![]));
+        assert!(!argv(&[], false).iter().any(|a| a.starts_with("--spec")));
+    }
+
+    #[test]
+    fn an_mtp_entry_reaches_the_engine_as_its_two_flags() {
+        let spec = speculative_args(&json!({
+            "id": "qwen35-35b-a3b",
+            "speculative": {"type": "draft-mtp", "n_max": 1}
+        }))
+        .unwrap();
+        assert_eq!(spec, ["--spec-type", "draft-mtp", "--spec-draft-n-max", "1"]);
+        let a = argv(&spec, false);
+        let at = a.iter().position(|x| x == "--spec-type").expect("flag present");
+        assert_eq!(a[at + 1], "draft-mtp");
+        let n = a.iter().position(|x| x == "--spec-draft-n-max").expect("flag present");
+        assert_eq!(a[n + 1], "1");
+    }
+
+    #[test]
+    fn a_malformed_entry_is_refused_rather_than_silently_dropped() {
+        // Dropped, the model would run without its draft while the catalogue
+        // shows the speed with it.
+        for bad in [
+            json!({"type": "", "n_max": 1}),
+            json!({"n_max": 1}),
+            json!({"type": "draft-mtp"}),
+            json!({"type": "draft-mtp", "n_max": 0}),
+            json!({"type": "draft-mtp", "n_max": 1000}),
+            json!({"type": "draft mtp --port 1", "n_max": 1}),
+        ] {
+            let err = speculative_args(&json!({"id": "m", "speculative": bad})).unwrap_err();
+            assert!(err.contains("registry entry m"), "{err}");
+        }
+    }
+
+    #[test]
+    fn the_argv_carries_the_plan() {
+        let a = argv(&[], true);
+        let after = |flag: &str| a[a.iter().position(|x| x == flag).unwrap() + 1].clone();
+        assert_eq!(after("--model"), "/models/x.gguf");
+        assert_eq!(after("--port"), "8740");
+        assert_eq!(after("--ctx-size"), "16384");
+        assert_eq!(after("--ubatch-size"), "512");
+        assert_eq!(after("--parallel"), "2");
+        assert_eq!(after("--n-cpu-moe"), "99");
+        assert!(!argv(&[], false).iter().any(|x| x == "--n-cpu-moe"));
     }
 }

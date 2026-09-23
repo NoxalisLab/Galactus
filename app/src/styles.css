@@ -2021,3 +2021,27 @@ html.pane-dragging .pvw-frame { pointer-events: none; }
 .secport .secsvc { color: var(--acc); font-size: 11.5px; font-weight: 600; }
 .secport .secbanner { color: var(--dim4); font-size: 11px; font-family: var(--mono, monospace); max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .secfoot { margin: 22px 4px 8px; font-size: 11px; color: var(--dim4); }
+
+/* Model teams (teamsview.ts): one card per preset under the engine settings. */
+.teamsel { background: var(--inset); border: 1px solid var(--bd2); border-radius: 0; padding: 7px 10px; color: var(--tx); font-size: 12.5px; outline: none; max-width: 320px; }
+.team-cards { display: flex; flex-direction: column; gap: 10px; padding: 12px 2px 17px; border-bottom: 1px solid var(--bd); }
+.team-card { background: var(--card); border: 1px solid var(--bd2); padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+.team-card.on { border-color: var(--acc); }
+.team-head { display: flex; align-items: center; gap: 10px; }
+.team-name { flex: 1; min-width: 0; background: transparent; border: 1px solid transparent; color: var(--tx); font-size: 13.5px; font-weight: 500; padding: 4px 6px; outline: none; }
+.team-name:hover, .team-name:focus { border-color: var(--bd2); background: var(--inset); }
+.team-note { font-size: 11.5px; color: var(--dim); }
+.team-roles { display: flex; flex-direction: column; gap: 6px; }
+.team-role { display: flex; align-items: center; gap: 10px; }
+.team-role .mono { width: 96px; flex: none; font-size: 11.5px; color: var(--acc-tx); }
+.team-role select { flex: 1; min-width: 0; background: var(--inset); border: 1px solid var(--bd2); border-radius: 0; padding: 6px 8px; color: var(--tx); font-size: 12.5px; outline: none; }
+.team-add { display: flex; align-items: center; gap: 8px; }
+.team-add input { width: 180px; background: var(--inset); border: 1px solid var(--bd2); border-radius: 0; padding: 6px 8px; color: var(--tx); font-size: 11.5px; outline: none; }
+.team-fp { font-size: 11.5px; color: var(--dim2); font-family: var(--mono); }
+.team-fp.good { color: var(--good); }
+.team-fp.bad { color: var(--bad); }
+.team-card .set-actions { justify-content: flex-end; }
+.team-role.cloud .mono { color: var(--warn); }
+.team-slug { flex: 1; min-width: 0; background: var(--inset); border: 1px solid var(--bd2); border-radius: 0; padding: 6px 8px; color: var(--tx); font-size: 11.5px; outline: none; }
+.team-role.cloud select { flex: 0 0 180px; }
+.cloud-in { width: 200px; background: var(--inset); border: 1px solid var(--bd2); border-radius: 0; padding: 6px 8px; color: var(--tx); font-size: 12px; outline: none; }
