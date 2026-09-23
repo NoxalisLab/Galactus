@@ -16,7 +16,7 @@
       "record_bytes": 13221888,
       "min_cache_bytes": 7616207616,
       "status": "certified_bit_transparent",
-      "certified_date": "2026-08-11",
+      "certified_date": "2026-09-23",
       "native_fit_ram_gb": 80,
       "measured": [
         {
@@ -96,18 +96,20 @@
       ],
       "min_ram_gb": 16,
       "certified_ppl": {
-        "stock": 30.8129,
-        "wired": 30.8129,
-        "tensors_identical": 5911,
+        "stock": 43.4193,
+        "wired": 43.4193,
         "corpus": "corpus/materialized/stage1/long-context-multifieldqa-zh-0029.txt",
-        "corpus_sha256": "2baf18f90cd4b6e0",
+        "corpus_sha256": "2baf18f90cd4b6e09411f3e870e5d734943fc07828d5a0e3b6d8b527f485aa33",
+        "corpus_bytes": 20737,
         "seed": 42,
         "ctx": 512,
         "batch": 512,
         "ubatch": 2,
-        "regime": "cross-check path (CPU experts and biases)",
-        "date": "2026-08-11",
-        "recorded_by": "scripts/certify.py"
+        "regime": "llama-perplexity, CPU expert reference: --n-cpu-moe 99 --no-repack --fit off --chunks 1, stock against wired (GALACTUS_H4=1, --no-mmap)",
+        "date": "2026-09-23",
+        "run": "20260923T095518Z-p46025",
+        "recorded_by": "scripts/certify.py",
+        "engine": "b1ff4ca2"
       },
       "context_length": 131072
     },
@@ -209,13 +211,22 @@
           "prompt_spread_pct": 1.1
         }
       ],
-      "certified_date": "2026-08-05",
+      "certified_date": "2026-09-23",
       "certified_ppl": {
-        "value_unverified": 4.5839,
-        "corpus": null,
-        "date": "2026-08-05",
-        "unreproducible": true,
-        "note": "Corpus not recorded. This number predates scripts/certify.py: it was taken by a per-model launcher in lanceurs/differentiel/, which reads corpus/materialized/stage1/coding-repobench-p-e-0048.txt, but nothing wrote that down at the time and llama-perplexity does not echo --file into its log, so the text behind the number cannot be established from the evidence that exists. What is established is that it is not the corpus scripts/certify.py reads: on 2026-08-10 that corpus gave 7.0202 for this model, see artifacts/h4/certification/20260810T110630Z-qwen3-30b-a3b.stock.out. The certification itself is unaffected and was re-confirmed on 2026-08-10 with zero divergence; it is this number alone that is ambiguous. Do not quote it and do not compare it to any other perplexity in this file. Re-running scripts/certify.py on this model replaces this whole object with a recorded one."
+        "stock": 7.0233,
+        "wired": 7.0233,
+        "corpus": "corpus/materialized/stage1/long-context-multifieldqa-zh-0029.txt",
+        "corpus_sha256": "2baf18f90cd4b6e09411f3e870e5d734943fc07828d5a0e3b6d8b527f485aa33",
+        "corpus_bytes": 20737,
+        "seed": 42,
+        "ctx": 512,
+        "batch": 512,
+        "ubatch": 2,
+        "regime": "llama-perplexity, CPU expert reference: --n-cpu-moe 99 --no-repack --fit off --chunks 1, stock against wired (GALACTUS_H4=1, --no-mmap)",
+        "date": "2026-09-23",
+        "run": "20260923T095041Z-p44185",
+        "recorded_by": "scripts/certify.py",
+        "engine": "b1ff4ca2"
       },
       "expert_bytes_total": 30802968576,
       "non_expert_bytes": 1700000000,
@@ -251,13 +262,22 @@
       "record_classes": 2,
       "min_cache_bytes": 7313917632,
       "status": "certified_bit_transparent",
-      "certified_date": "2026-08-05",
+      "certified_date": "2026-09-23",
       "certified_ppl": {
-        "value_unverified": 6.1562,
-        "corpus": null,
-        "date": "2026-08-05",
-        "unreproducible": true,
-        "note": "Corpus not recorded. This number predates scripts/certify.py: it was taken by a per-model launcher in lanceurs/differentiel/, which reads corpus/materialized/stage1/coding-repobench-p-e-0048.txt, but nothing wrote that down at the time and llama-perplexity does not echo --file into its log, so the text behind the number cannot be established from the evidence that exists. What is established is that it is not the corpus scripts/certify.py reads: on 2026-08-10 that corpus gave 15.6224 for this model, see artifacts/h4/certification/20260810T111029Z-llama4-scout.stock.out. The certification itself is unaffected and was re-confirmed on 2026-08-10 with zero divergence; it is this number alone that is ambiguous. Do not quote it and do not compare it to any other perplexity in this file. Re-running scripts/certify.py on this model replaces this whole object with a recorded one."
+        "stock": 15.6224,
+        "wired": 15.6224,
+        "corpus": "corpus/materialized/stage1/long-context-multifieldqa-zh-0029.txt",
+        "corpus_sha256": "2baf18f90cd4b6e09411f3e870e5d734943fc07828d5a0e3b6d8b527f485aa33",
+        "corpus_bytes": 20737,
+        "seed": 42,
+        "ctx": 512,
+        "batch": 512,
+        "ubatch": 2,
+        "regime": "llama-perplexity, CPU expert reference: --n-cpu-moe 99 --no-repack --fit off --chunks 1, stock against wired (GALACTUS_H4=1, --no-mmap)",
+        "date": "2026-09-23",
+        "run": "20260923T095327Z-p45589",
+        "recorded_by": "scripts/certify.py",
+        "engine": "b1ff4ca2"
       },
       "native_fit_ram_gb": 80,
       "measured": [
@@ -419,13 +439,22 @@
       "record_bytes": 11462246,
       "record_classes": 2,
       "status": "certified_bit_transparent",
-      "certified_date": "2026-08-06",
+      "certified_date": "2026-09-23",
       "certified_ppl": {
-        "value_unverified": 3.6481,
-        "corpus": null,
-        "date": "2026-08-06",
-        "unreproducible": true,
-        "note": "Corpus not recorded. This number predates scripts/certify.py: it was taken by a per-model launcher in lanceurs/differentiel/, which reads corpus/materialized/stage1/coding-repobench-p-e-0048.txt, but nothing wrote that down at the time and llama-perplexity does not echo --file into its log, so the text behind the number cannot be established from the evidence that exists. What is established is that it is not the corpus scripts/certify.py reads: on 2026-08-10 that corpus gave 16.5228 for this model, see artifacts/h4/certification/20260810T110847Z-glm-4.stock.out. The certification itself is unaffected and was re-confirmed on 2026-08-10 with zero divergence; it is this number alone that is ambiguous. Do not quote it and do not compare it to any other perplexity in this file. Re-running scripts/certify.py on this model replaces this whole object with a recorded one."
+        "stock": 16.5604,
+        "wired": 16.5604,
+        "corpus": "corpus/materialized/stage1/long-context-multifieldqa-zh-0029.txt",
+        "corpus_sha256": "2baf18f90cd4b6e09411f3e870e5d734943fc07828d5a0e3b6d8b527f485aa33",
+        "corpus_bytes": 20737,
+        "seed": 42,
+        "ctx": 512,
+        "batch": 512,
+        "ubatch": 2,
+        "regime": "llama-perplexity, CPU expert reference: --n-cpu-moe 99 --no-repack --fit off --chunks 1, stock against wired (GALACTUS_H4=1, --no-mmap)",
+        "date": "2026-09-23",
+        "run": "20260923T095628Z-p46314",
+        "recorded_by": "scripts/certify.py",
+        "engine": "b1ff4ca2"
       },
       "native_fit_ram_gb": 96,
       "min_ram_gb": 32,
@@ -512,13 +541,22 @@
       "record_bytes": 1908594,
       "record_classes": 2,
       "status": "certified_bit_transparent",
-      "certified_date": "2026-08-06",
+      "certified_date": "2026-09-23",
       "certified_ppl": {
-        "value_unverified": 4.0523,
-        "corpus": null,
-        "date": "2026-08-06",
-        "unreproducible": true,
-        "note": "Corpus not recorded. This number predates scripts/certify.py: it was taken by a per-model launcher in lanceurs/differentiel/, which reads corpus/materialized/stage1/coding-repobench-p-e-0048.txt, but nothing wrote that down at the time and llama-perplexity does not echo --file into its log, so the text behind the number cannot be established from the evidence that exists. What is established is that it is not the corpus scripts/certify.py reads: on 2026-08-10 that corpus gave 5.9467 for this model, see artifacts/h4/certification/20260810T110748Z-qwen3-next-80b.stock.out. The certification itself is unaffected and was re-confirmed on 2026-08-10 with zero divergence; it is this number alone that is ambiguous. Do not quote it and do not compare it to any other perplexity in this file. Re-running scripts/certify.py on this model replaces this whole object with a recorded one."
+        "stock": 5.9622,
+        "wired": 5.9622,
+        "corpus": "corpus/materialized/stage1/long-context-multifieldqa-zh-0029.txt",
+        "corpus_sha256": "2baf18f90cd4b6e09411f3e870e5d734943fc07828d5a0e3b6d8b527f485aa33",
+        "corpus_bytes": 20737,
+        "seed": 42,
+        "ctx": 512,
+        "batch": 512,
+        "ubatch": 2,
+        "regime": "llama-perplexity, CPU expert reference: --n-cpu-moe 99 --no-repack --fit off --chunks 1, stock against wired (GALACTUS_H4=1, --no-mmap)",
+        "date": "2026-09-23",
+        "run": "20260923T095224Z-p45340",
+        "recorded_by": "scripts/certify.py",
+        "engine": "b1ff4ca2"
       },
       "native_fit_ram_gb": 64,
       "min_ram_gb": 16,
@@ -668,21 +706,23 @@
           "Qwen3-Coder-30B-A3B-Instruct-Q8_0.gguf"
         ]
       },
-      "certified_date": "2026-08-11",
+      "certified_date": "2026-09-23",
       "measured_note": "MacBook Pro M5 Max, 128 GB, internal SSD, shipped path (Metal bit-exact experts), batch 512, planner ubatch, 192 predicted tokens on a 24-paragraph prompt, bench 2026-08-10 by scripts/bench-curve.py; cache = app planning ceiling per Mac tier, curve stops at full residency (30.80 GB)",
       "certified_ppl": {
-        "stock": 12.5312,
-        "wired": 12.5312,
-        "tensors_identical": 5654,
+        "stock": 12.4286,
+        "wired": 12.4286,
         "corpus": "corpus/materialized/stage1/long-context-multifieldqa-zh-0029.txt",
-        "corpus_sha256": "2baf18f90cd4b6e0",
+        "corpus_sha256": "2baf18f90cd4b6e09411f3e870e5d734943fc07828d5a0e3b6d8b527f485aa33",
+        "corpus_bytes": 20737,
         "seed": 42,
         "ctx": 512,
         "batch": 512,
         "ubatch": 2,
-        "regime": "cross-check path (CPU experts and biases)",
-        "date": "2026-08-11",
-        "recorded_by": "scripts/certify.py"
+        "regime": "llama-perplexity, CPU expert reference: --n-cpu-moe 99 --no-repack --fit off --chunks 1, stock against wired (GALACTUS_H4=1, --no-mmap)",
+        "date": "2026-09-23",
+        "run": "20260923T095126Z-p45030",
+        "recorded_by": "scripts/certify.py",
+        "engine": "b1ff4ca2"
       },
       "context_length": 262144
     },
@@ -707,10 +747,10 @@
       "tasks": [
         "general"
       ],
-      "certified_date": "2026-08-09",
+      "certified_date": "2026-09-23",
       "certified_ppl": {
-        "stock": 3.988,
-        "wired": 3.988,
+        "stock": 3.9993,
+        "wired": 3.9993,
         "corpus": "corpus/materialized/stage1/long-context-multifieldqa-zh-0029.txt",
         "corpus_sha256": "2baf18f90cd4b6e09411f3e870e5d734943fc07828d5a0e3b6d8b527f485aa33",
         "corpus_bytes": 20737,
@@ -719,10 +759,10 @@
         "batch": 512,
         "ubatch": 2,
         "regime": "llama-perplexity, CPU expert reference: --n-cpu-moe 99 --no-repack --fit off --chunks 1, stock against wired (GALACTUS_H4=1, --no-mmap)",
-        "date": "2026-08-09",
-        "run": "20260809T183027Z",
+        "date": "2026-09-23",
+        "run": "20260923T100211Z-p48433",
         "recorded_by": "scripts/certify.py",
-        "note": "Provenance backfilled on 2026-08-10; it was not recorded when the number was taken. Verified rather than assumed: the closing audit re-ran this model on this corpus and both sides returned the same value again, see artifacts/h4/certification/20260810T110518Z-olmoe-1b-7b.stock.out"
+        "engine": "b1ff4ca2"
       },
       "measured": [
         {
@@ -784,10 +824,10 @@
         "general",
         "writing"
       ],
-      "certified_date": "2026-08-09",
+      "certified_date": "2026-09-23",
       "certified_ppl": {
-        "stock": 1.4584,
-        "wired": 1.4584,
+        "stock": 1.4622,
+        "wired": 1.4622,
         "corpus": "corpus/materialized/stage1/long-context-multifieldqa-zh-0029.txt",
         "corpus_sha256": "2baf18f90cd4b6e09411f3e870e5d734943fc07828d5a0e3b6d8b527f485aa33",
         "corpus_bytes": 20737,
@@ -796,10 +836,10 @@
         "batch": 512,
         "ubatch": 2,
         "regime": "llama-perplexity, CPU expert reference: --n-cpu-moe 99 --no-repack --fit off --chunks 1, stock against wired (GALACTUS_H4=1, --no-mmap)",
-        "date": "2026-08-09",
-        "run": "20260809T191045Z",
+        "date": "2026-09-23",
+        "run": "20260923T094914Z-p43340",
         "recorded_by": "scripts/certify.py",
-        "note": "Provenance backfilled on 2026-08-10; it was not recorded when the number was taken. Verified rather than assumed: the closing audit re-ran this model on this corpus and both sides returned the same value again, see artifacts/h4/certification/20260810T110546Z-phi35-moe.stock.out"
+        "engine": "b1ff4ca2"
       },
       "measured": [
         {
@@ -866,10 +906,10 @@
         "scripting",
         "reasoning"
       ],
-      "certified_date": "2026-08-11",
+      "certified_date": "2026-09-23",
       "certified_ppl": {
-        "stock": 6.7049,
-        "wired": 6.7049,
+        "stock": 6.6943,
+        "wired": 6.6943,
         "corpus": "corpus/materialized/stage1/long-context-multifieldqa-zh-0029.txt",
         "corpus_sha256": "2baf18f90cd4b6e09411f3e870e5d734943fc07828d5a0e3b6d8b527f485aa33",
         "corpus_bytes": 20737,
@@ -878,9 +918,10 @@
         "batch": 512,
         "ubatch": 2,
         "regime": "llama-perplexity, CPU expert reference: --n-cpu-moe 99 --no-repack --fit off --chunks 1, stock against wired (GALACTUS_H4=1, --no-mmap)",
-        "date": "2026-08-11",
-        "run": "20260811T092803Z",
-        "recorded_by": "scripts/certify.py"
+        "date": "2026-09-23",
+        "run": "20260923T094733Z-p41720",
+        "recorded_by": "scripts/certify.py",
+        "engine": "b1ff4ca2"
       },
       "measured": [
         {
@@ -944,19 +985,22 @@
         "reasoning",
         "general"
       ],
-      "certified_date": "2026-08-11",
+      "certified_date": "2026-09-23",
       "certified_ppl": {
-        "stock": 22.9323,
-        "wired": 22.9323,
+        "stock": 22.5598,
+        "wired": 22.5598,
         "corpus": "corpus/materialized/stage1/long-context-multifieldqa-zh-0029.txt",
-        "corpus_sha256": "2baf18f90cd4b6e0",
+        "corpus_sha256": "2baf18f90cd4b6e09411f3e870e5d734943fc07828d5a0e3b6d8b527f485aa33",
+        "corpus_bytes": 20737,
         "seed": 42,
         "ctx": 512,
         "batch": 512,
         "ubatch": 2,
-        "regime": "cross-check path (CPU experts and biases)",
-        "date": "2026-08-11",
-        "recorded_by": "scripts/certify.py"
+        "regime": "llama-perplexity, CPU expert reference: --n-cpu-moe 99 --no-repack --fit off --chunks 1, stock against wired (GALACTUS_H4=1, --no-mmap)",
+        "date": "2026-09-23",
+        "run": "20260923T094839Z-p43066",
+        "recorded_by": "scripts/certify.py",
+        "engine": "b1ff4ca2"
       },
       "measured": [
         {
@@ -1048,6 +1092,145 @@
       ],
       "context_length": 262144,
       "note": "Version abliterated (huihui-ai) : les directions de refus sont supprimees, le modele ne refuse plus. Meme architecture et meme fenetre que la version de base."
+    },
+    {
+      "id": "gpt-oss-20b",
+      "name": "OpenAI gpt-oss-20b (Q4_K_M)",
+      "arch": "gpt-oss",
+      "gguf_bytes": 11624759488,
+      "expert_bytes_total": 10154409984,
+      "non_expert_bytes": 1459405056,
+      "layers_moe": 24,
+      "experts": 32,
+      "experts_used": 4,
+      "record_bytes": 13221888,
+      "status": "certified_bit_transparent",
+      "min_ram_gb": 16,
+      "context_length": 131072,
+      "download": {
+        "base": "https://huggingface.co/unsloth/gpt-oss-20b-GGUF/resolve/main",
+        "files": [
+          "gpt-oss-20b-Q4_K_M.gguf"
+        ]
+      },
+      "tasks": [
+        "reasoning",
+        "general"
+      ],
+      "measured": [],
+      "certified_ppl": {
+        "stock": 147.0271,
+        "wired": 147.0271,
+        "corpus": "corpus/materialized/stage1/long-context-multifieldqa-zh-0029.txt",
+        "corpus_sha256": "2baf18f90cd4b6e09411f3e870e5d734943fc07828d5a0e3b6d8b527f485aa33",
+        "corpus_bytes": 20737,
+        "seed": 42,
+        "ctx": 512,
+        "batch": 512,
+        "ubatch": 2,
+        "regime": "llama-perplexity, CPU expert reference: --n-cpu-moe 99 --no-repack --fit off --chunks 1, stock against wired (GALACTUS_H4=1, --no-mmap)",
+        "date": "2026-09-23",
+        "run": "20260923T094810Z-p42606",
+        "recorded_by": "scripts/certify.py",
+        "engine": "b1ff4ca2"
+      },
+      "certified_date": "2026-09-23"
+    },
+    {
+      "id": "nemotron35-30b-a3b",
+      "name": "NVIDIA Nemotron 3.5 Lightning 30B-A3B (UD-Q4_K_M)",
+      "arch": "nemotron_h_moe",
+      "gguf_bytes": 25266255936,
+      "expert_bytes_total": 21923627008,
+      "non_expert_bytes": 2429024000,
+      "layers_moe": 23,
+      "experts": 128,
+      "experts_used": 6,
+      "record_bytes": 8732672,
+      "status": "certified_bit_transparent",
+      "min_ram_gb": 16,
+      "context_length": 1048576,
+      "download": {
+        "base": "https://huggingface.co/unsloth/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF/resolve/main",
+        "files": [
+          "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-UD-Q4_K_M.gguf"
+        ]
+      },
+      "tasks": [
+        "code",
+        "scripting",
+        "general"
+      ],
+      "measured": [],
+      "profile_note": "hybrid Mamba/attention/MoE: 23 MoE layers interleaved in 53 blocks, sparse layer table; two record sizes (7176192 x19, 8732672 x4), record_bytes is the larger",
+      "certified_ppl": {
+        "stock": 2.9142,
+        "wired": 2.9142,
+        "corpus": "corpus/materialized/stage1/long-context-multifieldqa-zh-0029.txt",
+        "corpus_sha256": "2baf18f90cd4b6e09411f3e870e5d734943fc07828d5a0e3b6d8b527f485aa33",
+        "corpus_bytes": 20737,
+        "seed": 42,
+        "ctx": 512,
+        "batch": 512,
+        "ubatch": 2,
+        "regime": "llama-perplexity, CPU expert reference: --n-cpu-moe 99 --no-repack --fit off --chunks 1, stock against wired (GALACTUS_H4=1, --no-mmap)",
+        "date": "2026-09-23",
+        "run": "20260923T095003Z-p43771",
+        "recorded_by": "scripts/certify.py",
+        "engine": "b1ff4ca2"
+      },
+      "certified_date": "2026-09-23"
+    },
+    {
+      "id": "deepseek-v4-flash",
+      "name": "DeepSeek-V4-Flash-0731 284B-A13B (UD-Q4_K_XL)",
+      "arch": "deepseek4",
+      "gguf_bytes": 155095241120,
+      "expert_bytes_total": 147169738752,
+      "non_expert_bytes": 7920157020,
+      "layers_moe": 43,
+      "experts": 256,
+      "experts_used": 6,
+      "record_bytes": 13369344,
+      "min_cache_bytes": 13797163008,
+      "status": "certified_bit_transparent",
+      "min_ram_gb": 128,
+      "context_length": 1048576,
+      "download": {
+        "base": "https://huggingface.co/unsloth/DeepSeek-V4-Flash-0731-GGUF/resolve/main/UD-Q4_K_XL",
+        "files": [
+          "DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00001-of-00005.gguf",
+          "DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00002-of-00005.gguf",
+          "DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00003-of-00005.gguf",
+          "DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00004-of-00005.gguf",
+          "DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00005-of-00005.gguf"
+        ]
+      },
+      "tasks": [
+        "reasoning",
+        "code",
+        "writing",
+        "general"
+      ],
+      "measured": [],
+      "min_ram_note": "128 GB is the only tier measured so far; lower tiers wait for bench-curve",
+      "certified_ppl": {
+        "stock": 11.0221,
+        "wired": 11.0221,
+        "corpus": "corpus/materialized/stage1/long-context-multifieldqa-zh-0029.txt",
+        "corpus_sha256": "2baf18f90cd4b6e09411f3e870e5d734943fc07828d5a0e3b6d8b527f485aa33",
+        "corpus_bytes": 20737,
+        "seed": 42,
+        "ctx": 512,
+        "batch": 512,
+        "ubatch": 2,
+        "regime": "llama-perplexity, CPU expert reference: --n-cpu-moe 99 --no-repack --fit off --chunks 1, stock against wired (GALACTUS_H4=1, --no-mmap), GALACTUS_NGL=0 (both passes)",
+        "date": "2026-09-23",
+        "run": "20260923T095840Z-p46786",
+        "recorded_by": "scripts/certify.py",
+        "engine": "b1ff4ca2"
+      },
+      "certified_date": "2026-09-23"
     }
   ],
   "mac_lineup": {

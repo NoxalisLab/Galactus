@@ -134,8 +134,15 @@ def find_model(model_id: str) -> dict:
     raise AssertionError("unreachable")
 
 
-def resolve_paths(model_id: str) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path | None]:
-    """The GGUF, the pack and the engine profile, or a clear error saying which."""
+def resolve_paths(model_id: str, need_pack: bool = True
+                  ) -> tuple[pathlib.Path, pathlib.Path | None, pathlib.Path | None]:
+    """The GGUF, the pack and the engine profile, or a clear error saying which.
+
+    need_pack=False when the caller names its packs: the ones the app installs
+    live under ~/GalactusH4 and on the second SSD, not under artifacts/, and
+    refusing to start because artifacts/ is empty meant symlinking packs there
+    just to be allowed to name them.
+    """
     mdir = ROOT / "models" / model_id
     if not mdir.is_dir():
         die(f"{mdir} does not exist: install the model first")
@@ -150,6 +157,9 @@ def resolve_paths(model_id: str) -> tuple[pathlib.Path, pathlib.Path, pathlib.Pa
     # wired run dies immediately, dumps nothing, and the comparison has no
     # second side. Alphabetical order put it first, so it was picked every
     # time until this line existed.
+    profile = mdir / "profile.engine.txt"
+    if not need_pack:
+        return gguf, None, profile if profile.is_file() else None
     all_packs = sorted((ROOT / "artifacts" / "h4" / "packs" / model_id).glob("*.pack"))
     packs = [p for p in all_packs if "fixture" not in p.name]
     if not packs:
@@ -215,6 +225,9 @@ def ppl_record(corpus: pathlib.Path, stock: float, wired: float, stamp: str,
         "date": day,
         "run": stamp,
         "recorded_by": "scripts/certify.py",
+        # A perplexity is a property of the engine too: the same model on the
+        # same corpus moved from 6.7049 to 6.6943 when llama.cpp was ported.
+        "engine": (ROOT / "patches" / "UPSTREAM-COMMIT.txt").read_text().strip(),
     }
 
 
@@ -306,7 +319,7 @@ def certify(model_id: str, layer: int, internal_pack: str | None = None,
         die(f"{PERPLEXITY} is missing: build the engine first")
 
     entry = find_model(model_id)
-    gguf, pack, profile = resolve_paths(model_id)
+    gguf, pack, profile = resolve_paths(model_id, need_pack=internal_pack is None)
     # An explicit pair replaces the discovered pack entirely. Both halves are
     # required together: one of the two alone would silently fall back to the
     # mono layout and the run would certify something nobody asked for.
