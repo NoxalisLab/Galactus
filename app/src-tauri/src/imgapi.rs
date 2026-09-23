@@ -130,6 +130,9 @@ pub struct Ask {
     pub req: GenerateRequest,
     pub fmt: Fmt,
     /// Files this module wrote for the engine, deleted when this is dropped.
+    /// Held for its Drop, never read outside the tests: removing the field
+    /// would delete the files before the engine reads them.
+    #[allow(dead_code)]
     pub temp: TempFiles,
 }
 

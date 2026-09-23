@@ -668,6 +668,9 @@ impl Regex {
         let mut next: Vec<(usize, usize)> = Vec::new();
         let mut seen_next = vec![usize::MAX; self.prog.len()];
 
+        // `pos` runs to n INCLUSIVE, one past the last char, where a match
+        // may still complete: an iterator over `chars` would miss that step.
+        #[allow(clippy::needless_range_loop)]
         for pos in 0..=n {
             // Every 4096 positions, the same cadence the file loop uses. The
             // check is a flag load, so it costs nothing next to the work of one

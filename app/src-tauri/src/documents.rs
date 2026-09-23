@@ -83,7 +83,6 @@ fn python_helper(name: &str) -> Result<PathBuf, String> {
 /// precompiled binary in the bundle first, so a Mac without the Command Line
 /// Tools works, then a compile into Application Support, refreshed when the
 /// source is newer than the cached binary.
-
 fn run_helper(bin: &Path, cmd: &str, path: &str, secs: u64) -> Result<String, String> {
     let child = Command::new(bin)
         .arg(cmd)

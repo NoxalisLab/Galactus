@@ -92,13 +92,15 @@ pub(crate) fn chat_parsing_args() -> [&'static str; 3] {
 /// THE DEFAULT IS NOW STANDARD, and this reversal was made on measurements
 /// rather than a preference. The parity flag as the only difference:
 ///
-///     olmoe-1b-7b, q4_K/q6_K experts, 3061 tokens, ubatch 512
-///       bit-exact      147 tok/s prefill      74-108 tok/s decode
-///       standard      5567-8584 tok/s        187-225 tok/s decode
+/// ```text
+/// olmoe-1b-7b, q4_K/q6_K experts, 3061 tokens, ubatch 512
+///   bit-exact      147 tok/s prefill      74-108 tok/s decode
+///   standard      5567-8584 tok/s        187-225 tok/s decode
 ///
-///     gpt-oss-120b, mxfp4 experts, 3521 tokens, ubatch 512
-///       bit-exact       61-68 tok/s prefill        29 tok/s decode
-///       standard         2286 tok/s              53.6 tok/s decode
+/// gpt-oss-120b, mxfp4 experts, 3521 tokens, ubatch 512
+///   bit-exact       61-68 tok/s prefill        29 tok/s decode
+///   standard         2286 tok/s              53.6 tok/s decode
+/// ```
 ///
 /// Prefill is 35 to 58 times slower on the parity path, and generation about
 /// twice. On the 120B that is the difference between reading a 7256-token

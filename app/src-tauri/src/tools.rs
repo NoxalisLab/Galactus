@@ -231,11 +231,10 @@ pub(crate) fn is_private_host(host: &str) -> bool {
     }
     // Unique local addresses (fc00::/7) and IPv6 link-local (fe80::/10).
     let low = host.to_lowercase();
-    if low.starts_with("fc") || low.starts_with("fd") || low.starts_with("fe8") {
-        if low.contains(':') {
+    if (low.starts_with("fc") || low.starts_with("fd") || low.starts_with("fe8"))
+        && low.contains(':') {
             return true;
         }
-    }
     // An IPv4 address does not have to be four decimal parts, and curl accepts
     // every other form: 2130706433, 0x7f000001, 127.1 and 0177.0.0.1 all reach
     // 127.0.0.1. The first version of this check parsed strict dotted-decimal

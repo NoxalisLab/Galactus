@@ -2021,31 +2021,28 @@ fn pick_folder() -> Result<Option<String>, String> {
     // user" on a machine where nobody cancelled anything, which is what a
     // refused Apple Event looks like from the outside, and four rounds went
     // into that disguise.
-    match swift_helper("galactus-pick") {
-        Ok(bin) => {
-            let out = Command::new(&bin)
-                .arg("folder")
-                .arg(std::env::var("HOME").unwrap_or_default())
-                .output()
-                .map_err(|e| e.to_string())?;
-            return match out.status.code() {
-                Some(0) => {
-                    let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                    Ok(if p.is_empty() { None } else { Some(p) })
-                }
-                // 2 is a real cancel, and the helper is the only thing here that
-                // can tell one from a failure without reading a sentence.
-                Some(2) => Ok(None),
-                _ => Err(format!(
-                    "the folder chooser could not open: {}",
-                    String::from_utf8_lossy(&out.stderr).trim()
-                )),
-            };
-        }
-        // No swiftc and no prebuilt helper: fall through to the old path rather
-        // than refusing outright. It works on plenty of machines, and one that
-        // cannot build the helper is not automatically one where it fails.
-        Err(_) => {}
+    // No swiftc and no prebuilt helper: fall through to the old path below
+    // rather than refusing outright. It works on plenty of machines, and one
+    // that cannot build the helper is not automatically one where it fails.
+    if let Ok(bin) = swift_helper("galactus-pick") {
+        let out = Command::new(&bin)
+            .arg("folder")
+            .arg(std::env::var("HOME").unwrap_or_default())
+            .output()
+            .map_err(|e| e.to_string())?;
+        return match out.status.code() {
+            Some(0) => {
+                let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                Ok(if p.is_empty() { None } else { Some(p) })
+            }
+            // 2 is a real cancel, and the helper is the only thing here that
+            // can tell one from a failure without reading a sentence.
+            Some(2) => Ok(None),
+            _ => Err(format!(
+                "the folder chooser could not open: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            )),
+        };
     }
     let out = Command::new("osascript")
         .arg("-e")
@@ -2071,26 +2068,23 @@ fn pick_folder() -> Result<Option<String>, String> {
 /// contract as pick_image; osascript fallback restricted to WAV.
 #[tauri::command]
 fn pick_audio() -> Result<Option<String>, String> {
-    match swift_helper("galactus-pick") {
-        Ok(bin) => {
-            let out = Command::new(&bin)
-                .arg("audio")
-                .arg(std::env::var("HOME").unwrap_or_default())
-                .output()
-                .map_err(|e| e.to_string())?;
-            return match out.status.code() {
-                Some(0) => {
-                    let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                    Ok(if p.is_empty() { None } else { Some(p) })
-                }
-                Some(2) => Ok(None),
-                _ => Err(format!(
-                    "the audio chooser could not open: {}",
-                    String::from_utf8_lossy(&out.stderr).trim()
-                )),
-            };
-        }
-        Err(_) => {}
+    if let Ok(bin) = swift_helper("galactus-pick") {
+        let out = Command::new(&bin)
+            .arg("audio")
+            .arg(std::env::var("HOME").unwrap_or_default())
+            .output()
+            .map_err(|e| e.to_string())?;
+        return match out.status.code() {
+            Some(0) => {
+                let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                Ok(if p.is_empty() { None } else { Some(p) })
+            }
+            Some(2) => Ok(None),
+            _ => Err(format!(
+                "the audio chooser could not open: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            )),
+        };
     }
     let out = Command::new("osascript")
         .arg("-e")
@@ -2114,40 +2108,37 @@ fn pick_audio() -> Result<Option<String>, String> {
 /// swiftc reason, and restricts to images the same way the panel does.
 #[tauri::command]
 fn pick_image() -> Result<Option<String>, String> {
-    match swift_helper("galactus-pick") {
-        Ok(bin) => {
-            let out = Command::new(&bin)
-                .arg("image")
-                .arg(std::env::var("HOME").unwrap_or_default())
+    if let Ok(bin) = swift_helper("galactus-pick") {
+        let out = Command::new(&bin)
+            .arg("image")
+            .arg(std::env::var("HOME").unwrap_or_default())
+            .output()
+            .map_err(|e| e.to_string())?;
+        return match out.status.code() {
+            Some(0) => {
+                let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                Ok(if p.is_empty() { None } else { Some(p) })
+            }
+            Some(2) => Ok(None),
+            // A bundled helper built before the image mode existed answers
+            // a usage error on exit 1. Falling through to osascript keeps
+            // the button working on an app whose packaged helper is stale.
+            _ => match Command::new("osascript")
+                .arg("-e")
+                .arg("POSIX path of (choose file of type {\"public.png\", \"public.jpeg\"} with prompt \"Choose a starting picture\")")
                 .output()
-                .map_err(|e| e.to_string())?;
-            return match out.status.code() {
-                Some(0) => {
-                    let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            {
+                Ok(o) if o.status.success() => {
+                    let p = String::from_utf8_lossy(&o.stdout).trim().to_string();
                     Ok(if p.is_empty() { None } else { Some(p) })
                 }
-                Some(2) => Ok(None),
-                // A bundled helper built before the image mode existed answers
-                // a usage error on exit 1. Falling through to osascript keeps
-                // the button working on an app whose packaged helper is stale.
-                _ => match Command::new("osascript")
-                    .arg("-e")
-                    .arg("POSIX path of (choose file of type {\"public.png\", \"public.jpeg\"} with prompt \"Choose a starting picture\")")
-                    .output()
-                {
-                    Ok(o) if o.status.success() => {
-                        let p = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                        Ok(if p.is_empty() { None } else { Some(p) })
-                    }
-                    Ok(o) => match classify_chooser_failure(&String::from_utf8_lossy(&o.stderr)) {
-                        None => Ok(None),
-                        Some(reason) => Err(reason),
-                    },
-                    Err(e) => Err(e.to_string()),
+                Ok(o) => match classify_chooser_failure(&String::from_utf8_lossy(&o.stderr)) {
+                    None => Ok(None),
+                    Some(reason) => Err(reason),
                 },
-            };
-        }
-        Err(_) => {}
+                Err(e) => Err(e.to_string()),
+            },
+        };
     }
     let out = Command::new("osascript")
         .arg("-e")
@@ -3134,7 +3125,9 @@ mod registry_context_tests {
     /// whose figure could not be read.
     #[test]
     fn the_declared_context_matches_what_the_model_publishes() {
-        let raw = include_str!("../packaged/scripts/models-registry.json");
+        // The versioned registry, not packaged/: that copy is gitignored and
+        // generated by the build, so a clean checkout (CI) has no file to include.
+        let raw = include_str!("../../../scripts/models-registry.json");
         let v: serde_json::Value = serde_json::from_str(raw).expect("registry parses");
         let models = v["models"].as_array().expect("models is an array");
 

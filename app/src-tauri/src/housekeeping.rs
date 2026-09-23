@@ -63,7 +63,7 @@ pub struct Aged {
 /// and both are awkward to stage as real files.
 pub fn to_remove(mut entries: Vec<Aged>, max_age: Duration, max_bytes: u64) -> Vec<PathBuf> {
     // Oldest first: age decides who goes when the budget is what is exceeded.
-    entries.sort_by(|a, b| b.age.cmp(&a.age));
+    entries.sort_by_key(|e| std::cmp::Reverse(e.age));
     let mut out = Vec::new();
     let mut total: u64 = entries.iter().map(|e| e.bytes).sum();
     for e in &entries {

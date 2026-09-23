@@ -859,11 +859,11 @@ mod budget_tests {
         assert_eq!(loaded.available, Some(40 * GB));
         // Loading, nothing resident yet: its whole plan is still to come out.
         let loading = HeldEngine { allocated: false, resident: 0, ..holder("a", "primary", 10) };
-        assert_eq!(limits_after(m, &[loading.clone()]).available, Some(30 * GB));
+        assert_eq!(limits_after(m, std::slice::from_ref(&loading)).available, Some(30 * GB));
         // Loading, 6 of its 10 GB already resident: those 6 are already out of
         // vm_stat, so only the 4 still to come are taken off.
         let halfway = HeldEngine { resident: 6 * GB, ..loading };
-        assert_eq!(limits_after(m, &[halfway.clone()]).available, Some(36 * GB));
+        assert_eq!(limits_after(m, std::slice::from_ref(&halfway)).available, Some(36 * GB));
         // The hardware bound still counts the whole plan.
         assert_eq!(limits_after(m, &[halfway]).gpu_working_set, Some(44_800_000_000 - 10 * GB));
     }

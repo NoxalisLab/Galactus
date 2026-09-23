@@ -2562,10 +2562,8 @@ mod tests {
         assert!(t.elapsed() < Duration::from_millis(250), "the budget bounds a silent service");
     }
 
-    #[test]
-    fn the_sidecar_range_does_not_overlap_the_engines() {
-        assert!(SIDECAR_PORT_BASE >= SERVER_PORT_BASE + SERVER_PORT_SPAN);
-    }
+    // Checked when the crate compiles: both sides are constants.
+    const _: () = assert!(SIDECAR_PORT_BASE >= SERVER_PORT_BASE + SERVER_PORT_SPAN);
 
     #[test]
     fn the_download_size_is_read_from_the_requirements() {

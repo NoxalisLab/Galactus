@@ -641,7 +641,7 @@ mod learned_slug_tests {
 #[cfg(test)]
 mod protected_write_tests {
     use super::{app_support, learned_dir};
-    use crate::tools::is_protected_write;
+    
 
     #[test]
     fn the_learned_bank_is_not_writable_by_the_agents_file_tools() {

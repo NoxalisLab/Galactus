@@ -1617,7 +1617,7 @@ mod user_report_24gb_tests {
 
 #[cfg(test)]
 mod ctx_window_tests {
-    use super::{ctx_within_model, kv_bytes_for};
+    
     use crate::CTX_PER_SLOT;
 
     #[test]

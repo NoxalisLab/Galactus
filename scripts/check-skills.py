@@ -56,6 +56,8 @@ NON_TOOLS = {
     "request_id", "next_cursor", "order_id",           # API field names
     "smallest_scale", "flattened_pages",                 # edit_document answer fields
     "explicit_page_breaks", "between_start", "between_end",
+    "near_match", "near_matches",                        # table-edit report fields
+    "failures_omitted", "near_matches_omitted",          # (helpers/galactus-docx.py)
     "allocation_cible",                                  # portfolio JSON key
     "for_each", "prevent_destroy",                       # Terraform meta-args
     "node_modules",                                      # directory name

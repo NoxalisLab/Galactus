@@ -1678,7 +1678,7 @@ pub fn image_gallery() -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default();
-    files.sort_by(|a, b| b.0.cmp(&a.0));
+    files.sort_by_key(|f| std::cmp::Reverse(f.0));
     files.into_iter().map(|(_, p)| p).collect()
 }
 
