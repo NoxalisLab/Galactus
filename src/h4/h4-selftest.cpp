@@ -135,7 +135,7 @@ int main() {
     for (std::uint32_t layer_index = 0; layer_index < layer_bytes.size(); ++layer_index) {
         const auto bytes = layer_bytes[layer_index];
         for (std::uint32_t expert = 0; expert < profile.experts; ++expert) {
-            placement.assign(profile.first_layer + layer_index, expert, bytes);
+            placement.assign(profile.layer_at(layer_index), expert, bytes);
         }
     }
     require(placement.complete(), "canonical P1 placement is incomplete");

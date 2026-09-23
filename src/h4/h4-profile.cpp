@@ -28,7 +28,9 @@ ModelProfile builtin_glm52() {
         for (auto c : kC) if (layer == c) record = 13'172'736;
         p.record_bytes.push_back(record);
         p.record_bytes_raw.push_back(record);
+        p.layers.push_back(layer);
     }
+    p.index_layers();
     return p;
 }
 
@@ -37,6 +39,14 @@ void validate(const ModelProfile & p, const std::string & origin) {
         throw std::runtime_error("profil (" + origin + "): " + why);
     };
     if (p.first_layer > p.last_layer) fail("plage de couches inversee");
+    if (p.layers.empty()) fail("aucune couche MoE");
+    if (p.layers.front() != p.first_layer || p.layers.back() != p.last_layer)
+        fail("first_layer/last_layer ne bornent pas exactement les couches listees");
+    for (std::size_t i = 1; i < p.layers.size(); ++i)
+        if (p.layers[i] <= p.layers[i - 1])
+            fail("couches non strictement croissantes a " + std::to_string(p.layers[i]));
+    if (p.rank_of_layer.size() != std::size_t{p.last_layer} - p.first_layer + 1)
+        fail("table couche -> rang non construite");
     if (p.experts == 0 || p.experts > key_expert_capacity)
         fail("experts hors [1," + std::to_string(key_expert_capacity) + "] (encodage des clefs)");
     if (p.used == 0 || p.used > p.experts) fail("experts actifs incoherents");
@@ -44,9 +54,9 @@ void validate(const ModelProfile & p, const std::string & origin) {
     if (p.record_bytes_raw.size() != p.record_bytes.size()) fail("tables raw/pad incoherentes");
     for (std::size_t i = 0; i < p.record_bytes.size(); ++i) {
         if (p.record_bytes[i] == 0 || p.record_bytes[i] % record_alignment_bytes != 0)
-            fail("record non multiple de 16 KiB, couche " + std::to_string(p.first_layer + i));
+            fail("record non multiple de 16 KiB, couche " + std::to_string(p.layers[i]));
         if (p.record_bytes_raw[i] == 0 || p.record_bytes_raw[i] > p.record_bytes[i])
-            fail("record utile > record pad, couche " + std::to_string(p.first_layer + i));
+            fail("record utile > record pad, couche " + std::to_string(p.layers[i]));
     }
 }
 
@@ -83,10 +93,9 @@ ModelProfile ModelProfile::load(const std::string & path) {
             in >> layer >> t1 >> rec >> t2 >> raw;
             if (t1 != "record" || t2 != "raw")
                 throw std::runtime_error("profil (" + path + "): ligne layer malformee");
-            const std::size_t expected = p.first_layer + p.record_bytes.size();
-            if (layer != expected)
-                throw std::runtime_error("profil (" + path + "): couches non contigues a "
-                                         + std::to_string(layer));
+            // Couches creuses admises (hybrides) ; l'ordre strictement
+            // croissant et les bornes first/last sont verifies par validate().
+            p.layers.push_back(layer);
             p.record_bytes.push_back(rec);
             p.record_bytes_raw.push_back(raw);
         } else if (key == "end") { ended = true; break; }
@@ -94,8 +103,23 @@ ModelProfile ModelProfile::load(const std::string & path) {
         if (!in) throw std::runtime_error("profil (" + path + "): lecture interrompue");
     }
     if (!ended) throw std::runtime_error("profil (" + path + "): fin de fichier sans 'end'");
+    if (p.first_layer > p.last_layer)
+        throw std::runtime_error("profil (" + path + "): plage de couches inversee");
+    for (auto layer : p.layers)
+        if (layer < p.first_layer || layer > p.last_layer)
+            throw std::runtime_error("profil (" + path + "): couche " + std::to_string(layer)
+                                     + " hors [first_layer, last_layer]");
+    p.index_layers();
     validate(p, path);
     return p;
+}
+
+void ModelProfile::index_layers() {
+    rank_of_layer.assign(last_layer >= first_layer ? std::size_t{last_layer} - first_layer + 1 : 0, -1);
+    for (std::size_t i = 0; i < layers.size(); ++i) {
+        if (layers[i] >= first_layer && layers[i] <= last_layer)
+            rank_of_layer[layers[i] - first_layer] = static_cast<std::int32_t>(i);
+    }
 }
 
 const ModelProfile & ModelProfile::active() {

@@ -40,7 +40,7 @@ void validate_key(std::uint32_t key) {
     // Domaine du MODELE, pas capacite d'encodage : un expert au-dela de
     // profile.experts n'existe pas et doit etre rejete.
     const auto & profile = ModelProfile::active();
-    if (layer < profile.first_layer || layer > profile.last_layer || expert >= profile.experts) {
+    if (!profile.has_layer(layer) || expert >= profile.experts) {
         throw std::runtime_error("miss sequence contains a key outside the routed-expert domain");
     }
 }
@@ -252,7 +252,7 @@ Volume CanonicalP1Placement::assign(
     if (assigned_records_ >= record_count) {
         throw std::logic_error("canonical P1 placement already contains all routed experts");
     }
-    const std::uint32_t expected_layer = profile.first_layer + assigned_records_ / profile.experts;
+    const std::uint32_t expected_layer = profile.layer_at(assigned_records_ / profile.experts);
     const std::uint32_t expected_expert = assigned_records_ % profile.experts;
     if (layer != expected_layer || expert != expected_expert) {
         throw std::invalid_argument("P1 records must be assigned in canonical layer/expert order");

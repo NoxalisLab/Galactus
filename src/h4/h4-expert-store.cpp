@@ -21,7 +21,7 @@ std::uint64_t monotonic_ns() {
 }
 
 std::uint32_t layer_index(std::uint32_t key) {
-    return (key >> key_expert_bits) - ExpertCache::first_layer();
+    return ExpertCache::layer_index(key >> key_expert_bits);
 }
 
 }  // namespace
@@ -67,7 +67,7 @@ ExpertStore::ExpertStore(std::uint64_t capacity_bytes,
         if (record % record_alignment_bytes != 0) {
             throw std::runtime_error("expert store: record size is not 16 KiB aligned");
         }
-        const std::uint32_t layer_number = index + ExpertCache::first_layer();
+        const std::uint32_t layer_number = ModelProfile::active().layer_at(index);
         // La couche recoit exactement les places que le cache lui accorde.
         // Sans plan de cache elles sont toutes egales, comme avant.
         const std::uint32_t layer_quota = !pin_ ? cache_.quota_of(layer_number)
@@ -94,7 +94,7 @@ ExpertStore::~ExpertStore() {
 }
 
 std::uint32_t ExpertStore::slots_of(std::uint32_t layer) const noexcept {
-    return slots_of_layer_[layer - ExpertCache::first_layer()];
+    return slots_of_layer_[ExpertCache::layer_index(layer)];
 }
 
 std::uint32_t ExpertStore::max_slots_per_layer() const noexcept {
@@ -132,7 +132,7 @@ std::uint32_t ExpertStore::allocate_slot(std::uint32_t key) {
         // insertion. Une liste a sec signifie une fuite d'emplacements --
         // l'UB silencieux du 3 aout (PPL 8,89) ne se reproduira pas.
         throw std::runtime_error("expert store: free list a sec, fuite d'emplacements (couche "
-                                 + std::to_string(index + ExpertCache::first_layer()) + ")");
+                                 + std::to_string(ModelProfile::active().layer_at(index)) + ")");
     }
     const std::int16_t slot = free_list.back();
     free_list.pop_back();

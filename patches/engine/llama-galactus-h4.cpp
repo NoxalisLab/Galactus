@@ -453,10 +453,9 @@ void remap_callback(ggml_tensor * dst, const ggml_tensor * source, int ith, int 
     if (trace != nullptr && traced.fetch_add(1) < 600) {
         for (int64_t i = 0; i < count; ++i) {
             const auto * bytes = static_cast<const unsigned char *>(s.store->data(keys[i]));
-            const std::uint32_t layer_index = (keys[i] >> key_expert_bits) - ExpertCache::first_layer();
+            const std::uint32_t layer_index = ExpertCache::layer_index(keys[i] >> key_expert_bits);
             const std::uint64_t record = frozen_layer_record_bytes()[layer_index];
-            const std::uint32_t li = (keys[i] >> key_expert_bits) - ModelProfile::active().first_layer;
-            const std::uint64_t raw = ModelProfile::active().record_bytes_raw[li];
+            const std::uint64_t raw = ModelProfile::active().record_bytes_raw[layer_index];
             std::fprintf(trace, "%u %u %d %016llx %016llx %016llx\n",
                          keys[i] >> key_expert_bits, keys[i] & key_expert_mask,
                          (int) s.store->slot_of(keys[i]),
@@ -483,8 +482,9 @@ bool active() {
 }
 
 bool wants_layer(int layer) {
-    if (layer < static_cast<int>(ExpertCache::first_layer())
-        || layer > static_cast<int>(ExpertCache::last_layer())) {
+    // Profil creux (hybrides) : une couche de la plage sans experts (SSM,
+    // attention) n'est pas cablee.
+    if (layer < 0 || !ExpertCache::routed_layer(static_cast<std::uint32_t>(layer))) {
         return false;
     }
     // GALACTUS_H4_ONLY_LAYERS=A-B : bissection — le cablage ne s'applique
@@ -555,7 +555,7 @@ ggml_tensor * create_exps(int layer, const char * role, ggml_type type,
             s.store->cache().min_probation_quota(), s.store->max_slots_per_layer());
     }
 
-    const std::uint32_t layer_index = static_cast<std::uint32_t>(layer) - ExpertCache::first_layer();
+    const std::uint32_t layer_index = ExpertCache::layer_index(static_cast<std::uint32_t>(layer));
     const std::uint64_t record = frozen_layer_record_bytes()[layer_index];
     const std::uint64_t matrix_bytes = ggml_row_size(type, ne0) * static_cast<std::uint64_t>(ne1);
 
@@ -600,7 +600,7 @@ void init() {
                 entries[i]->role_offset = offset;
                 offset += entries[i]->matrix_bytes;
             }
-            const std::uint32_t index = static_cast<std::uint32_t>(layer) - profile.first_layer;
+            const std::uint32_t index = profile.index_of(static_cast<std::uint32_t>(layer));
             if (offset != profile.record_bytes_raw[index]) {
                 throw std::runtime_error("galactus_h4: couche " + std::to_string(layer)
                     + " : somme des roles " + std::to_string(offset)
@@ -635,7 +635,7 @@ void init() {
         // ainsi ; c'est ce qui epingle les ops ncmoe sur le CPU.
         ggml_backend_buffer_set_usage(s.arena_buffer, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
         for (const auto & entry : s.pending) {
-            const std::uint32_t li = static_cast<std::uint32_t>(entry.layer) - ExpertCache::first_layer();
+            const std::uint32_t li = ExpertCache::layer_index(static_cast<std::uint32_t>(entry.layer));
             unsigned char * address = arena + s.store->layer_base(li) + entry.role_offset;
             if (ggml_backend_tensor_alloc(s.arena_buffer, entry.tensor, address) != GGML_STATUS_SUCCESS) {
                 throw std::runtime_error("galactus_h4: tensor_alloc CPU a echoue");
@@ -668,7 +668,7 @@ void init() {
 
     for (const auto & entry : s.pending) {
         const std::uint32_t layer_index =
-            static_cast<std::uint32_t>(entry.layer) - ExpertCache::first_layer();
+            ExpertCache::layer_index(static_cast<std::uint32_t>(entry.layer));
         unsigned char * address = arena + s.store->layer_base(layer_index) + entry.role_offset;
         const auto status = ggml_backend_tensor_alloc(s.arena_buffer, entry.tensor, address);
         if (status != GGML_STATUS_SUCCESS) {
@@ -711,6 +711,9 @@ void debug_probe(const ggml_tensor * gate, const ggml_tensor * up,
     bool expected = false;
     if (!done.compare_exchange_strong(expected, true)) return;
     for (const auto * t : {gate, up, down}) {
+        // Pas de gate : experts relu^2 a deux matrices (nemotron_h_moe) ou
+        // gate_up fusionne. Un role absent n'a rien a montrer.
+        if (t == nullptr) continue;
         std::fprintf(stderr,
             "galactus_h4: graphe couche %d voit '%s' type=%s ne2=%lld nb2=%zu data=%p tampon=%s\n",
             layer, t->name, ggml_type_name(t->type),

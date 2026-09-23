@@ -13,10 +13,10 @@ namespace galactus::h4 {
 namespace {
 
 std::uint64_t layer_expert_bytes(std::uint32_t layer) {
-    if (layer < ExpertCache::first_layer() || layer > ExpertCache::last_layer()) {
+    if (!ModelProfile::active().has_layer(layer)) {
         throw std::out_of_range("expert cache: layer outside the active profile routed range");
     }
-    return frozen_layer_record_bytes()[layer - ExpertCache::first_layer()];
+    return frozen_layer_record_bytes()[ExpertCache::layer_index(layer)];
 }
 
 // Les deux segments d'une couche, a partir de son quota.
@@ -64,6 +64,12 @@ void split_segments(std::uint32_t quota, double protected_fraction,
 std::uint32_t ExpertCache::first_layer() noexcept { return ModelProfile::active().first_layer; }
 std::uint32_t ExpertCache::last_layer() noexcept { return ModelProfile::active().last_layer; }
 std::uint32_t ExpertCache::layer_count() noexcept { return ModelProfile::active().layer_count(); }
+std::uint32_t ExpertCache::layer_index(std::uint32_t layer) noexcept {
+    return ModelProfile::active().index_of(layer);
+}
+bool ExpertCache::routed_layer(std::uint32_t layer) noexcept {
+    return ModelProfile::active().has_layer(layer);
+}
 
 ExpertCache::ExpertCache(std::uint64_t capacity_bytes, double protected_fraction)
     : capacity_bytes_(capacity_bytes), layers_(layer_count()) {
@@ -74,8 +80,8 @@ ExpertCache::ExpertCache(std::uint64_t capacity_bytes, double protected_fraction
         throw std::invalid_argument("expert cache: protected fraction must be in (0,1)");
     }
     std::uint64_t one_of_each = 0;
-    for (std::uint32_t layer = first_layer(); layer <= last_layer(); ++layer) {
-        one_of_each += layer_expert_bytes(layer);
+    for (std::uint32_t index = 0; index < layer_count(); ++index) {
+        one_of_each += frozen_layer_record_bytes()[index];
     }
     quota_ = static_cast<std::uint32_t>(capacity_bytes / one_of_each);
     if (quota_ == 0) {
@@ -140,7 +146,10 @@ void ExpertCache::apply_plan(double protected_fraction, std::uint64_t one_of_eac
     if (plan == nullptr) return;
     const auto & profile = ModelProfile::active();
     if (plan->architecture != profile.architecture || plan->first_layer != profile.first_layer
-        || plan->last_layer != profile.last_layer || plan->experts != profile.experts) {
+        || plan->last_layer != profile.last_layer || plan->experts != profile.experts
+        // Un plan porte une courbe par couche de la plage : il ne decrit pas
+        // un profil creux (hybride), qui retombe sur le quota egal.
+        || plan->curves.size() != profile.layer_count()) {
         std::fprintf(stderr,
                      "galactus_h4: plan de cache pour %s %u-%u/%u, profil actif %s %u-%u/%u : "
                      "ignore, quota egal par couche\n",
@@ -202,15 +211,15 @@ void ExpertCache::apply_plan(double protected_fraction, std::uint64_t one_of_eac
 }
 
 std::uint32_t ExpertCache::quota_of(std::uint32_t layer) const noexcept {
-    return layers_[layer - first_layer()].quota;
+    return layers_[layer_index(layer)].quota;
 }
 
 std::uint32_t ExpertCache::protected_quota_of(std::uint32_t layer) const noexcept {
-    return layers_[layer - first_layer()].protected_quota;
+    return layers_[layer_index(layer)].protected_quota;
 }
 
 std::uint32_t ExpertCache::probation_quota_of(std::uint32_t layer) const noexcept {
-    return layers_[layer - first_layer()].probation_quota;
+    return layers_[layer_index(layer)].probation_quota;
 }
 
 std::uint32_t ExpertCache::min_probation_quota() const noexcept {
@@ -222,7 +231,7 @@ std::uint32_t ExpertCache::min_probation_quota() const noexcept {
 }
 
 std::uint64_t ExpertCache::expert_bytes(std::uint32_t layer) const noexcept {
-    return frozen_layer_record_bytes()[layer - first_layer()];
+    return frozen_layer_record_bytes()[layer_index(layer)];
 }
 
 std::uint64_t ExpertCache::resident_bytes() const noexcept {
@@ -273,8 +282,8 @@ void ExpertCache::push_back(Layer & layer, std::int16_t index, Segment into) noe
 }
 
 void ExpertCache::begin_batch(std::uint32_t layer_number) noexcept {
-    if (layer_number < first_layer() || layer_number > last_layer()) return;
-    ++layers_[layer_number - first_layer()].epoch;
+    if (!routed_layer(layer_number)) return;
+    ++layers_[layer_index(layer_number)].epoch;
 }
 
 void ExpertCache::note_access(Layer & layer, std::int16_t index) noexcept {
@@ -331,8 +340,8 @@ std::int16_t ExpertCache::pop_front(Layer & layer, Segment from) noexcept {
 
 bool ExpertCache::resident(std::uint32_t key) const noexcept {
     const std::uint32_t layer = key >> key_expert_bits;
-    if (layer < first_layer() || layer > last_layer()) return false;
-    return layers_[layer - first_layer()]
+    if (!routed_layer(layer)) return false;
+    return layers_[layer_index(layer)]
                .nodes[static_cast<std::size_t>(key & key_expert_mask)]
                .segment != Segment::absent;
 }
@@ -340,7 +349,7 @@ bool ExpertCache::resident(std::uint32_t key) const noexcept {
 ExpertCache::Access ExpertCache::access(std::uint32_t key) noexcept {
     const std::uint32_t layer_number = key >> key_expert_bits;
     const auto expert = static_cast<std::int16_t>(key & key_expert_mask);
-    Layer & layer = layers_[layer_number - first_layer()];
+    Layer & layer = layers_[layer_index(layer_number)];
     Node & node = layer.nodes[static_cast<std::size_t>(expert)];
     const std::uint32_t layer_base = layer_number << key_expert_bits;
     Access outcome;
@@ -383,7 +392,7 @@ ExpertCache::Access ExpertCache::access(std::uint32_t key) noexcept {
 
     // absent : admission inconditionnelle en probation. L'admission par
     // frequence a ete mesuree nuisible sur ce workload.
-    cold_bytes_ += frozen_layer_record_bytes()[layer_number - first_layer()];
+    cold_bytes_ += frozen_layer_record_bytes()[layer_index(layer_number)];
     push_back(layer, expert, Segment::probation);
     if (layer.probation_size > layer.probation_quota) {
         const std::int16_t dropped = take_victim(layer);

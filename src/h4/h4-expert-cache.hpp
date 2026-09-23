@@ -79,6 +79,10 @@ public:
     [[nodiscard]] static std::uint32_t first_layer() noexcept;
     [[nodiscard]] static std::uint32_t last_layer() noexcept;
     [[nodiscard]] static std::uint32_t layer_count() noexcept;
+    // Rang d'une couche MoE dans les tables par couche (profil creux :
+    // != layer - first_layer). Precondition : routed_layer(layer).
+    [[nodiscard]] static std::uint32_t layer_index(std::uint32_t layer) noexcept;
+    [[nodiscard]] static bool routed_layer(std::uint32_t layer) noexcept;
 
     // capacity_bytes est le budget TOTAL du cache. Le quota UNIFORME en est
     // deduit : n = capacity / somme des tailles d'un expert de chaque couche.

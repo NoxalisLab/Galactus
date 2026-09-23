@@ -369,10 +369,11 @@ const P0RecordLocation & P0Layout::lookup(std::uint32_t key) const {
     const auto layer = key >> key_expert_bits;
     const auto expert = key & key_expert_mask;
     const auto & mp = ModelProfile::active();
-    if (layer < mp.first_layer || layer > mp.last_layer || expert >= mp.experts) {
+    // Profil creux : une couche de la plage sans experts n'a aucun record.
+    if (!mp.has_layer(layer) || expert >= mp.experts) {
         throw std::invalid_argument("P0 lookup key is outside the routed-expert domain");
     }
-    const auto index = (layer - mp.first_layer) * mp.experts + expert;
+    const auto index = mp.index_of(layer) * mp.experts + expert;
     return records_.at(index);
 }
 
@@ -404,7 +405,7 @@ P1Layout::P1Layout(const std::vector<std::uint64_t> & layer_record_bytes) {
     records_.reserve(layer_record_bytes.size() * experts);
     CanonicalP1Placement placement;
     for (std::uint32_t layer_index = 0; layer_index < layer_record_bytes.size(); ++layer_index) {
-        const auto layer = ModelProfile::active().first_layer + layer_index;
+        const auto layer = ModelProfile::active().layer_at(layer_index);
         const auto bytes = layer_record_bytes[layer_index];
         for (std::uint32_t expert = 0; expert < experts; ++expert) {
             const auto volume = placement.assign(layer, expert, bytes);
@@ -427,10 +428,11 @@ const P1RecordLocation & P1Layout::lookup(std::uint32_t key) const {
     const auto layer = key >> key_expert_bits;
     const auto expert = key & key_expert_mask;
     const auto & mp = ModelProfile::active();
-    if (layer < mp.first_layer || layer > mp.last_layer || expert >= mp.experts) {
+    // Profil creux : une couche de la plage sans experts n'a aucun record.
+    if (!mp.has_layer(layer) || expert >= mp.experts) {
         throw std::invalid_argument("P1 lookup key is outside the routed-expert domain");
     }
-    const auto index = (layer - mp.first_layer) * mp.experts + expert;
+    const auto index = mp.index_of(layer) * mp.experts + expert;
     return records_.at(index);
 }
 

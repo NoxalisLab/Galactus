@@ -279,7 +279,7 @@ public:
         // profil actif, pas la capacite d'encodage des clefs.
         const auto & profile = ModelProfile::active();
         keys_.reserve(static_cast<std::size_t>(profile.layer_count()) * profile.experts);
-        for (std::uint32_t layer = profile.first_layer; layer <= profile.last_layer; ++layer) {
+        for (const std::uint32_t layer : profile.layers) {
             for (std::uint32_t expert = 0; expert < profile.experts; ++expert) {
                 keys_.push_back((layer << galactus::h4::key_expert_bits) | expert);
             }

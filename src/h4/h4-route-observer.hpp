@@ -232,10 +232,10 @@ private:
         std::fprintf(file_, "# cache_bytes %llu protected %.2f quota %u probation %u slots %u\n",
                      static_cast<unsigned long long>(cache_bytes_), protected_fraction_,
                      quota_, probation_, slots_);
-        for (std::uint32_t layer = profile.first_layer; layer <= profile.last_layer; ++layer) {
-            std::fprintf(file_, "# record %u %llu\n", layer,
-                         static_cast<unsigned long long>(
-                             frozen_layer_record_bytes()[layer - profile.first_layer]));
+        // Couches MoE seulement (profil creux : les hybrides en sautent).
+        for (std::uint32_t index = 0; index < profile.layer_count(); ++index) {
+            std::fprintf(file_, "# record %u %llu\n", profile.layer_at(index),
+                         static_cast<unsigned long long>(frozen_layer_record_bytes()[index]));
         }
         std::fprintf(file_, "# entries %zu truncated %d\n", entries_.size(),
                      truncated_ ? 1 : 0);
