@@ -942,9 +942,9 @@ pub async fn server_start(app: AppHandle, model_id: String, cache_gb: Option<u64
     // against 40 of decode, a ratio of 4.3 where a Metal MoE should be ten to
     // thirty. The magnitude on mxfp4 is not measured here and may differ.
     //
-    // The default stays bit-exact, because that is the promise the rest of this
-    // file is built on and nobody should lose it by upgrading. `numerics =
-    // standard` is the user saying, explicitly, that they would rather have the
+    // The default is the standard Metal path (see bit_exact_numerics for the
+    // measurements behind that reversal). `numerics = bitexact` is the user
+    // asking, explicitly, for reproducible-bit-for-bit answers at the cost of
     // speed. It is per-machine, it survives a restart, and the badge says which
     // regime is running so the choice is never invisible.
     let bit_exact = bit_exact_numerics(settings.get("numerics").map(|v| v.as_str()));

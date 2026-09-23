@@ -77,7 +77,12 @@ OUT_DIR = ROOT / "artifacts" / "h4" / "bench"
 # `ship` is the default because the curve is shown to a user as what their
 # machine will do. `crosscheck` stays reachable for comparing against the older
 # curves that were taken that way, and every curve records which one it used.
-REGIMES = ("ship", "crosscheck")
+# Since 354db8c the app launches STANDARD Metal expert kernels by default and
+# the bit-exact parity kernels only when the `numerics` setting asks for them,
+# because they cost 35 to 58 times the prompt speed and about twice the
+# generation speed. `ship` follows the app; `bitexact` measures the opt-in.
+# Curves taken before that change were bit-exact and say so in measured_note.
+REGIMES = ("ship", "bitexact", "crosscheck")
 
 # The prompt has to outlast one micro-batch or the prompt column measures the
 # wrong thing. At the shipped batch of 512 a fifty-token prompt fits entirely in
@@ -521,10 +526,10 @@ def run_tier(model_id: str, gguf: pathlib.Path, pack: pathlib.Path, profile: pat
                  "--batch-size", str(CROSSCHECK_BATCH),
                  "--ubatch-size", str(CROSSCHECK_UBATCH)]
     else:
-        # The same two variables start_engine sets on the default path. Metal
-        # experts replay the CPU algorithm bit for bit here, so this is the
-        # certified numerics AND the speed, not a trade between them.
-        env["GALACTUS_METAL_BITEXACT"] = "1"
+        # start_engine sets GALACTUS_METAL_BITEXACT only when the numerics
+        # setting asks for it; `ship` measures the default, standard kernels.
+        if regime == "bitexact":
+            env["GALACTUS_METAL_BITEXACT"] = "1"
         args += ["--batch-size", str(SHIP_BATCH),
                  "--ubatch-size", str(ship_ubatch(tier, geo))]
     args += [
@@ -604,7 +609,7 @@ def note_for(registry: dict, regime: str, predict: int, full_gb: float) -> str:
     """
     path = ("cross-check path (CPU experts and biases), ubatch "
             f"{CROSSCHECK_UBATCH}" if regime == "crosscheck"
-            else f"shipped path (Metal bit-exact experts), batch {SHIP_BATCH}, planner ubatch")
+            else f"{ship_label(regime)}, batch {SHIP_BATCH}, planner ubatch")
     return (f"{registry.get('reference_machine', 'reference machine')}, {path}, "
             f"{predict} predicted tokens on a {PROMPT_REPEATS}-paragraph prompt, "
             f"bench {time.strftime('%Y-%m-%d', time.gmtime())} by scripts/bench-curve.py; "
@@ -736,7 +741,7 @@ def bench(model_id: str, predict: int, dry_run: bool, write_registry: bool,
               f"ubatch {CROSSCHECK_UBATCH}, {predict} predicted tokens")
         print("           NOT what the app launches: no registry model is flagged cpu_moe")
     else:
-        print(f"  regime   shipped path (Metal bit-exact experts), batch {SHIP_BATCH}, "
+        print(f"  regime   {ship_label(regime)}, batch {SHIP_BATCH}, "
               f"planner ubatch per tier, {predict} predicted tokens")
     print()
     for t in tiers:
@@ -892,6 +897,11 @@ def bench(model_id: str, predict: int, dry_run: bool, write_registry: bool,
     return 0 if points and not failures else (0 if points else 1)
 
 
+def ship_label(regime: str) -> str:
+    return ("opt-in path (Metal bit-exact experts)" if regime == "bitexact"
+            else "shipped path (standard Metal experts)")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="Measured memory-tier throughput curve for one registry model.")
@@ -914,8 +924,9 @@ def main() -> int:
     ap.add_argument("--force", action="store_true",
                     help="measure even when the machine is busy, and say so in the output")
     ap.add_argument("--regime", choices=REGIMES, default="ship",
-                    help="ship: what start_engine launches, Metal bit-exact experts and the "
-                         "planner micro-batch (default). crosscheck: CPU experts at micro-batch "
+                    help="ship: what start_engine launches, standard Metal experts and the "
+                         "planner micro-batch (default). bitexact: the same with the opt-in "
+                         "bit-exact Metal experts. crosscheck: CPU experts at micro-batch "
                          "1, the path that proves the kernels and that the app does not take")
     args = ap.parse_args()
     only = set(args.only_mac or [])

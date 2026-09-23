@@ -165,9 +165,13 @@ fn serve(root: &Path, model_id: &str, args: &[String]) -> Result<(), String> {
             profile.display()
         ));
     }
+    // Same regime as the app: standard Metal experts unless the `numerics`
+    // setting asks for the bit-exact path. Forcing bit-exact here made
+    // `galactus serve` up to twice slower than the app on the same model, for
+    // answers that are as good either way.
     if cpu_moe {
         cmd.env("GALACTUS_H4_CPU_MOE", "1").arg("--n-cpu-moe").arg("99");
-    } else {
+    } else if bit_exact_numerics(settings_load().get("numerics").map(|v| v.as_str())) {
         cmd.env("GALACTUS_METAL_BITEXACT", "1");
     }
     let status = cmd
