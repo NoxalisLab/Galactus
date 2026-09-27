@@ -1389,6 +1389,55 @@
         "engine": "b1ff4ca2"
       },
       "certified_date": "2026-09-23"
+    },
+    {
+      "id": "glm-5.3-flash",
+      "name": "GLM-5.3-Flash 288 experts, KDA + DSA (UD-IQ1_S)",
+      "arch": "glm5next",
+      "gguf_bytes": 93087244963,
+      "expert_bytes_total": 83783319552,
+      "non_expert_bytes": 6670867832,
+      "layers_moe": 42,
+      "experts": 288,
+      "experts_used": 8,
+      "record_bytes": 8781824,
+      "min_cache_bytes": 11802771456,
+      "status": "certified_bit_transparent",
+      "min_ram_gb": 128,
+      "context_length": 1048576,
+      "download": {
+        "base": "https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF/resolve/main/UD-IQ1_S",
+        "files": [
+          "GLM-5.3-Flash-UD-IQ1_S-00001-of-00003.gguf",
+          "GLM-5.3-Flash-UD-IQ1_S-00002-of-00003.gguf",
+          "GLM-5.3-Flash-UD-IQ1_S-00003-of-00003.gguf"
+        ]
+      },
+      "tasks": [
+        "reasoning",
+        "code",
+        "writing",
+        "general"
+      ],
+      "measured": [],
+      "min_ram_note": "128 GB is the only tier measured so far; lower tiers wait for bench-curve. The engine needs patches/glm5next-pr27754.diff (upstream PR #27754, not merged yet)",
+      "certified_ppl": {
+        "stock": 8.9656,
+        "wired": 8.9656,
+        "corpus": "corpus/materialized/stage1/long-context-multifieldqa-zh-0029.txt",
+        "corpus_sha256": "2baf18f90cd4b6e09411f3e870e5d734943fc07828d5a0e3b6d8b527f485aa33",
+        "corpus_bytes": 20737,
+        "seed": 42,
+        "ctx": 512,
+        "batch": 512,
+        "ubatch": 2,
+        "regime": "llama-perplexity, CPU expert reference: --n-cpu-moe 99 --no-repack --fit off --chunks 1, stock against wired (GALACTUS_H4=1, --no-mmap)",
+        "date": "2026-09-27",
+        "run": "20260927T133121Z-p17435",
+        "recorded_by": "scripts/certify.py",
+        "engine": "b1ff4ca2"
+      },
+      "certified_date": "2026-09-27"
     }
   ],
   "mac_lineup": {
