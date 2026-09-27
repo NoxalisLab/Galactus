@@ -104,7 +104,10 @@ def main():
         for name, dims, tt, off in tensors:
             b = nbytes(dims, tt)
             total += (b + align - 1) // align * align
-        ok = (data_start + total == file_size)
+        # A split whose first shard holds only metadata (unsloth's GLM-5.3-Flash)
+        # ends at its header: with no tensor data there is no padding to align.
+        ok = (data_start + total == file_size
+              or (not tensors and header_end == file_size))
         shard_reports.append({"shard": s.name, "tensors": len(tensors),
                               "identity_ok": ok})
         if not ok:
