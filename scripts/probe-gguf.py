@@ -30,8 +30,9 @@ declares `split.count > 1` and holds no expert tensor, the probe moves on to
 the next shard, and stops at the first one that answers.
 
 A fused layout is not enough either: GLM-5.3-Flash ships as `glm5next`, an
-architecture the pinned llama.cpp does not know, and a probe that stopped at
-the tensor names called its 93 GB usable. The architecture is checked against
+architecture the pinned llama.cpp did not know until
+patches/glm5next-pr27754.diff, and a probe that stopped at the tensor names
+called its 93 GB usable. The architecture is checked against
 the pinned tree's `llama-arch.cpp` when the checkout is there:
 
   unsupported the engine's llama.cpp has no graph for this architecture

@@ -18,4 +18,8 @@ git apply "${HERE}/galactus-h4-llamacpp.diff"
 # non versionne de third_party/, si bien qu'un clone neuf suivi de ce script
 # ne compilait pas. Ils sont versionnes ici et copies a cote du reste.
 cp "${HERE}/engine/llama-galactus-h4.cpp" "${HERE}/engine/llama-galactus-h4.h" src/
+# GLM-5.3-Flash (glm5next) n'est pas encore amont : PR #27754, rebasee sur
+# l'epingle. Elle passe apres le cablage, contre lequel son diff a ete produit.
+git apply --check "${HERE}/glm5next-pr27754.diff"
+git apply "${HERE}/glm5next-pr27754.diff"
 echo "cablage applique. Construire ensuite avec cmake (voir README)."
